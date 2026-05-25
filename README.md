@@ -42,11 +42,27 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 
 ## Installation
 
-### 1. Clone the repository
+### 1. Get the code
+
+#### Option A — Download ZIP *(no git required, easiest for most users)*
+
+1. Go to **https://github.com/szhang99-bu/CellMatchr**
+2. Click the green **`<> Code`** button → **Download ZIP**
+3. Unzip it to wherever you want to keep the software, e.g. your Desktop or Documents
+4. Rename the unzipped folder from `CellMatchr-main` → `CellMatchr`
+
+#### Option B — Clone with git
+
+Replace the destination path with wherever you want to save it:
 
 ```bash
-git clone <repo-url>
-cd CellMatchr
+# macOS / Linux example — save to your Documents folder:
+git clone https://github.com/szhang99-bu/CellMatchr.git ~/Documents/CellMatchr
+cd ~/Documents/CellMatchr
+
+# or save to the Desktop:
+git clone https://github.com/szhang99-bu/CellMatchr.git ~/Desktop/CellMatchr
+cd ~/Desktop/CellMatchr
 ```
 
 ### 2. Create the conda environment

@@ -1208,9 +1208,14 @@ def main():
             device = "cpu"
         print(f"Using device: {device}")
 
+        # amg=True: use Automatic Mask Generation (encoder only, no decoder).
+        # The decoder path (AIS) raises a RuntimeError in micro_sam >= 1.3.1
+        # because the vit_b_lm checkpoint does not contain the new
+        # 'decoder.samplers.0.conv.weight' key introduced in that release.
         predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
             model_type=MODEL_TYPE,
-            device=device
+            device=device,
+            amg=True,
         )
 
     generate_kwargs = {

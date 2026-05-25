@@ -26,6 +26,7 @@ dependencies:
   - aicsimageio=4.10.0          # exact match to CellTinder working env
   - aicspylibczi=3.3.1          # Zeiss CZI support
   - czifile                     # CZI reader used directly by segmentation.py
+  - imagecodecs=2026.1.14       # newer versions break czifile (jxr_decode removed)
   - pillow>=9.0
 
   # ── Numerical / scientific ─────────────────────────────────────────────────

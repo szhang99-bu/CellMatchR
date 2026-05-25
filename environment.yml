@@ -25,6 +25,7 @@ dependencies:
   - tifffile>=2023.1
   - aicsimageio=4.10.0          # exact match to CellTinder working env
   - aicspylibczi=3.3.1          # Zeiss CZI support
+  - czifile                     # CZI reader used directly by segmentation.py
   - pillow>=9.0
 
   # ── Numerical / scientific ─────────────────────────────────────────────────
@@ -34,12 +35,15 @@ dependencies:
   - numpy=1.26.4
   - scipy>=1.10
   - scikit-image>=0.20
+  - scikit-learn>=1.0           # pulled in by micro_sam / segmentation
   - pandas>=2.0
 
   # ── Visualisation ──────────────────────────────────────────────────────────
   - matplotlib>=3.7
   - napari=0.6.6                # exact match to CellTinder working env
   - pyqt>=5.15                  # Qt backend for napari / validator
+  - qtpy>=2.4                   # abstraction layer used by vsi_converter.py
+  - opencv>=4.5                 # cv2 used by segmentation.py
 
   # ── Pipeline utilities ─────────────────────────────────────────────────────
   - tqdm>=4.60

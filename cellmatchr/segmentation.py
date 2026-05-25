@@ -949,7 +949,6 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name):
     split_tiff_paths = {}
 
     if file_path.lower().endswith(".czi"):
-    if file_path.lower().endswith(".czi"):
         with CziFile(file_path) as czi:
             data = czi.asarray()
             c_axis = czi.axes.find("C")

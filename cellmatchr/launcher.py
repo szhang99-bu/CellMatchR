@@ -562,6 +562,15 @@ class CellMatchrLauncher:
             self._log_box.insert("end", msg + "\n")
             self._log_box.see("end")
 
+    def _vsi_log_append(self, msg: str) -> None:
+        """Append a line to the VSI converter output log box."""
+        if not hasattr(self, "_vsi_log"):
+            return
+        self._vsi_log.config(state="normal")
+        self._vsi_log.insert("end", msg + "\n")
+        self._vsi_log.see("end")
+        self._vsi_log.config(state="disabled")
+
     def _set_run_status(self, msg: str, color: str = MUTED) -> None:
         if hasattr(self, "_run_status"):
             self._run_status.config(text=msg, fg=color)
@@ -830,6 +839,17 @@ class CellMatchrLauncher:
         self._vsi_spin.pack(side="left", padx=6)
         self._vsi_warn = tk.Label(btn_row, text="", bg=CARD, fg=RED, font=FONT)
         self._vsi_warn.pack(side="left", padx=4)
+
+        # Output log — hidden until the converter runs; shows full output on error
+        self._vsi_log_frame = tk.Frame(vsi_card, bg=CARD)
+        tk.Label(self._vsi_log_frame, text="Output log:", bg=CARD, fg=MUTED,
+                 font=FONT).pack(anchor="w", pady=(8, 2))
+        self._vsi_log = scrolledtext.ScrolledText(
+            self._vsi_log_frame, height=8, bg=BG, fg=GREEN,
+            font=FONT_MONO, relief="flat", wrap="word", state="disabled",
+        )
+        self._vsi_log.pack(fill="x")
+        # (frame stays hidden until first run)
 
         # Auto-detected input folder display (set after converter closes)
         auto_card = self._card(self._vsi_section, "Input Folder  (auto-detected from converter)")
@@ -2334,18 +2354,31 @@ class CellMatchrLauncher:
         save_config(self.config)
 
         self._spinner_start(self._vsi_spin)
+        self._vsi_warn.config(text="")
+        # Show log frame and clear it
+        self._vsi_log_frame.pack(fill="x", pady=(4, 0))
+        self._vsi_log.config(state="normal")
+        self._vsi_log.delete("1.0", "end")
+        self._vsi_log.config(state="disabled")
+
         proc = subprocess.Popen(
             [sys.executable, self._script("vsi_converter.py"), "--config", CONFIG_PATH],
-            stderr=subprocess.PIPE,   # suppress raw tracebacks from terminal
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # merge stderr into stdout so we capture everything
+            text=True, bufsize=1,
         )
 
         def _watch():
-            _, err = proc.communicate()
+            output_lines = []
+            for line in proc.stdout:
+                output_lines.append(line.rstrip())
+                self.root.after(0, self._vsi_log_append, line.rstrip())
+            proc.wait()
             ok = proc.returncode == 0
+
             def _done():
                 self._spinner_stop(self._vsi_spin)
                 if ok:
-                    # Auto-set input folder to the exports subfolder
                     exports = os.path.join(vsi_out, "exports")
                     self.config["input_root_folder"] = exports
                     self._vars["input_root_folder"].set(exports)
@@ -2356,14 +2389,17 @@ class CellMatchrLauncher:
                             text=f"TIF exports will be read from:  {exports}", fg=FG)
                     except Exception:
                         pass
+                    self._vsi_warn.config(text="✓  Converter finished successfully.", fg=GREEN)
                 else:
+                    # Grab the last non-empty, non-boilerplate line as the headline error
+                    skip = {"traceback (most recent call last):"}
                     err_line = next(
-                        (l.strip() for l in (err or b"").decode(errors="replace")
-                         .splitlines() if l.strip() and not l.startswith("CHECK_")),
-                        "VSI converter failed — check that napari is installed."
+                        (l.strip() for l in reversed(output_lines)
+                         if l.strip() and l.strip().lower() not in skip),
+                        "VSI converter failed — see log below."
                     )
                     try:
-                        self._vsi_warn.config(text=f"✗  {err_line[:80]}", fg=RED)
+                        self._vsi_warn.config(text=f"✗  {err_line[:120]}", fg=RED)
                     except Exception:
                         pass
             self.root.after(0, _done)

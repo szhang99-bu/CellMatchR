@@ -38,3 +38,4 @@ dependencies:
   - pip
   - pip:
       - roifile                # read Fiji/ImageJ .roi files in the analysis step
+      - slideio                # VSI (Olympus) file reader for the VSI Converter

@@ -47,7 +47,7 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 #### Option A — Download ZIP *(no git required, easiest for most users)*
 
 1. Go to **https://github.com/szhang99-bu/CellMatchr**
-2. Click the green **`<> Code`** button → **Download ZIP**
+2. Click the green **`<> Code`** button at the top of the page → **Download ZIP**
 3. Unzip it to wherever you want to keep the software, e.g. your Desktop or Documents
 4. Rename the unzipped folder from `CellMatchr-main` → `CellMatchr`
 

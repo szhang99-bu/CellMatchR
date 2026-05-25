@@ -1219,7 +1219,7 @@ def main():
         )
 
     generate_kwargs = {
-        "min_size": MIN_OBJECT_SIZE,
+        "min_mask_region_area": MIN_OBJECT_SIZE,
     }
 
     for file_path in all_files:

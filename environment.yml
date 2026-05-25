@@ -11,10 +11,10 @@ dependencies:
   - torchvision>=0.15
 
   # ── Microscopy segmentation ────────────────────────────────────────────────
-  # Pin below 1.3: micro_sam 1.3.x added a decoder.samplers layer whose weights
-  # are absent from the published vit_b_lm checkpoint, causing a RuntimeError.
-  # If you upgrade past 1.3, set amg=True in segmentation.py or update the checkpoint.
-  - micro_sam>=1.1,<1.3        # pulls in torch_em, segment-anything, etc.
+  # Note: micro_sam 1.3+ introduced a decoder architecture change that mismatches
+  # the published vit_b_lm checkpoint. segmentation.py uses amg=True to bypass
+  # the decoder entirely, so any version >= 1.1 works correctly.
+  - micro_sam>=1.1              # pulls in torch_em, segment-anything, etc.
 
   # ── Image I/O ──────────────────────────────────────────────────────────────
   - tifffile>=2023.1

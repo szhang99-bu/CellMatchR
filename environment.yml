@@ -4,34 +4,42 @@ channels:
   - defaults
 dependencies:
   # ── Core Python ────────────────────────────────────────────────────────────
-  - python>=3.10,<3.13
+  # Pin to 3.11 — matches the verified working CellTinder environment.
+  # Python 3.12 pulls newer numpy (2.x) which breaks many dependencies.
+  - python=3.11
 
-  # ── Deep learning (CPU build — replace with GPU wheel if needed) ───────────
-  - pytorch>=2.0               # GPU: follow https://pytorch.org/get-started/locally/
-  - torchvision>=0.15
+  # ── Deep learning ──────────────────────────────────────────────────────────
+  # Exact versions from the working CellTinder env (GPU: replace with the
+  # matching CUDA wheel from https://pytorch.org/get-started/locally/)
+  - pytorch=2.10.0
+  - torchvision=0.25.0
 
   # ── Microscopy segmentation ────────────────────────────────────────────────
-  # Note: the published bioimage.io decoder checkpoints were saved with an old
-  # torch_em key name (samplers.N.block.*).  segmentation.py auto-patches the
-  # cached files on first run so any micro_sam >= 1.1 works correctly.
-  - micro_sam>=1.1              # pulls in torch_em, segment-anything, etc.
+  # micro_sam 1.7.0 has built-in compatibility for both old ('block') and
+  # new ('conv') decoder checkpoint key formats, so all published bioimage.io
+  # checkpoints load cleanly.  Exact version confirmed working in CellTinder.
+  - micro_sam=1.7.0
+  - torch_em=0.8.1              # exact match to CellTinder working env
 
   # ── Image I/O ──────────────────────────────────────────────────────────────
   - tifffile>=2023.1
-  - aicsimageio>=4.9           # multi-format reader
-  - aicspylibczi>=3.3          # Zeiss CZI support
+  - aicsimageio=4.10.0          # exact match to CellTinder working env
+  - aicspylibczi=3.3.1          # Zeiss CZI support
   - pillow>=9.0
 
   # ── Numerical / scientific ─────────────────────────────────────────────────
-  - numpy>=1.24,<2.0           # keep <2 for broad compat
+  # CRITICAL: numpy MUST stay below 2.0.  numpy 2.x is not backward-compatible
+  # and breaks micro_sam, torch_em, and several imaging packages.
+  # Pin to 1.26.4 — exact version from CellTinder working env.
+  - numpy=1.26.4
   - scipy>=1.10
   - scikit-image>=0.20
   - pandas>=2.0
 
   # ── Visualisation ──────────────────────────────────────────────────────────
   - matplotlib>=3.7
-  - napari>=0.4.19             # VSI converter + interactive tools
-  - pyqt>=5.15                 # Qt backend for napari / validator
+  - napari=0.6.6                # exact match to CellTinder working env
+  - pyqt>=5.15                  # Qt backend for napari / validator
 
   # ── Pipeline utilities ─────────────────────────────────────────────────────
   - tqdm>=4.60

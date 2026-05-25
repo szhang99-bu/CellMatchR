@@ -1,0 +1,40 @@
+name: cellmatchr
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # ── Core Python ────────────────────────────────────────────────────────────
+  - python>=3.10,<3.13
+
+  # ── Deep learning (CPU build — replace with GPU wheel if needed) ───────────
+  - pytorch>=2.0               # GPU: follow https://pytorch.org/get-started/locally/
+  - torchvision>=0.15
+
+  # ── Microscopy segmentation ────────────────────────────────────────────────
+  - micro_sam>=1.1             # pulls in torch_em, segment-anything, etc.
+
+  # ── Image I/O ──────────────────────────────────────────────────────────────
+  - tifffile>=2023.1
+  - aicsimageio>=4.9           # multi-format reader
+  - aicspylibczi>=3.3          # Zeiss CZI support
+  - pillow>=9.0
+
+  # ── Numerical / scientific ─────────────────────────────────────────────────
+  - numpy>=1.24,<2.0           # keep <2 for broad compat
+  - scipy>=1.10
+  - scikit-image>=0.20
+  - pandas>=2.0
+
+  # ── Visualisation ──────────────────────────────────────────────────────────
+  - matplotlib>=3.7
+  - napari>=0.4.19             # VSI converter + interactive tools
+  - pyqt>=5.15                 # Qt backend for napari / validator
+
+  # ── Pipeline utilities ─────────────────────────────────────────────────────
+  - tqdm>=4.60
+  - openpyxl>=3.1              # Excel output from analysis step
+
+  # ── pip-only packages ──────────────────────────────────────────────────────
+  - pip
+  - pip:
+      - roifile                # read Fiji/ImageJ .roi files in the analysis step

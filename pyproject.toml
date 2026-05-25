@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cellmatchr"
+version = "0.1.0"
+description = "Neuronal confocal image segmentation and colocalization pipeline"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Shiyu Zhang" }]
+
+dependencies = [
+    "numpy",
+    "tifffile",
+    "scikit-image",
+    "pandas",
+    "matplotlib",
+    "opencv-python",
+    "tqdm",
+    "czifile",
+]
+
+# Heavy dependencies (GPU / napari) are not listed here because they require
+# environment-specific installation (CUDA version, conda, etc.).
+# See requirements.txt for the full list.
+
+[project.optional-dependencies]
+vsi = ["slideio", "napari", "PyQt5", "qtpy"]
+seg = ["torch", "micro-sam"]
+all = ["cellmatchr[vsi,seg]"]
+
+[project.scripts]
+cellmatchr = "cellmatchr.launcher:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cellmatchr*"]

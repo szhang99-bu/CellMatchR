@@ -1,0 +1,20 @@
+# Core
+numpy
+tifffile
+scikit-image
+pandas
+matplotlib
+opencv-python
+tqdm
+czifile
+
+# VSI converter (Olympus) — requires napari / Qt
+# qtpy is an abstraction layer; PyQt5 is the backend used here
+slideio
+napari
+PyQt5
+qtpy
+
+# Segmentation — install torch first following https://pytorch.org/get-started/locally/
+# torch  (install separately for your CUDA version)
+micro-sam

@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# CellTinder user config (contains local paths — do not commit)
+# ~/.celltinder/config.json is outside the repo, but just in case:
+config.json
+
+# Large data files
+*.czi
+*.vsi
+*.tif
+*.tiff
+*.npy
+
+# Debug output folders (created next to data, not in repo)
+DEBUG_*/
+*_UNFILTERED*/
+*_UNFILTERED_SUMMARY/
+
+# Editor temporaries
+*~
+
+# Claude Code session data (local only)
+.claude/
+
+# CellTinder validator last-used folder (local path, do not commit)
+.roi_verifier_config

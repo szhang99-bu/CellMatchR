@@ -1180,6 +1180,48 @@ def make_final_qc_mask_png(label_image, output_png_path, downsample=4):
 
 
 # =============================================================================
+# CHECKPOINT COMPATIBILITY PATCH
+# =============================================================================
+
+def _patch_decoder_checkpoints(model_type: str) -> None:
+    """Rename old torch_em sampler key names in cached decoder checkpoints.
+
+    torch_em 0.8.0 renamed the Upsampler internal attribute from
+    ``self.block`` to ``self.conv``, which changed the state-dict key from
+    ``decoder.samplers.N.block.{weight,bias}`` to
+    ``decoder.samplers.N.conv.{weight,bias}``.  The published bioimage.io
+    checkpoints pre-date that rename.  This function detects and fixes the
+    mismatch in-place the first time segmentation is run.
+    """
+    import re, shutil
+    try:
+        from micro_sam.util import get_cache_directory
+        cache_dir = os.path.join(get_cache_directory(), "models")
+    except Exception:
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "micro_sam", "models")
+
+    decoder_path = os.path.join(cache_dir, f"{model_type}_decoder")
+    if not os.path.isfile(decoder_path):
+        return  # not yet downloaded — nothing to patch
+
+    import torch
+    state = torch.load(decoder_path, map_location="cpu", weights_only=True)
+    old_keys = [k for k in state if re.match(r"decoder\.samplers\.\d+\.block\.(weight|bias)$", k)]
+    if not old_keys:
+        return  # already up-to-date
+
+    print(f"[INFO] Patching decoder checkpoint for '{model_type}' "
+          f"(renaming {len(old_keys)} sampler keys: block → conv) …")
+    shutil.copy2(decoder_path, decoder_path + ".bak")
+    new_state = {
+        re.sub(r"(decoder\.samplers\.\d+\.)block\.", r"\1conv.", k): v
+        for k, v in state.items()
+    }
+    torch.save(new_state, decoder_path)
+    print(f"[INFO] Checkpoint patched successfully.")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -1207,6 +1249,11 @@ def main():
         else:
             device = "cpu"
         print(f"Using device: {device}")
+
+        # Patch cached decoder checkpoints if they were saved with old torch_em naming
+        # (torch_em 0.8+ renamed Upsampler.block → Upsampler.conv; published bioimage.io
+        # checkpoints pre-date this rename, so we fix the keys on first run).
+        _patch_decoder_checkpoints(MODEL_TYPE)
 
         predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
             model_type=MODEL_TYPE,

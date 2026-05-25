@@ -11,10 +11,10 @@ dependencies:
   - torchvision>=0.15
 
   # ── Microscopy segmentation ────────────────────────────────────────────────
-  # IMPORTANT: micro_sam 1.3+ introduced a decoder architecture change that
-  # breaks the published vit_b_lm checkpoint (missing 'decoder.samplers.0.conv.weight').
-  # Pin strictly below 1.3 so the AIS decoder path works correctly and quickly.
-  - micro_sam>=1.1,<1.3         # pulls in torch_em, segment-anything, etc.
+  # Note: the published bioimage.io decoder checkpoints were saved with an old
+  # torch_em key name (samplers.N.block.*).  segmentation.py auto-patches the
+  # cached files on first run so any micro_sam >= 1.1 works correctly.
+  - micro_sam>=1.1              # pulls in torch_em, segment-anything, etc.
 
   # ── Image I/O ──────────────────────────────────────────────────────────────
   - tifffile>=2023.1

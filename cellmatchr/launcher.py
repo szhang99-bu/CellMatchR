@@ -1987,7 +1987,7 @@ class CellMatchrLauncher:
                 self._ana_partial_check.pack_forget()
 
     def _refresh_val_status(self) -> None:
-        """Rebuild per-channel validation progress labels in the validation step."""
+        """Rebuild per-project validation progress labels in the validation step."""
         if not hasattr(self, "_val_prog_frame"):
             return
         frame = self._val_prog_frame
@@ -2006,9 +2006,23 @@ class CellMatchrLauncher:
             if x.strip().isdigit()
         ]
 
+        if not channels_to_check:
+            tk.Label(frame, text="No channels configured — set channels in Step 3.",
+                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
+            return
+
+        # Project sub-folders live inside the segmentation output, not the root folder.
+        seg_variants = self._find_variants(SUBFOLDER["seg"])
+        seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        val_root = os.path.join(proj, seg_sub)
+
+        if not os.path.isdir(val_root):
+            tk.Label(frame, text="No segmentation output found yet.", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
+            return
+
         project_dirs = [
-            d for d in sorted(os.listdir(proj))
-            if os.path.isdir(os.path.join(proj, d))
+            d for d in sorted(os.listdir(val_root))
+            if os.path.isdir(os.path.join(val_root, d))
             and not d.startswith(".") and not d.startswith("DEBUG")
         ]
 
@@ -2016,55 +2030,34 @@ class CellMatchrLauncher:
             tk.Label(frame, text="No project folders found.", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
             return
 
-        if not channels_to_check:
-            tk.Label(frame, text="No channels configured — set channels in Step 3.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
-            return
+        # ── Per-project rows (one line per project, all channels on same line) ──
+        for d in project_dirs:
+            project_root = os.path.join(val_root, d)
+            ch_parts = []
+            row_status = "complete"   # assume best; downgrade as needed
+            for ch in channels_to_check:
+                s = self._get_val_status_for_channel(project_root, ch)
+                if s == "complete":
+                    icon, col = "✓", GREEN
+                elif s == "partial":
+                    icon, col = "⟳", YELLOW
+                    if row_status == "complete":
+                        row_status = "partial"
+                else:
+                    icon, col = "✗", RED
+                    row_status = "none"
+                ch_parts.append((f"ch{ch}: {icon}", col))
 
-        for ch in channels_to_check:
-            statuses = [
-                self._get_val_status_for_channel(os.path.join(proj, d), ch)
-                for d in project_dirs
-            ]
-            n_total    = len(statuses)
-            n_complete = statuses.count("complete")
-            n_partial  = statuses.count("partial")
-            n_none     = statuses.count("none")
+            # Build a single row frame so each channel tag can be its own colour
+            row_frame = tk.Frame(frame, bg=CARD)
+            row_frame.pack(anchor="w", pady=1, fill="x")
 
-            if n_complete == n_total:
-                text = f"Channel {ch}: ALL COMPLETE  ✓  ({n_complete}/{n_total} projects)"
-                fg = GREEN
-            elif n_complete + n_partial > 0:
-                text = (f"Channel {ch}: IN PROGRESS  ⟳  "
-                        f"{n_complete} complete  {n_partial} in-progress  {n_none} not started")
-                fg = YELLOW
-            else:
-                text = f"Channel {ch}: NOT STARTED  ✗  ({n_total} projects waiting)"
-                fg = RED
-            tk.Label(frame, text=text, bg=CARD, fg=fg, font=FONT_BOLD, justify="left").pack(anchor="w", pady=2)
-
-        # Per-project breakdown (collapsible via a toggle label)
-        def _show_detail(f=frame, dirs=project_dirs, chs=channels_to_check, p=proj):
-            for w in f.winfo_children():
-                if getattr(w, "_detail_row", False):
-                    w.destroy()
-            for d in dirs:
-                parts = []
-                for ch in chs:
-                    s = self._get_val_status_for_channel(os.path.join(p, d), ch)
-                    icon = "✓" if s == "complete" else ("⟳" if s == "partial" else "✗")
-                    col  = GREEN if s == "complete" else (YELLOW if s == "partial" else RED)
-                    lbl = tk.Label(f, text=f"  {d}   ch{ch}: {icon}",
-                                   bg=CARD, fg=col, font=FONT, justify="left")
-                    lbl._detail_row = True
-                    lbl.pack(anchor="w")
-
-        detail_lbl = tk.Label(
-            frame, text="▶  Show per-project breakdown",
-            bg=CARD, fg=MUTED, font=(FONT[0], FONT[1], "underline"), cursor="hand2",
-        )
-        detail_lbl.pack(anchor="w", pady=(6, 0))
-        detail_lbl.bind("<Button-1>", lambda _: _show_detail())
+            name_fg = GREEN if row_status == "complete" else (YELLOW if row_status == "partial" else FG)
+            tk.Label(row_frame, text=f"{d}  ", bg=CARD, fg=name_fg,
+                     font=FONT_BOLD, justify="left").pack(side="left")
+            for tag_text, tag_col in ch_parts:
+                tk.Label(row_frame, text=f"[{tag_text}]  ", bg=CARD, fg=tag_col,
+                         font=FONT, justify="left").pack(side="left")
 
     def _run_analysis_step(self) -> None:
         """Run analysis from the Analysis step card."""

@@ -23,6 +23,7 @@ matplotlib.use('TkAgg')
 # --- 1. Predicted Mask Configuration ---
 # CHANGE THE NAME DEPENDING ON which channel prodiction you want to cellmatchr.
 PREDICTED_MASK_GLOB_PATTERN = "*_predict_original_ch2*.tif"
+CONFIGURED_VAL_CHANNEL = None   # set by _apply_config when launcher pre-selects a channel
 
 # Where to save the manual validation TSV.
 # This folder will be created inside each project folder.
@@ -871,6 +872,9 @@ class ProjectChooser:
             predicted_chs = proj["channels"]
             if len(predicted_chs) == 1:
                 val_channel = predicted_chs[0]
+            elif CONFIGURED_VAL_CHANNEL is not None and CONFIGURED_VAL_CHANNEL in predicted_chs:
+                # Launcher already chose a channel — skip the redundant dialog
+                val_channel = CONFIGURED_VAL_CHANNEL
             else:
                 val_channel = self._select_channel_dialog(proj["path"], predicted_chs)
                 if val_channel is None:
@@ -922,7 +926,7 @@ class ProjectChooser:
 def _apply_config(config_path: str) -> None:
     """Pre-populate main folder, mask pattern, channel names and colors from CellMatchr config."""
     import json
-    global PREDICTED_MASK_GLOB_PATTERN, CHANNEL_NAME_OVERRIDES, CHANNEL_COLOR_OVERRIDES
+    global PREDICTED_MASK_GLOB_PATTERN, CHANNEL_NAME_OVERRIDES, CHANNEL_COLOR_OVERRIDES, CONFIGURED_VAL_CHANNEL
     try:
         with open(config_path) as f:
             cfg = json.load(f)
@@ -930,6 +934,11 @@ def _apply_config(config_path: str) -> None:
         pattern = cfg.get("val_mask_pattern", "").strip()
         if pattern:
             PREDICTED_MASK_GLOB_PATTERN = pattern
+            # Extract the pre-selected channel number so the project chooser can skip
+            # the redundant "Select Channel to Validate" dialog.
+            m = re.search(r"_predict_original_ch(\d+)", pattern)
+            if m:
+                CONFIGURED_VAL_CHANNEL = int(m.group(1))
 
         names_str = cfg.get("val_channel_names", "").strip()
         if names_str:

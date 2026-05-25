@@ -22,7 +22,7 @@ dependencies:
   - torch_em=0.8.1              # exact match to CellTinder working env
 
   # ── Image I/O ──────────────────────────────────────────────────────────────
-  - tifffile>=2023.1
+  - tifffile=2026.1.28          # exact CellTinder version; newer removes stripnull used by czifile
   - aicsimageio=4.10.0          # exact match to CellTinder working env
   - aicspylibczi=3.3.1          # Zeiss CZI support
   - czifile=2019.7.2.1          # exact CellTinder version; newer breaks with imagecodecs

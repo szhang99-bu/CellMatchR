@@ -20,6 +20,15 @@ dependencies:
   # checkpoints load cleanly.  Exact version confirmed working in CellTinder.
   - micro_sam=1.7.0
   - torch_em=0.8.1              # exact match to CellTinder working env
+  - bioimageio.core=0.9.5       # micro_sam model loading; 0.10.x has breaking API changes
+  - bioimageio.spec=0.5.6.0     # exact CellTinder version
+  - elf=0.7.3                   # torch_em segmentation backend; 0.8.x has major backend change
+  - huggingface_hub=1.3.7       # model download; CellTinder version (1.16.x is a huge jump)
+  - onnxruntime=1.22.2          # micro_sam inference; exact CellTinder version
+  - timm=1.0.24                 # micro_sam model architecture; exact CellTinder version
+  - numba=0.63.1                # used by elf/torch_em; exact CellTinder version
+  - dask=2026.1.2               # imaging stack; exact CellTinder version
+  - superqt=0.7.7               # napari widget toolkit; 0.8.0 has breaking changes
 
   # ── Image I/O ──────────────────────────────────────────────────────────────
   - tifffile=2026.1.28          # exact CellTinder version; newer removes stripnull used by czifile
@@ -27,14 +36,14 @@ dependencies:
   - aicspylibczi=3.3.1          # Zeiss CZI support
   - czifile=2019.7.2.1          # exact CellTinder version; newer breaks with imagecodecs
   - imagecodecs=2026.1.14       # newer versions break czifile (jxr_decode removed)
-  - pillow>=9.0
+  - pillow=12.1.0               # exact CellTinder version
 
   # ── Numerical / scientific ─────────────────────────────────────────────────
   # CRITICAL: numpy MUST stay below 2.0.  numpy 2.x is not backward-compatible
   # and breaks micro_sam, torch_em, and several imaging packages.
   # Pin to 1.26.4 — exact version from CellTinder working env.
   - numpy=1.26.4
-  - scipy>=1.10
+  - scipy=1.17.0                # exact CellTinder version
   - scikit-image>=0.20
   - scikit-learn=1.8.0          # exact CellTinder version
   - pandas>=2.0
@@ -53,5 +62,5 @@ dependencies:
   # ── pip-only packages ──────────────────────────────────────────────────────
   - pip
   - pip:
-      - roifile                # read Fiji/ImageJ .roi files in the analysis step
+      - roifile==2026.1.29     # exact CellTinder version; read Fiji/ImageJ .roi files
       - slideio                # VSI (Olympus) file reader for the VSI Converter

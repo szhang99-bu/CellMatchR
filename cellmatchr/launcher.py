@@ -1149,38 +1149,77 @@ class CellMatchrLauncher:
             return
         try:
             import numpy as np
+            fname = os.path.basename(path)
+            print(f"\n[Preview] Loading: {fname}")
+
             if path.lower().endswith(".czi"):
+                # Use AICSImage so C and Z axes are always correctly separated.
+                # czifile.asarray() can conflate Z into C for some CZI files.
                 try:
+                    from aicsimageio import AICSImage
+                    print(f"[Preview] Reading CZI with AICSImage…")
+                    img = AICSImage(path)
+                    data = img.get_image_data("CZYX")   # (C, Z, Y, X)
+                    num_channels = data.shape[0]
+                    num_z = data.shape[1]
+                    print(f"[Preview] Channels: {num_channels}, Z-slices: {num_z}")
+                    if num_z > 1:
+                        print(f"[Preview] Z-stack — applying max intensity projection per channel")
+                    channels_np = []
+                    for c in range(num_channels):
+                        ch = data[c]                            # (Z, Y, X)
+                        ch2d = np.max(ch, axis=0) if num_z > 1 else ch[0]
+                        channels_np.append(ch2d)
+                        print(f"[Preview]   Channel {c}: shape={ch2d.shape}")
+                except ImportError:
+                    print("[Preview] aicsimageio not available — falling back to czifile")
                     import czifile
                     with czifile.CziFile(path) as f:
                         data = f.asarray().squeeze()
-                except ImportError:
-                    self.root.after(0, callback, [], "czifile not installed")
-                    return
+                    data = np.squeeze(data)
+                    channels_np = [data] if data.ndim == 2 else [data[c] for c in range(min(data.shape[0], 12))]
             else:
-                import tifffile
-                data = tifffile.imread(path)
+                import tifffile as _tf
+                with _tf.TiffFile(path) as tif:
+                    data = tif.asarray()
+                    axes_meta = (tif.series[0].axes if tif.series else "").upper()
+                print(f"[Preview] TIFF shape: {data.shape}, axes: '{axes_meta or 'unknown'}'")
+                data = np.squeeze(data)
 
-            # Normalise to (C, H, W)
-            data = np.squeeze(data)
-            if data.ndim == 2:
-                channels_np = [data]
-            elif data.ndim == 3:
-                if data.shape[0] <= 16 and data.shape[0] < data.shape[1] // 2:
-                    channels_np = [data[c] for c in range(data.shape[0])]
-                elif data.shape[2] <= 16 and data.shape[2] < data.shape[0] // 2:
-                    channels_np = [data[:, :, c] for c in range(data.shape[2])]
+                if data.ndim == 2:
+                    print("[Preview] Single-channel 2D image")
+                    channels_np = [data]
+                elif data.ndim == 3:
+                    has_z = "Z" in axes_meta
+                    has_c = "C" in axes_meta
+                    if has_z and not has_c:
+                        print(f"[Preview] Z-stack ({data.shape[0]} slices) — applying MIP")
+                        channels_np = [np.max(data, axis=0)]
+                    elif data.shape[0] <= 16 and data.shape[0] < data.shape[1] // 2:
+                        print(f"[Preview] Channel-first: {data.shape[0]} channels")
+                        channels_np = [data[c] for c in range(data.shape[0])]
+                    elif data.shape[2] <= 16 and data.shape[2] < data.shape[0] // 2:
+                        print(f"[Preview] Channel-last: {data.shape[2]} channels")
+                        channels_np = [data[:, :, c] for c in range(data.shape[2])]
+                    else:
+                        print(f"[Preview] Ambiguous 3D — applying MIP as single-channel Z-stack")
+                        channels_np = [np.max(data, axis=0)]
+                elif data.ndim == 4:
+                    # (C, Z, Y, X) or (Z, C, Y, X): pick C as smaller of first two dims
+                    c_pos = 0 if data.shape[0] <= data.shape[1] else 1
+                    num_channels = data.shape[c_pos]
+                    print(f"[Preview] 4D — {num_channels} channels, applying MIP over Z")
+                    channels_np = []
+                    for c in range(num_channels):
+                        ch = np.take(data, c, axis=c_pos)
+                        channels_np.append(np.max(ch, axis=0))
                 else:
-                    channels_np = [data[0]]
-            elif data.ndim >= 4:
-                flat = data.reshape(-1, data.shape[-2], data.shape[-1])
-                channels_np = [flat[c] for c in range(min(flat.shape[0], 12))]
-            else:
-                channels_np = []
+                    print(f"[Preview] Unsupported shape {data.shape} — cannot preview")
+                    channels_np = []
 
             from PIL import Image as PILImage
             photos = []
-            for ch in channels_np:
+            for i, ch in enumerate(channels_np):
                 ch = ch.astype(float)
                 lo, hi = np.percentile(ch, [1, 99.5])
                 if hi > lo:
@@ -1192,9 +1231,10 @@ class CellMatchrLauncher:
                 img.thumbnail((280, 200), PILImage.LANCZOS)
                 photos.append(ImageTk.PhotoImage(img))
 
-            fname = os.path.basename(path)
+            print(f"[Preview] Done — {len(photos)} channel(s) loaded")
             self.root.after(0, callback, photos, fname)
         except Exception as exc:
+            print(f"[Preview] Error: {exc}")
             self.root.after(0, callback, [], f"Preview error: {exc}")
 
     def _set_channel_previews(self, photos: list, fname: str = "") -> None:
@@ -1244,6 +1284,18 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
     # Validation channel preview helpers
     # ------------------------------------------------------------------
+
+    def _trigger_val_preview_load(self) -> None:
+        """Button handler — disable the button, show spinner, load in background."""
+        if hasattr(self, "_val_load_btn") and self._val_load_btn:
+            self._val_load_btn.config(state="disabled", text="  Loading…")
+        if self._val_lbl:
+            self._val_lbl.config(text="Loading…", fg=ACCENT)
+        threading.Thread(
+            target=lambda: self._load_channel_previews(
+                callback=self._set_val_channel_previews),
+            daemon=True,
+        ).start()
 
     def _set_val_channel_previews(self, photos: list, fname: str = "") -> None:
         """Called on the main thread after background channel loading."""
@@ -1303,9 +1355,16 @@ class CellMatchrLauncher:
                         row=i + 1, column=3, sticky="w", pady=3)
                 self._update_val_channel_names_str()
 
+        # Re-enable the load button
+        if hasattr(self, "_val_load_btn") and self._val_load_btn:
+            try:
+                self._val_load_btn.config(state="normal", text="⟳  Load Preview")
+            except tk.TclError:
+                pass
+
         if not photos:
             if self._val_lbl:
-                self._val_lbl.config(text=fname or "No preview available")
+                self._val_lbl.config(text=fname or "No preview available", fg=MUTED)
             return
 
         self._show_val_channel(0)
@@ -1576,7 +1635,7 @@ class CellMatchrLauncher:
 
         self._val_lbl = tk.Label(
             val_nav_row,
-            text="Loading preview…" if has_input else "No input folder set.",
+            text="Press 'Load Preview' to load channels." if has_input else "No input folder set.",
             bg=CARD, fg=MUTED, font=FONT, width=36,
         )
         self._val_lbl.pack(side="left", padx=10)
@@ -1588,18 +1647,20 @@ class CellMatchrLauncher:
         )
         self._val_next_btn.pack(side="left")
 
+        self._val_load_btn = tk.Button(
+            val_nav_row, text="⟳  Load Preview",
+            command=self._trigger_val_preview_load,
+            bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=10, pady=4,
+            state="normal" if (has_input and _PIL) else "disabled",
+        )
+        self._val_load_btn.pack(side="left", padx=(12, 0))
+
         self._val_preview_img = tk.Label(prev_card, bg=CARD)
         self._val_preview_img.pack(anchor="w", pady=(0, 4))
 
         if not _PIL:
             tk.Label(prev_card, text="Install Pillow (pip install Pillow) to enable preview.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
-        elif has_input:
-            threading.Thread(
-                target=lambda: self._load_channel_previews(
-                    callback=self._set_val_channel_previews),
-                daemon=True,
-            ).start()
 
         # ── Validation progress summary ──────────────────────────────
         vprog_card = self._card(parent, "Validation Progress")

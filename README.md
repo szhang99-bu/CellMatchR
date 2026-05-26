@@ -1,6 +1,6 @@
-# CellMatchr
+# CellMatchR
 
-<img src="CellMatchr_Logo.png" width="320" alt="CellMatchr Logo"/>
+<img src="CellMatchr_Logo.png" width="320" alt="CellMatchR Logo"/>
 
 Neuronal confocal image segmentation, manual validation, and colocalization analysis pipeline.
 
@@ -46,10 +46,10 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 
 #### Option A — Download ZIP *(no git required, easiest for most users)*
 
-1. Go to **https://github.com/szhang99-bu/CellMatchr**
+1. Go to **https://github.com/szhang99-bu/CellMatchR**
 2. Click the green **`<> Code`** button at the top of the page → **Download ZIP**
 3. Unzip it to wherever you want to keep the software, e.g. your Desktop or Documents
-4. Rename the unzipped folder from `CellMatchr-main` → `CellMatchr`
+4. Rename the unzipped folder from `CellMatchR-main` → `CellMatchR`
 
 #### Option B — Clone with git
 
@@ -57,12 +57,12 @@ Replace the destination path with wherever you want to save it:
 
 ```bash
 # macOS / Linux example — save to your Documents folder:
-git clone https://github.com/szhang99-bu/CellMatchr.git ~/Documents/CellMatchr
-cd ~/Documents/CellMatchr
+git clone https://github.com/szhang99-bu/CellMatchR.git ~/Documents/CellMatchR
+cd ~/Documents/CellMatchR
 
 # or save to the Desktop:
-git clone https://github.com/szhang99-bu/CellMatchr.git ~/Desktop/CellMatchr
-cd ~/Desktop/CellMatchr
+git clone https://github.com/szhang99-bu/CellMatchR.git ~/Desktop/CellMatchR
+cd ~/Desktop/CellMatchR
 ```
 
 ### 2. Create the conda environment
@@ -85,7 +85,7 @@ conda activate cellmatchr
 > pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 > ```
 
-### 3. Install CellMatchr itself
+### 3. Install CellMatchR itself
 
 ```bash
 pip install -e .
@@ -93,7 +93,7 @@ pip install -e .
 
 ---
 
-## Launching CellMatchr
+## Launching CellMatchR
 
 ### Option A — double-click (macOS)
 
@@ -103,9 +103,9 @@ The first time, right-click → **Open** to bypass Gatekeeper.
 The script automatically:
 1. Finds your conda installation (miniforge3, miniconda3, anaconda3, …)
 2. Activates the `cellmatchr` environment
-3. Launches the CellMatchr wizard from the correct directory
+3. Launches the CellMatchR wizard from the correct directory
 
-> The `.command` file must stay in the **CellMatchr root folder** (next to
+> The `.command` file must stay in the **CellMatchR root folder** (next to
 > `run_cellmatchr.py`) — you can create an alias / shortcut anywhere else.
 
 ### Option B — terminal
@@ -126,7 +126,7 @@ cellmatchr
 
 ## Project files
 
-When you create or save a project, CellMatchr writes a
+When you create or save a project, CellMatchR writes a
 `cellmatchr_project.json` into the project output folder.  
 To re-open the project later, go to **Step 1 → Open Existing Project** and
 click **Browse…** to select that `.json` file.

@@ -154,7 +154,7 @@ class _ConflictDialog(tk.Toplevel):
 class CellMatchrLauncher:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("CellMatchr")
+        self.root.title("CellMatchR")
         self.root.configure(bg=BG)
         self.root.geometry("1150x800")
         self.root.minsize(900, 640)
@@ -271,7 +271,7 @@ class CellMatchrLauncher:
             tk.Frame(self.sidebar, bg=SIDEBAR, height=12).pack()
 
         # Title
-        tk.Label(self.sidebar, text="CellMatchr",
+        tk.Label(self.sidebar, text="CellMatchR",
                  bg=SIDEBAR, fg=ACCENT,
                  font=("Segoe UI", 18, "bold")).pack(pady=(0, 2))
         tk.Label(self.sidebar, text="confocal image pipeline",
@@ -672,7 +672,7 @@ class CellMatchrLauncher:
 
         tk.Label(
             self._pane_new,
-            text="CellMatchr creates:  VSI_Converted_TIFF/  •  Segmentation/  •  Validation/  •  Analysis/",
+            text="CellMatchR creates:  VSI_Converted_TIFF/  •  Segmentation/  •  Validation/  •  Analysis/",
             bg=CARD, fg=MUTED, font=("Segoe UI", 8),
         ).pack(anchor="w", pady=(6, 0))
 
@@ -1698,7 +1698,7 @@ class CellMatchrLauncher:
                      "  • .roi  — Fiji/ImageJ ROI file (polygon drawn at full image resolution)\n"
                      "  • .tif  — binary mask TIF (same pixel dimensions as the original image)\n\n"
                      "Naming rule: each file must contain the full original image filename "
-                     "somewhere in its name so CellMatchr can match them.\n"
+                     "somewhere in its name so CellMatchR can match them.\n"
                      "Example:  original = 'MouseA_slice3.tif'  →  "
                      "mask = 'MouseA_slice3_roi.roi'  or  'MouseA_slice3_mask.tif'",
                 bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",

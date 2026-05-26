@@ -1042,7 +1042,7 @@ def main():
     def _excepthook(exc_type, exc_value, exc_tb):
         msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
         print(msg, flush=True)
-        _show_error_dialog("CellMatchr VSI Converter — Unhandled Error", msg)
+        _show_error_dialog("CellMatchR VSI Converter — Unhandled Error", msg)
 
     sys.excepthook = _excepthook
 
@@ -1097,7 +1097,7 @@ def main():
             debug("Fatal error while processing VSI:")
             msg = traceback.format_exc()
             print(msg, flush=True)
-            _show_error_dialog("CellMatchr VSI Converter — Error", msg)
+            _show_error_dialog("CellMatchR VSI Converter — Error", msg)
             QTimer.singleShot(0, pick_next)
 
     # Make sure a Qt app exists (needed in VS Code interactive sometimes)
@@ -1129,7 +1129,7 @@ def _apply_config(config_path: str) -> None:
 
 if __name__ == "__main__":
     import argparse
-    _parser = argparse.ArgumentParser(description="CellMatchr VSI Converter")
+    _parser = argparse.ArgumentParser(description="CellMatchR VSI Converter")
     _parser.add_argument(
         "--config",
         default=os.path.expanduser("~/.cellmatchr/config.json"),

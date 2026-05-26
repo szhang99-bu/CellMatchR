@@ -985,6 +985,14 @@ class CellMatchrLauncher:
         )
         self._ch_next_btn.pack(side="left")
 
+        self._ch_load_btn = tk.Button(
+            nav_row, text="⟳  Load Preview",
+            command=self._trigger_ch_preview_load,
+            bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=10, pady=4,
+            state="normal" if (input_ok and _PIL) else "disabled",
+        )
+        self._ch_load_btn.pack(side="left", padx=(12, 0))
+
         self._ch_preview_img = tk.Label(ch_card, bg=CARD, cursor="hand2")
         self._ch_preview_img.pack(anchor="w", pady=(0, 6))
         self._ch_preview_img.bind("<Button-1>", lambda _: self._ch_toggle_current())
@@ -999,10 +1007,6 @@ class CellMatchrLauncher:
         if not _PIL:
             tk.Label(ch_card, text="Install Pillow (pip install Pillow) to enable channel preview.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w", pady=4)
-        elif input_ok:
-            tk.Label(ch_card, text="Loading preview…", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
-            threading.Thread(target=self._load_channel_previews,
-                             daemon=True).start()
 
         # ── Channels field ───────────────────────────────────────────
         model_card = self._card(parent, "Segmentation Settings")
@@ -1153,31 +1157,36 @@ class CellMatchrLauncher:
             print(f"\n[Preview] Loading: {fname}")
 
             if path.lower().endswith(".czi"):
-                # Use AICSImage so C and Z axes are always correctly separated.
-                # czifile.asarray() can conflate Z into C for some CZI files.
-                try:
-                    from aicsimageio import AICSImage
-                    print(f"[Preview] Reading CZI with AICSImage…")
-                    img = AICSImage(path)
-                    data = img.get_image_data("CZYX")   # (C, Z, Y, X)
-                    num_channels = data.shape[0]
-                    num_z = data.shape[1]
+                # Use czifile directly — AICSImage internally hits a tifffile
+                # version conflict (_TIFF.RESUNIT) with the pinned env versions.
+                from czifile import CziFile
+                print(f"[Preview] Reading CZI…")
+                with CziFile(path) as czi:
+                    data = czi.asarray()
+                    axes = czi.axes
+                    c_axis = axes.find("C")
+                    z_axis = axes.find("Z")
+                print(f"[Preview] CZI axes: {axes}, shape: {data.shape}")
+                if c_axis == -1:
+                    data_sq = np.squeeze(data)
+                    while data_sq.ndim > 2:
+                        data_sq = np.max(data_sq, axis=0)
+                    channels_np = [data_sq]
+                    print(f"[Preview] No C axis — treated as single channel after MIP")
+                else:
+                    num_channels = data.shape[c_axis]
+                    num_z = data.shape[z_axis] if z_axis != -1 else 1
                     print(f"[Preview] Channels: {num_channels}, Z-slices: {num_z}")
                     if num_z > 1:
                         print(f"[Preview] Z-stack — applying max intensity projection per channel")
                     channels_np = []
                     for c in range(num_channels):
-                        ch = data[c]                            # (Z, Y, X)
-                        ch2d = np.max(ch, axis=0) if num_z > 1 else ch[0]
-                        channels_np.append(ch2d)
-                        print(f"[Preview]   Channel {c}: shape={ch2d.shape}")
-                except ImportError:
-                    print("[Preview] aicsimageio not available — falling back to czifile")
-                    import czifile
-                    with czifile.CziFile(path) as f:
-                        data = f.asarray().squeeze()
-                    data = np.squeeze(data)
-                    channels_np = [data] if data.ndim == 2 else [data[c] for c in range(min(data.shape[0], 12))]
+                        ch = np.take(data, c, axis=c_axis)
+                        ch = np.squeeze(ch)
+                        while ch.ndim > 2:          # MIP over Z and any remaining dims
+                            ch = np.max(ch, axis=0)
+                        channels_np.append(ch)
+                        print(f"[Preview]   Channel {c}: shape={ch.shape}")
             else:
                 import tifffile as _tf
                 with _tf.TiffFile(path) as tif:
@@ -1237,12 +1246,24 @@ class CellMatchrLauncher:
             print(f"[Preview] Error: {exc}")
             self.root.after(0, callback, [], f"Preview error: {exc}")
 
+    def _trigger_ch_preview_load(self) -> None:
+        """Button handler for Step 3 — load channel preview in background."""
+        if hasattr(self, "_ch_load_btn") and self._ch_load_btn:
+            self._ch_load_btn.config(state="disabled", text="  Loading…")
+        self._ch_lbl.config(text="Loading…", fg=ACCENT)
+        threading.Thread(target=self._load_channel_previews, daemon=True).start()
+
     def _set_channel_previews(self, photos: list, fname: str = "") -> None:
         self._ch_images = photos
         self._ch_photo_refs = photos  # keep refs alive
         self._ch_index = 0
+        if hasattr(self, "_ch_load_btn") and self._ch_load_btn:
+            try:
+                self._ch_load_btn.config(state="normal", text="⟳  Load Preview")
+            except tk.TclError:
+                pass
         if not photos:
-            self._ch_lbl.config(text=fname or "No preview available")
+            self._ch_lbl.config(text=fname or "No preview available", fg=MUTED)
             return
         self._show_channel(0)
         # Restore any previously selected channels from the text field

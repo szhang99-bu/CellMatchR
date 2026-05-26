@@ -70,6 +70,10 @@ MAX_MAJOR_MINOR_RATIO = 15.0
 # Mean intensity filter only
 RAW_MEAN_MIN = 5000
 
+# Per-channel filter overrides (populated from config)
+PER_CHANNEL_FILTERS_ENABLED = False
+PER_CHANNEL_FILTERS = {}   # {channel_int: {"min_size", "max_size", "max_ratio", "min_intensity"}}
+
 # Skip basically empty tiles
 SKIP_EMPTY_TILES = True
 BRIGHT_PIXEL_THRESHOLD = 4000
@@ -1262,6 +1266,19 @@ def main():
                     print(f"  [SKIP] Channel {ch_to_predict} not found.")
                     continue
 
+                # Apply per-channel filter overrides if configured
+                _saved_filters = (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
+                                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN)
+                if PER_CHANNEL_FILTERS_ENABLED and ch_to_predict in PER_CHANNEL_FILTERS:
+                    pcf = PER_CHANNEL_FILTERS[ch_to_predict]
+                    MIN_OBJECT_SIZE      = int(pcf.get("min_size",     MIN_OBJECT_SIZE))
+                    MAX_OBJECT_SIZE      = int(pcf.get("max_size",     MAX_OBJECT_SIZE))
+                    MAX_MAJOR_MINOR_RATIO = float(pcf.get("max_ratio", MAX_MAJOR_MINOR_RATIO))
+                    RAW_MEAN_MIN         = float(pcf.get("min_intensity", RAW_MEAN_MIN))
+                    print(f"  Per-channel filters ch{ch_to_predict}: "
+                          f"min={MIN_OBJECT_SIZE}, max={MAX_OBJECT_SIZE}, "
+                          f"ratio={MAX_MAJOR_MINOR_RATIO}, intensity={RAW_MEAN_MIN}")
+
                 print(f"\n  - Predicting on Channel {ch_to_predict}...")
 
                 tiff_path = split_tiff_paths[ch_to_predict]
@@ -1328,6 +1345,10 @@ def main():
                         downsample=FINAL_QC_DOWNSAMPLE
                     )
 
+                # Restore global filter values for the next channel
+                (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
+                 MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN) = _saved_filters
+
         except Exception as e:
             print(f"  [ERROR] Failed: {e}")
             import traceback
@@ -1345,6 +1366,7 @@ def _apply_config(config_path: str) -> None:
     global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN
     global TILE_SHAPE_2D, HALO_2D, FINAL_QC_DOWNSAMPLE
     global DRY_RUN, TEST_RUN, SKIP_SUBDIRS
+    global PER_CHANNEL_FILTERS_ENABLED, PER_CHANNEL_FILTERS
 
     with open(config_path) as f:
         cfg = json.load(f)
@@ -1394,6 +1416,15 @@ def _apply_config(config_path: str) -> None:
         TEST_RUN = bool(cfg["seg_test_run"])
     if cfg.get("seg_skip_subdirs") is not None:
         SKIP_SUBDIRS = bool(cfg["seg_skip_subdirs"])
+
+    PER_CHANNEL_FILTERS_ENABLED = bool(cfg.get("seg_per_channel_filters_enabled", False))
+    raw_pcf = cfg.get("seg_per_channel_filters", "{}")
+    if PER_CHANNEL_FILTERS_ENABLED and raw_pcf:
+        try:
+            parsed = json.loads(raw_pcf)
+            PER_CHANNEL_FILTERS = {int(k): v for k, v in parsed.items()}
+        except Exception:
+            PER_CHANNEL_FILTERS = {}
 
 
 if __name__ == "__main__":

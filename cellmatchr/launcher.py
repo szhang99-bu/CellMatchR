@@ -994,8 +994,11 @@ class CellMatchrLauncher:
         self._ch_load_btn.pack(side="left", padx=(12, 0))
 
         self._ch_preview_img = tk.Label(ch_card, bg=CARD, cursor="hand2")
-        self._ch_preview_img.pack(anchor="w", pady=(0, 6))
+        self._ch_preview_img.pack(anchor="w", pady=(0, 4))
         self._ch_preview_img.bind("<Button-1>", lambda _: self._ch_toggle_current())
+
+        self._ch_load_progress = ttk.Progressbar(ch_card, mode="indeterminate", length=380)
+        # Hidden by default — shown only while loading
 
         self._ch_field_lbl = tk.Label(
             ch_card,
@@ -1074,6 +1077,27 @@ class CellMatchrLauncher:
             tk.Label(filt_grid, text=hint, bg=CARD, fg=MUTED, font=FONT).grid(
                 row=row_i, column=2, sticky="w", pady=3)
 
+        # ── Per-channel filter overrides ──────────────────────────────
+        self._per_ch_filt_enabled = tk.BooleanVar(
+            value=bool(self.config.get("seg_per_channel_filters_enabled", False))
+        )
+        tk.Checkbutton(
+            filt_card,
+            text="Set individual filter thresholds per channel",
+            variable=self._per_ch_filt_enabled,
+            command=self._toggle_per_ch_filters,
+            bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
+        ).pack(anchor="w", pady=(12, 2))
+        self._per_ch_filt_frame = tk.Frame(filt_card, bg=CARD)
+        self._per_ch_filter_vars: dict = {}
+        # Rebuild rows whenever the channel list changes
+        self._vars["seg_channels"].trace_add(
+            "write", lambda *_: self._rebuild_per_ch_filter_rows()
+        )
+        if self._per_ch_filt_enabled.get():
+            self._per_ch_filt_frame.pack(fill="x", padx=(20, 0), pady=(0, 4))
+            self._rebuild_per_ch_filter_rows()
+
         self._form_grid(self._card(parent, "Tiling"), [
             ("Tile height (px):",             "seg_tile_h"),
             ("Tile width (px):",              "seg_tile_w"),
@@ -1121,6 +1145,79 @@ class CellMatchrLauncher:
             state="disabled",
         )
         self._seg_log.pack(fill="x", pady=(4, 0))
+
+    # ------------------------------------------------------------------
+    # Per-channel filter helpers
+    # ------------------------------------------------------------------
+
+    def _toggle_per_ch_filters(self) -> None:
+        if self._per_ch_filt_enabled.get():
+            self._per_ch_filt_frame.pack(fill="x", padx=(20, 0), pady=(0, 4))
+            self._rebuild_per_ch_filter_rows()
+        else:
+            self._per_ch_filt_frame.pack_forget()
+        self._save_per_ch_filter_config()
+
+    def _rebuild_per_ch_filter_rows(self) -> None:
+        if not hasattr(self, "_per_ch_filt_frame") or not self._per_ch_filt_enabled.get():
+            return
+        for w in self._per_ch_filt_frame.winfo_children():
+            w.destroy()
+        self._per_ch_filter_vars = {}
+
+        channels = [
+            int(x.strip())
+            for x in self._vars["seg_channels"].get().split(",")
+            if x.strip().isdigit()
+        ]
+        if not channels:
+            tk.Label(self._per_ch_filt_frame, text="No channels configured yet.",
+                     bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
+            return
+
+        import json as _json
+        try:
+            existing = _json.loads(self.config.get("seg_per_channel_filters", "{}") or "{}")
+        except Exception:
+            existing = {}
+
+        # Header
+        hdr = tk.Frame(self._per_ch_filt_frame, bg=CARD)
+        hdr.pack(fill="x", pady=(2, 4))
+        for col, text in enumerate(["", "Min size", "Max size", "Max ratio", "Min intensity"]):
+            tk.Label(hdr, text=text, bg=CARD, fg=MUTED, font=FONT,
+                     width=8 if col > 0 else 7, anchor="w").grid(row=0, column=col, padx=4)
+
+        defaults = {
+            "min_size":     self._vars["seg_min_object_size"].get(),
+            "max_size":     self._vars["seg_max_object_size"].get(),
+            "max_ratio":    self._vars["seg_max_ratio"].get(),
+            "min_intensity":self._vars["seg_raw_mean_min"].get(),
+        }
+        for ch in channels:
+            ch_cfg = existing.get(str(ch), {})
+            row = tk.Frame(self._per_ch_filt_frame, bg=CARD)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=f"Ch {ch}:", bg=CARD, fg=FG, font=FONT_BOLD,
+                     width=7, anchor="w").pack(side="left", padx=(0, 4))
+            ch_vars = {}
+            for key in ("min_size", "max_size", "max_ratio", "min_intensity"):
+                var = tk.StringVar(value=str(ch_cfg.get(key, defaults[key])))
+                var.trace_add("write", lambda *_, c=ch: self._save_per_ch_filter_config())
+                tk.Entry(row, textvariable=var, bg=BG, fg=FG,
+                         insertbackground=FG, relief="flat", font=FONT, width=9).pack(side="left", padx=4)
+                ch_vars[key] = var
+            self._per_ch_filter_vars[ch] = ch_vars
+
+    def _save_per_ch_filter_config(self) -> None:
+        import json as _json
+        data = {
+            str(ch): {k: v.get() for k, v in ch_vars.items()}
+            for ch, ch_vars in self._per_ch_filter_vars.items()
+        }
+        self.config["seg_per_channel_filters"] = _json.dumps(data)
+        self.config["seg_per_channel_filters_enabled"] = self._per_ch_filt_enabled.get()
+        save_config(self.config)
 
     # ------------------------------------------------------------------
     # Segmentation channel preview helpers
@@ -1251,6 +1348,9 @@ class CellMatchrLauncher:
         if hasattr(self, "_ch_load_btn") and self._ch_load_btn:
             self._ch_load_btn.config(state="disabled", text="  Loading…")
         self._ch_lbl.config(text="Loading…", fg=ACCENT)
+        if hasattr(self, "_ch_load_progress"):
+            self._ch_load_progress.pack(anchor="w", pady=(0, 6))
+            self._ch_load_progress.start(12)
         threading.Thread(target=self._load_channel_previews, daemon=True).start()
 
     def _set_channel_previews(self, photos: list, fname: str = "") -> None:
@@ -1260,6 +1360,12 @@ class CellMatchrLauncher:
         if hasattr(self, "_ch_load_btn") and self._ch_load_btn:
             try:
                 self._ch_load_btn.config(state="normal", text="⟳  Load Preview")
+            except tk.TclError:
+                pass
+        if hasattr(self, "_ch_load_progress"):
+            try:
+                self._ch_load_progress.stop()
+                self._ch_load_progress.pack_forget()
             except tk.TclError:
                 pass
         if not photos:

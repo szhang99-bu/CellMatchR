@@ -1068,12 +1068,16 @@ class CellMatchrLauncher:
             ("Max major / minor axis ratio:", "seg_max_ratio",       "e.g. 15"),
             ("Min mean raw intensity:",       "seg_raw_mean_min",    "e.g. 5000"),
         ]
+        self._global_filt_entries = []
+        self._global_filt_labels  = []
         for row_i, (lbl, key, hint) in enumerate(_filt_rows):
-            tk.Label(filt_grid, text=lbl, bg=CARD, fg=FG, font=FONT).grid(
-                row=row_i, column=0, sticky="w", pady=3)
-            tk.Entry(filt_grid, textvariable=self._vars[key], bg=BG, fg=FG,
-                     insertbackground=FG, relief="flat", font=FONT, width=12).grid(
-                row=row_i, column=1, sticky="w", pady=3, padx=8)
+            lbl_w = tk.Label(filt_grid, text=lbl, bg=CARD, fg=FG, font=FONT)
+            lbl_w.grid(row=row_i, column=0, sticky="w", pady=3)
+            self._global_filt_labels.append(lbl_w)
+            ent = tk.Entry(filt_grid, textvariable=self._vars[key], bg=BG, fg=FG,
+                           insertbackground=FG, relief="flat", font=FONT, width=12)
+            ent.grid(row=row_i, column=1, sticky="w", pady=3, padx=8)
+            self._global_filt_entries.append(ent)
             tk.Label(filt_grid, text=hint, bg=CARD, fg=MUTED, font=FONT).grid(
                 row=row_i, column=2, sticky="w", pady=3)
 
@@ -1151,7 +1155,14 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
 
     def _toggle_per_ch_filters(self) -> None:
-        if self._per_ch_filt_enabled.get():
+        enabled = self._per_ch_filt_enabled.get()
+        for ent in getattr(self, "_global_filt_entries", []):
+            ent.config(state="disabled" if enabled else "normal",
+                       fg=MUTED if enabled else FG,
+                       disabledforeground=MUTED)
+        for lbl in getattr(self, "_global_filt_labels", []):
+            lbl.config(fg=MUTED if enabled else FG)
+        if enabled:
             self._per_ch_filt_frame.pack(fill="x", padx=(20, 0), pady=(0, 4))
             self._rebuild_per_ch_filter_rows()
         else:

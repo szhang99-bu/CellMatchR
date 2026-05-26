@@ -5,7 +5,6 @@ from czifile import CziFile
 import numpy as np
 import tifffile
 from tifffile import imwrite
-from aicsimageio import AICSImage
 from tqdm import tqdm
 import cv2
 
@@ -974,22 +973,33 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name):
     split_tiff_paths = {}
 
     if file_path.lower().endswith(".czi"):
-        # AICSImage correctly separates the C and Z axes for all CZI variants.
-        # czifile.asarray() can conflate Z into C for some acquisition modes,
-        # producing e.g. 12 "channels" for 3 ch × 4 Z — AICSImage avoids this.
-        img = AICSImage(file_path)
-        data = img.get_image_data("CZYX")   # always (C, Z, Y, X)
-        num_channels = data.shape[0]
-        num_z        = data.shape[1]
+        with CziFile(file_path) as czi:
+            data = czi.asarray()
+            axes = czi.axes
+            c_axis = axes.find("C")
+            z_axis = axes.find("Z")
 
-        print(f"    CZI — channels: {num_channels}, Z-slices: {num_z}")
-        if num_z > 1:
-            print(f"    Z-stack detected — applying max intensity projection per channel")
+        print(f"    CZI axes: {axes}, shape: {data.shape}")
 
-        for ch_index in range(num_channels):
-            ch = data[ch_index]                            # (Z, Y, X)
-            channel_data = (np.max(ch, axis=0) if num_z > 1 else ch[0]).astype(np.uint16)
-            _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_tiff_paths)
+        if c_axis == -1:
+            # No explicit C axis — treat whole array as single channel after MIP
+            ch = np.squeeze(data)
+            while ch.ndim > 2:
+                ch = np.max(ch, axis=0)
+            print(f"    No C axis — single channel after MIP: shape={ch.shape}")
+            _save_split_tiff(ch.astype(np.uint16), 0, output_subfolder, base_name, split_tiff_paths)
+        else:
+            num_channels = data.shape[c_axis]
+            num_z = data.shape[z_axis] if z_axis != -1 else 1
+            print(f"    Channels: {num_channels}, Z-slices: {num_z}")
+            if num_z > 1:
+                print(f"    Z-stack detected — applying max intensity projection per channel")
+            for ch_index in range(num_channels):
+                ch = np.take(data, ch_index, axis=c_axis)
+                ch = np.squeeze(ch)
+                while ch.ndim > 2:      # MIP over Z and any remaining singleton dims
+                    ch = np.max(ch, axis=0)
+                _save_split_tiff(ch.astype(np.uint16), ch_index, output_subfolder, base_name, split_tiff_paths)
 
     elif file_path.lower().endswith((".tif", ".tiff")):
         with tifffile.TiffFile(file_path) as tif:

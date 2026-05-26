@@ -5,6 +5,7 @@ from czifile import CziFile
 import numpy as np
 import tifffile
 from tifffile import imwrite
+from aicsimageio import AICSImage
 from tqdm import tqdm
 import cv2
 
@@ -940,154 +941,125 @@ def find_input_files(root_folder):
     return input_paths
 
 
+def _mip(arr):
+    """Max-intensity-project all leading non-spatial axes until the array is 2D (Y, X)."""
+    while arr.ndim > 2:
+        arr = np.max(arr, axis=0)
+    return arr
+
+
+def _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_tiff_paths):
+    """Write one 2D channel array and record the path."""
+    print(
+        f"    Channel {ch_index}: shape={channel_data.shape}, "
+        f"dtype={channel_data.dtype}, "
+        f"min={channel_data.min()}, max={channel_data.max()}, "
+        f"size_MB={channel_data.nbytes / 1024**2:.1f}"
+    )
+    tiff_path = os.path.join(output_subfolder, f"{base_name}_split_ch{ch_index}.tif")
+    imwrite(tiff_path, channel_data, photometric="minisblack", imagej=True)
+    split_tiff_paths[ch_index] = tiff_path
+
+
 def save_raw_split_tiffs(file_path, output_subfolder, base_name):
     """
-    Save raw split channels.
-    No whole-image CLAHE.
-    No full-image contrast enhancement.
+    Split a multi-channel (and optionally multi-Z) microscopy file into
+    one 2D TIFF per channel.  Z-stacks are collapsed via max intensity
+    projection (MIP) before saving — CellMatchR does not do 3D analysis.
     """
     split_tiff_paths = {}
 
     if file_path.lower().endswith(".czi"):
-        with CziFile(file_path) as czi:
-            data = czi.asarray()
-            c_axis = czi.axes.find("C")
+        # AICSImage correctly separates the C and Z axes for all CZI variants.
+        # czifile.asarray() can conflate Z into C for some acquisition modes,
+        # producing e.g. 12 "channels" for 3 ch × 4 Z — AICSImage avoids this.
+        img = AICSImage(file_path)
+        data = img.get_image_data("CZYX")   # always (C, Z, Y, X)
+        num_channels = data.shape[0]
+        num_z        = data.shape[1]
 
-            if c_axis == -1:
-                raise ValueError("Could not find channel axis in CZI.")
+        print(f"    CZI — channels: {num_channels}, Z-slices: {num_z}")
+        if num_z > 1:
+            print(f"    Z-stack detected — applying max intensity projection per channel")
 
-            num_channels = data.shape[c_axis]
-
-            print(f"    CZI axes: {czi.axes}")
-            print(f"    CZI shape: {data.shape}")
-            print(f"    Number of channels: {num_channels}")
-
-            for ch_index in range(num_channels):
-                channel_data = np.take(data, indices=ch_index, axis=c_axis)
-                channel_data = np.squeeze(channel_data)
-
-                if NDIM == 2 and channel_data.ndim == 3:
-                    channel_data = np.max(channel_data, axis=0)
-
-                channel_data = channel_data.astype(np.uint16)
-
-                print(
-                    f"    Channel {ch_index}: shape={channel_data.shape}, "
-                    f"dtype={channel_data.dtype}, "
-                    f"min={channel_data.min()}, max={channel_data.max()}, "
-                    f"size_MB={channel_data.nbytes / 1024**2:.1f}"
-                )
-
-                tiff_path = os.path.join(
-                    output_subfolder,
-                    f"{base_name}_split_ch{ch_index}.tif"
-                )
-
-                imwrite(
-                    tiff_path,
-                    channel_data,
-                    photometric="minisblack",
-                    imagej=True
-                )
-
-                split_tiff_paths[ch_index] = tiff_path
+        for ch_index in range(num_channels):
+            ch = data[ch_index]                            # (Z, Y, X)
+            channel_data = (np.max(ch, axis=0) if num_z > 1 else ch[0]).astype(np.uint16)
+            _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_tiff_paths)
 
     elif file_path.lower().endswith((".tif", ".tiff")):
-        data = tifffile.imread(file_path)
+        with tifffile.TiffFile(file_path) as tif:
+            data = tif.asarray()
+            axes_meta = (tif.series[0].axes if tif.series else "").upper()
 
-        print(f"    TIFF shape: {data.shape}")
-        print(f"    TIFF dtype: {data.dtype}")
-        print(f"    TIFF min/max: {data.min()} / {data.max()}")
+        print(f"    TIFF shape: {data.shape}, axes metadata: '{axes_meta or 'none'}'")
 
         if data.ndim == 2:
-            channel_data = data.astype(np.uint16)
-
-            print(
-                f"    Single-channel TIFF: shape={channel_data.shape}, "
-                f"dtype={channel_data.dtype}, "
-                f"min={channel_data.min()}, max={channel_data.max()}, "
-                f"size_MB={channel_data.nbytes / 1024**2:.1f}"
-            )
-
-            tiff_path = os.path.join(
-                output_subfolder,
-                f"{base_name}_split_ch0.tif"
-            )
-
-            imwrite(
-                tiff_path,
-                channel_data,
-                photometric="minisblack",
-                imagej=True
-            )
-
-            split_tiff_paths[0] = tiff_path
+            # (Y, X) — single channel, no Z
+            _save_split_tiff(data.astype(np.uint16), 0, output_subfolder, base_name, split_tiff_paths)
 
         elif data.ndim == 3:
-            if data.shape[0] <= 10:
-                print("    Interpreting TIFF as channel-first: C, Y, X")
-                num_channels = data.shape[0]
+            has_z = "Z" in axes_meta
+            has_c = "C" in axes_meta
 
+            if has_z and not has_c:
+                # (Z, Y, X) — single-channel Z-stack → MIP
+                print(f"    Single-channel Z-stack ({data.shape[0]} slices) — applying MIP")
+                _save_split_tiff(np.max(data, axis=0).astype(np.uint16), 0,
+                                 output_subfolder, base_name, split_tiff_paths)
+
+            elif has_c:
+                # Metadata tells us where C is
+                c_pos = axes_meta.find("C")
+                num_channels = data.shape[c_pos]
+                print(f"    Multi-channel TIFF ({num_channels} channels, axis {c_pos})")
                 for ch_index in range(num_channels):
-                    channel_data = data[ch_index].astype(np.uint16)
+                    cd = np.take(data, ch_index, axis=c_pos).astype(np.uint16)
+                    _save_split_tiff(cd, ch_index, output_subfolder, base_name, split_tiff_paths)
 
-                    print(
-                        f"    Channel {ch_index}: shape={channel_data.shape}, "
-                        f"dtype={channel_data.dtype}, "
-                        f"min={channel_data.min()}, max={channel_data.max()}, "
-                        f"size_MB={channel_data.nbytes / 1024**2:.1f}"
-                    )
-
-                    tiff_path = os.path.join(
-                        output_subfolder,
-                        f"{base_name}_split_ch{ch_index}.tif"
-                    )
-
-                    imwrite(
-                        tiff_path,
-                        channel_data,
-                        photometric="minisblack",
-                        imagej=True
-                    )
-
-                    split_tiff_paths[ch_index] = tiff_path
+            elif data.shape[0] <= 10:
+                # No metadata: small first dim → treat as channels (C, Y, X)
+                print(f"    Interpreting as channel-first: C={data.shape[0]}, Y, X")
+                for ch_index in range(data.shape[0]):
+                    _save_split_tiff(data[ch_index].astype(np.uint16), ch_index,
+                                     output_subfolder, base_name, split_tiff_paths)
 
             elif data.shape[-1] <= 10:
-                print("    Interpreting TIFF as channel-last: Y, X, C")
-                num_channels = data.shape[-1]
-
-                for ch_index in range(num_channels):
-                    channel_data = data[..., ch_index].astype(np.uint16)
-
-                    print(
-                        f"    Channel {ch_index}: shape={channel_data.shape}, "
-                        f"dtype={channel_data.dtype}, "
-                        f"min={channel_data.min()}, max={channel_data.max()}, "
-                        f"size_MB={channel_data.nbytes / 1024**2:.1f}"
-                    )
-
-                    tiff_path = os.path.join(
-                        output_subfolder,
-                        f"{base_name}_split_ch{ch_index}.tif"
-                    )
-
-                    imwrite(
-                        tiff_path,
-                        channel_data,
-                        photometric="minisblack",
-                        imagej=True
-                    )
-
-                    split_tiff_paths[ch_index] = tiff_path
+                # No metadata: small last dim → treat as channels (Y, X, C)
+                print(f"    Interpreting as channel-last: Y, X, C={data.shape[-1]}")
+                for ch_index in range(data.shape[-1]):
+                    _save_split_tiff(data[..., ch_index].astype(np.uint16), ch_index,
+                                     output_subfolder, base_name, split_tiff_paths)
 
             else:
-                raise ValueError(
-                    f"Unsupported 3D TIFF shape: {data.shape}. "
-                    "Cannot determine channel axis."
-                )
+                # Large first dim, no metadata → assume Z-stack, single channel
+                print(f"    Large first dim ({data.shape[0]}) — treating as Z-stack, applying MIP")
+                _save_split_tiff(np.max(data, axis=0).astype(np.uint16), 0,
+                                 output_subfolder, base_name, split_tiff_paths)
+
+        elif data.ndim == 4:
+            # Multi-channel Z-stack: determine C and Z positions
+            if "C" in axes_meta and "Z" in axes_meta:
+                c_pos = axes_meta.find("C")
+                z_pos = axes_meta.find("Z")
+            else:
+                # Heuristic: smaller of first two dims = C, larger = Z
+                c_pos, z_pos = (0, 1) if data.shape[0] <= data.shape[1] else (1, 0)
+
+            num_channels = data.shape[c_pos]
+            num_z        = data.shape[z_pos]
+            print(f"    4D TIFF — {num_channels} channels, {num_z} Z-slices — applying MIP per channel")
+
+            for ch_index in range(num_channels):
+                ch = np.take(data, ch_index, axis=c_pos)   # (Z, Y, X) or similar
+                channel_data = _mip(ch).astype(np.uint16)
+                _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_tiff_paths)
 
         else:
-            raise ValueError(f"Unsupported TIFF shape: {data.shape}")
+            raise ValueError(
+                f"Unsupported image shape: {data.shape} (ndim={data.ndim}). "
+                "Expected 2D, 3D, or 4D array."
+            )
 
     return split_tiff_paths
 

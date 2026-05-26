@@ -1212,6 +1212,7 @@ def _patch_decoder_checkpoints(model_type: str) -> None:
 # =============================================================================
 
 def main():
+    global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN
     is_dry_run = DRY_RUN and not TEST_RUN
 
     all_files = find_input_files(ROOT_INPUT_FOLDER)

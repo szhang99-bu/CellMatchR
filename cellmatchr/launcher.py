@@ -271,10 +271,17 @@ class CellMatchrLauncher:
         else:
             tk.Frame(self.sidebar, bg=SIDEBAR, height=12).pack()
 
-        # Title
-        tk.Label(self.sidebar, text="CellMatchR",
-                 bg=SIDEBAR, fg=ACCENT,
-                 font=("Segoe UI", 18, "bold")).pack(pady=(0, 2))
+        # Title — two-tone seamless text via Canvas
+        _fnt_title = ("Segoe UI", 18, "bold")
+        _title_cv = tk.Canvas(self.sidebar, bg=SIDEBAR,
+                               highlightthickness=0, bd=0,
+                               width=160, height=28)
+        _t1 = _title_cv.create_text(0, 0, text="Cell",   fill=ACCENT, font=_fnt_title, anchor="nw")
+        _b1 = _title_cv.bbox(_t1)
+        _t2 = _title_cv.create_text(_b1[2], 0, text="MatchR", fill=GREEN,  font=_fnt_title, anchor="nw")
+        _b2 = _title_cv.bbox(_t2)
+        _title_cv.config(width=_b2[2], height=max(_b1[3], _b2[3]))
+        _title_cv.pack(pady=(0, 2))
         tk.Label(self.sidebar, text="confocal image pipeline",
                  bg=SIDEBAR, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 16))
 
@@ -1810,6 +1817,11 @@ class CellMatchrLauncher:
             "Review predicted ROIs one by one and mark them YES / NO / MAYBE / ARTIFACT.",
         )
 
+        # ── Input source selector (which segmentation folder to validate) ──
+        _seg_variants = self._find_variants(SUBFOLDER["seg"])
+        _default_seg  = _seg_variants[-1] if _seg_variants else SUBFOLDER["seg"]
+        self._val_input_var = tk.StringVar(value=_default_seg)
+
         toggle_card = self._card(parent, "Enable")
         tk.Checkbutton(
             toggle_card,
@@ -1823,6 +1835,49 @@ class CellMatchrLauncher:
             text="Opens its own window. Results are saved as TSV next to the predictions.",
             bg=CARD, fg=MUTED, font=FONT, wraplength=640,
         ).pack(anchor="w", pady=(4, 0))
+
+        ttk.Separator(toggle_card, orient="horizontal").pack(fill="x", pady=(8, 6))
+        tk.Label(toggle_card, text="Segmentation Input:", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 2))
+        _val_input_cur_lbl = tk.Label(
+            toggle_card, text=f"Using:  {_default_seg}",
+            bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
+        )
+        _val_input_cur_lbl.pack(anchor="w", pady=(0, 4))
+
+        if len(_seg_variants) > 1:
+            _val_input_ovr_frame = tk.Frame(toggle_card, bg=CARD)
+            _val_ovr_lbl = tk.Label(
+                toggle_card,
+                text="▶  Use a different segmentation output",
+                bg=CARD, fg=MUTED,
+                font=(FONT[0], FONT[1], "underline"), cursor="hand2",
+            )
+            _val_ovr_lbl.pack(anchor="w")
+
+            _cb_val_src = ttk.Combobox(
+                _val_input_ovr_frame, textvariable=self._val_input_var,
+                values=_seg_variants, state="readonly", width=44,
+            )
+            _cb_val_src.pack(side="left", pady=(4, 0))
+            self._bind_combobox_scroll(_cb_val_src)
+
+            def _val_src_changed(*_):
+                _val_input_cur_lbl.config(text=f"Using:  {self._val_input_var.get()}")
+                self._build_val_ch_name_rows(self._detect_all_channel_labels())
+            self._val_input_var.trace_add("write", _val_src_changed)
+
+            def _toggle_val_ovr(lbl=_val_ovr_lbl):
+                if _val_input_ovr_frame.winfo_ismapped():
+                    _val_input_ovr_frame.pack_forget()
+                    lbl.config(text="▶  Use a different segmentation output")
+                else:
+                    _val_input_ovr_frame.pack(fill="x", pady=(0, 4))
+                    lbl.config(text="▼  Use a different segmentation output")
+            _val_ovr_lbl.bind("<Button-1>", lambda _: _toggle_val_ovr())
+        elif not _seg_variants:
+            tk.Label(toggle_card,
+                     text="⚠  No segmentation output found yet — run Step 3 first.",
+                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
         # ── Channel dropdown (derived from seg_channels) ─────────────
         cfg_card = self._card(parent, "Channel to Validate")
@@ -1856,52 +1911,6 @@ class CellMatchrLauncher:
                 bg=CARD, fg=YELLOW, font=FONT, wraplength=660,
             ).pack(anchor="w")
             self._val_channel_var = None
-
-        # ── Input source selector (which segmentation folder to validate) ──
-        _seg_variants = self._find_variants(SUBFOLDER["seg"])
-        _default_seg  = _seg_variants[-1] if _seg_variants else SUBFOLDER["seg"]
-        self._val_input_var = tk.StringVar(value=_default_seg)
-
-        input_card = self._card(parent, "Segmentation Input")
-        _val_input_cur_lbl = tk.Label(
-            input_card, text=f"Using:  {_default_seg}",
-            bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
-        )
-        _val_input_cur_lbl.pack(anchor="w", pady=(0, 4))
-
-        if len(_seg_variants) > 1:
-            _val_input_ovr_frame = tk.Frame(input_card, bg=CARD)
-            _val_ovr_lbl = tk.Label(
-                input_card,
-                text="▶  Use a different segmentation output",
-                bg=CARD, fg=MUTED,
-                font=(FONT[0], FONT[1], "underline"), cursor="hand2",
-            )
-            _val_ovr_lbl.pack(anchor="w")
-
-            _cb_val_src = ttk.Combobox(
-                _val_input_ovr_frame, textvariable=self._val_input_var,
-                values=_seg_variants, state="readonly", width=44,
-            )
-            _cb_val_src.pack(side="left", pady=(4, 0))
-            self._bind_combobox_scroll(_cb_val_src)
-
-            def _val_src_changed(*_):
-                _val_input_cur_lbl.config(text=f"Using:  {self._val_input_var.get()}")
-            self._val_input_var.trace_add("write", _val_src_changed)
-
-            def _toggle_val_ovr(lbl=_val_ovr_lbl):
-                if _val_input_ovr_frame.winfo_ismapped():
-                    _val_input_ovr_frame.pack_forget()
-                    lbl.config(text="▶  Use a different segmentation output")
-                else:
-                    _val_input_ovr_frame.pack(fill="x", pady=(0, 4))
-                    lbl.config(text="▼  Use a different segmentation output")
-            _val_ovr_lbl.bind("<Button-1>", lambda _: _toggle_val_ovr())
-        elif not _seg_variants:
-            tk.Label(input_card,
-                     text="⚠  No segmentation output found yet — run Step 3 first.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
         # ── Channel display names (all channels) ─────────────────────
         names_card = self._card(parent, "Channel Display Names")
@@ -2011,6 +2020,10 @@ class CellMatchrLauncher:
         )
 
         # ── Enable toggle ────────────────────────────────────────────
+        _a_seg_variants = self._find_variants(SUBFOLDER["seg"])
+        _a_default_seg  = _a_seg_variants[-1] if _a_seg_variants else SUBFOLDER["seg"]
+        self._ana_input_var = tk.StringVar(value=_a_default_seg)
+
         toggle_card = self._card(parent, "Enable")
         tk.Checkbutton(
             toggle_card, text="Include analysis step",
@@ -2019,22 +2032,18 @@ class CellMatchrLauncher:
             activebackground=CARD, font=FONT_BOLD,
         ).pack(anchor="w")
 
-        # ── Input source selector ────────────────────────────────────
-        _a_seg_variants = self._find_variants(SUBFOLDER["seg"])
-        _a_default_seg  = _a_seg_variants[-1] if _a_seg_variants else SUBFOLDER["seg"]
-        self._ana_input_var = tk.StringVar(value=_a_default_seg)
-
-        ana_input_card = self._card(parent, "Segmentation Input")
+        ttk.Separator(toggle_card, orient="horizontal").pack(fill="x", pady=(8, 6))
+        tk.Label(toggle_card, text="Segmentation Input:", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 2))
         _ana_input_cur_lbl = tk.Label(
-            ana_input_card, text=f"Using:  {_a_default_seg}",
+            toggle_card, text=f"Using:  {_a_default_seg}",
             bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
         )
         _ana_input_cur_lbl.pack(anchor="w", pady=(0, 4))
 
         if len(_a_seg_variants) > 1:
-            _ana_input_ovr_frame = tk.Frame(ana_input_card, bg=CARD)
+            _ana_input_ovr_frame = tk.Frame(toggle_card, bg=CARD)
             _ana_ovr_lbl = tk.Label(
-                ana_input_card,
+                toggle_card,
                 text="▶  Use a different segmentation output",
                 bg=CARD, fg=MUTED,
                 font=(FONT[0], FONT[1], "underline"), cursor="hand2",
@@ -2061,7 +2070,7 @@ class CellMatchrLauncher:
                     lbl.config(text="▼  Use a different segmentation output")
             _ana_ovr_lbl.bind("<Button-1>", lambda _: _toggle_ana_ovr())
         elif not _a_seg_variants:
-            tk.Label(ana_input_card,
+            tk.Label(toggle_card,
                      text="⚠  No segmentation output found yet — run Step 3 first.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 

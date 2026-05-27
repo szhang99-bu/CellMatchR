@@ -481,8 +481,55 @@ def thicken_boundary(binary_boundary, thickness_px=3):
     return thick > 0
 
 
+def _save_qc_png_with_legend(rgb, png_path, coi_ch=None, pm_ch=None,
+                             has_roi=False):
+    """Save the QC overlay as a PNG with a colour legend using matplotlib."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")   # non-interactive backend — safe for subprocess
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+
+        coi_label = f"Channel {coi_ch}" if coi_ch is not None else "COI channel"
+        pm_label  = f"Channel {pm_ch}"  if pm_ch  is not None else "PM channel"
+
+        fig, ax = plt.subplots(figsize=(14, 10))
+        ax.imshow(rgb)
+        ax.axis("off")
+
+        patches = [
+            mpatches.Patch(color=(1.0, 0.0, 0.0),
+                           label=f"Red — {coi_label} (cell of interest)"),
+            mpatches.Patch(color=(0.0, 1.0, 1.0),
+                           label=f"Cyan — {pm_label} (protein marker)"),
+            mpatches.Patch(color=(0.0, 1.0, 0.0),
+                           label=f"Green — colocalized {coi_label} & {pm_label}"),
+        ]
+        if has_roi:
+            patches.append(mpatches.Patch(color=(1.0, 1.0, 0.0),
+                                          label="Yellow — ROI boundary"))
+
+        legend = ax.legend(
+            handles=patches,
+            loc="lower right",
+            fontsize=9,
+            framealpha=0.75,
+            facecolor="#111111",
+            labelcolor="white",
+            edgecolor="none",
+        )
+        fig.tight_layout(pad=0.2)
+        fig.savefig(png_path, dpi=150, bbox_inches="tight",
+                    facecolor=fig.get_facecolor())
+        plt.close(fig)
+        print(f"  QC PNG saved: {os.path.basename(png_path)}")
+    except Exception as exc:
+        print(f"  [WARNING] Could not save QC PNG with legend: {exc}")
+
+
 def make_qc_overlay(raw_coi, raw_pm, coi_labels, pm_labels,
-                    roi_mask, matched_coi_labels, matched_pm_labels, output_path):
+                    roi_mask, matched_coi_labels, matched_pm_labels,
+                    output_path, coi_ch=None, pm_ch=None):
     """
     RGB QC overlay:
     - grayscale base = max-projection blend of COI / PM raw images
@@ -490,6 +537,8 @@ def make_qc_overlay(raw_coi, raw_pm, coi_labels, pm_labels,
     - PM object boundaries = cyan
     - matched COI/PM object boundaries = green
     - ROI boundary = thick yellow
+
+    Saves as both TIFF (lossless) and PNG (with colour legend).
     """
     coi_u8 = robust_uint8(raw_coi)
     pm_u8  = robust_uint8(raw_pm)
@@ -525,7 +574,13 @@ def make_qc_overlay(raw_coi, raw_pm, coi_labels, pm_labels,
         rgb[roi_boundary, 1] = 255
         rgb[roi_boundary, 2] = 0
 
+    # Save lossless TIFF
     tifffile.imwrite(output_path, rgb)
+
+    # Save PNG with colour legend
+    png_path = os.path.splitext(output_path)[0] + ".png"
+    _save_qc_png_with_legend(rgb, png_path, coi_ch=coi_ch, pm_ch=pm_ch,
+                             has_roi=(roi_mask is not None))
 
 
 def make_roi_mask_preview(raw_img, roi_mask, output_path):
@@ -802,6 +857,7 @@ def analyze_project_folder(project_folder):
             matched_coi_labels=matched_coi_set,
             matched_pm_labels=matched_pm_set,
             output_path=os.path.join(analysis_folder, f"{p}_QC_overlay.tif"),
+            coi_ch=COI_CHANNEL, pm_ch=PM_CHANNEL,
         )
         if roi_mask is not None:
             make_roi_mask_preview(

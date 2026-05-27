@@ -380,6 +380,16 @@ class CellMatchrLauncher:
                 # macOS trackpad: delta ±1-5, yscrollincrement=20 → 20-100 px/event
                 self._canvas.yview_scroll(-event.delta, "units")
 
+    def _bind_combobox_scroll(self, cb: "ttk.Combobox") -> None:
+        """Prevent the combobox from cycling its value on mousewheel.
+        Instead, forward the event to the canvas scroll and swallow it."""
+        def _cb_scroll(event):
+            self._on_scroll(event)
+            return "break"
+        cb.bind("<MouseWheel>", _cb_scroll)
+        cb.bind("<Button-4>",   _cb_scroll)
+        cb.bind("<Button-5>",   _cb_scroll)
+
     def _show_step(self, idx: int) -> None:
         self._sync_vars_to_config()
         save_config(self.config)
@@ -1035,20 +1045,24 @@ class CellMatchrLauncher:
 
         tk.Label(g, text="Model type:", bg=CARD, fg=FG, font=FONT).grid(
             row=2, column=0, sticky="w", pady=3)
-        ttk.Combobox(
+        _cb_model = ttk.Combobox(
             g, textvariable=self._vars["seg_model_type"],
             values=["vit_b_lm", "vit_l_lm", "vit_h_lm", "vit_b", "vit_l", "vit_h"],
             state="readonly", width=18,
-        ).grid(row=2, column=1, sticky="w", pady=3, padx=8)
+        )
+        _cb_model.grid(row=2, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_model)
 
         tk.Label(g, text="Preprocessing mode:", bg=CARD, fg=FG, font=FONT).grid(
             row=3, column=0, sticky="w", pady=3)
-        ttk.Combobox(
+        _cb_prep = ttk.Combobox(
             g, textvariable=self._vars["seg_preprocess_mode"],
             values=["local_bg_subtract", "local_bg_subtract_mild",
                     "raw_percentile", "tile_clahe_mild", "tile_clahe"],
             state="readonly", width=24,
-        ).grid(row=3, column=1, sticky="w", pady=3, padx=8)
+        )
+        _cb_prep.grid(row=3, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_prep)
 
         filt_card = self._card(parent, "Object Filtering")
         tk.Label(
@@ -1420,6 +1434,74 @@ class CellMatchrLauncher:
         self._show_channel(idx)
 
     # ------------------------------------------------------------------
+    # Validation channel name / color grid
+    # ------------------------------------------------------------------
+
+    _VAL_COLOR_OPTIONS  = ["Blue", "Green", "Red", "Purple", "Cyan", "Yellow", "White"]
+    _VAL_COLOR_DEFAULTS = ["Blue", "Green", "Red", "Purple", "Cyan", "Yellow", "White"]
+
+    def _build_val_ch_name_rows(self, channel_labels: list) -> None:
+        """Populate the channel name/color entry grid inside _val_ch_names_frame.
+
+        channel_labels — list of strings like ["0","1","2"] used as display IDs.
+        Existing typed names/colors are preserved via the val_channel_names/_colors vars.
+        """
+        if not hasattr(self, "_val_ch_names_frame") or self._val_ch_names_frame is None:
+            return
+        for w in self._val_ch_names_frame.winfo_children():
+            w.destroy()
+        self._val_ch_name_vars  = []
+        self._val_ch_color_vars = []
+
+        n = len(channel_labels)
+        if n == 0:
+            tk.Label(self._val_ch_names_frame,
+                     text="Set channels in Step 3 — Segmentation to configure names.",
+                     bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
+            return
+
+        saved_names  = [s.strip() for s in
+                        self._vars["val_channel_names"].get().split(",")]
+        saved_colors = [s.strip() for s in
+                        self._vars["val_channel_colors"].get().split(",")]
+
+        g = tk.Frame(self._val_ch_names_frame, bg=CARD)
+        g.pack(fill="x")
+        g.grid_columnconfigure(0, minsize=100)
+        g.grid_columnconfigure(1, minsize=180)
+        g.grid_columnconfigure(2, minsize=20)
+        g.grid_columnconfigure(3, minsize=120)
+        tk.Label(g, text="Name",  bg=CARD, fg=MUTED, font=FONT).grid(
+            row=0, column=1, sticky="w", padx=8, pady=(0, 4))
+        tk.Label(g, text="Color", bg=CARD, fg=MUTED, font=FONT).grid(
+            row=0, column=3, sticky="w", pady=(0, 4))
+
+        for i, ch_label in enumerate(channel_labels):
+            def_name  = (saved_names[i]  if i < len(saved_names)  and saved_names[i]
+                         else f"Channel {ch_label}")
+            def_color = (saved_colors[i] if i < len(saved_colors) and saved_colors[i]
+                         else self._VAL_COLOR_DEFAULTS[i % len(self._VAL_COLOR_DEFAULTS)])
+            name_var  = tk.StringVar(value=def_name)
+            color_var = tk.StringVar(value=def_color)
+            name_var.trace_add( "write", lambda *_: self._update_val_channel_names_str())
+            color_var.trace_add("write", lambda *_: self._update_val_channel_names_str())
+            self._val_ch_name_vars.append(name_var)
+            self._val_ch_color_vars.append(color_var)
+            tk.Label(g, text=f"Channel {ch_label}:", bg=CARD, fg=FG,
+                     font=FONT_BOLD).grid(row=i + 1, column=0, sticky="w", pady=3)
+            tk.Entry(g, textvariable=name_var, bg=BG, fg=FG,
+                     insertbackground=FG, relief="flat",
+                     font=FONT, width=22).grid(
+                row=i + 1, column=1, sticky="w", pady=3, padx=8)
+            _cb = ttk.Combobox(g, textvariable=color_var,
+                               values=self._VAL_COLOR_OPTIONS,
+                               state="readonly", width=10)
+            _cb.grid(row=i + 1, column=3, sticky="w", pady=3)
+            self._bind_combobox_scroll(_cb)
+
+        self._update_val_channel_names_str()
+
+    # ------------------------------------------------------------------
     # Validation channel preview helpers
     # ------------------------------------------------------------------
 
@@ -1441,57 +1523,17 @@ class CellMatchrLauncher:
         self._val_ch_photo_refs = photos
         self._val_ch_index = 0
 
-        # Clear the placeholder and build one entry row per channel
+        # Rebuild name/color rows using the actual detected channel count
         if self._val_ch_names_frame:
-            for w in self._val_ch_names_frame.winfo_children():
-                w.destroy()
-            self._val_ch_name_vars = []
-            self._val_ch_color_vars = []
-
-            _COLOR_OPTIONS = ["Blue", "Green", "Red", "Purple", "Cyan", "Yellow"]
-            _COLOR_DEFAULTS = ["Blue", "Green", "Red", "Purple", "Cyan", "Yellow"]
-
             n = len(photos) if photos else 0
-            if n == 0:
+            if n > 0:
+                self._build_val_ch_name_rows([str(i) for i in range(n)])
+            elif fname:
+                for w in self._val_ch_names_frame.winfo_children():
+                    w.destroy()
                 tk.Label(self._val_ch_names_frame,
                          text=fname or "Could not detect channels.",
                          bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
-            else:
-                saved_names  = [s.strip() for s in
-                                self._vars["val_channel_names"].get().split(",")]
-                saved_colors = [s.strip() for s in
-                                self._vars["val_channel_colors"].get().split(",")]
-                g = tk.Frame(self._val_ch_names_frame, bg=CARD)
-                g.pack(fill="x")
-                g.grid_columnconfigure(0, minsize=100)
-                g.grid_columnconfigure(1, minsize=180)
-                g.grid_columnconfigure(2, minsize=20)
-                g.grid_columnconfigure(3, minsize=120)
-                tk.Label(g, text="Name", bg=CARD, fg=MUTED, font=FONT).grid(
-                    row=0, column=1, sticky="w", padx=8, pady=(0, 4))
-                tk.Label(g, text="Color", bg=CARD, fg=MUTED, font=FONT).grid(
-                    row=0, column=3, sticky="w", pady=(0, 4))
-                for i in range(n):
-                    def_name  = (saved_names[i]  if i < len(saved_names)  and saved_names[i]
-                                 else f"Channel {i}")
-                    def_color = (saved_colors[i] if i < len(saved_colors) and saved_colors[i]
-                                 else _COLOR_DEFAULTS[i % len(_COLOR_DEFAULTS)])
-                    name_var  = tk.StringVar(value=def_name)
-                    color_var = tk.StringVar(value=def_color)
-                    name_var.trace_add( "write", lambda *_: self._update_val_channel_names_str())
-                    color_var.trace_add("write", lambda *_: self._update_val_channel_names_str())
-                    self._val_ch_name_vars.append(name_var)
-                    self._val_ch_color_vars.append(color_var)
-                    tk.Label(g, text=f"Channel {i}:", bg=CARD, fg=FG,
-                             font=FONT_BOLD).grid(row=i + 1, column=0, sticky="w", pady=3)
-                    tk.Entry(g, textvariable=name_var, bg=BG, fg=FG,
-                             insertbackground=FG, relief="flat",
-                             font=FONT, width=22).grid(
-                        row=i + 1, column=1, sticky="w", pady=3, padx=8)
-                    ttk.Combobox(g, textvariable=color_var, values=_COLOR_OPTIONS,
-                                 state="readonly", width=10).grid(
-                        row=i + 1, column=3, sticky="w", pady=3)
-                self._update_val_channel_names_str()
 
         # Re-enable the load button
         if hasattr(self, "_val_load_btn") and self._val_load_btn:
@@ -1621,9 +1663,12 @@ class CellMatchrLauncher:
             ch = ch_label.replace("Channel ", "").strip()
             self.config["val_mask_pattern"] = f"*_predict_original_ch{ch}*.tif"
 
-        # Use the most recent segmentation output folder
-        seg_variants = self._find_variants(SUBFOLDER["seg"])
-        seg_sub  = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        # Use the selected segmentation input (set in Step 4 input selector)
+        if self._val_input_var and self._val_input_var.get():
+            seg_sub = self._val_input_var.get()
+        else:
+            seg_variants = self._find_variants(SUBFOLDER["seg"])
+            seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
         val_input = os.path.join(proj, seg_sub)
 
         if not os.path.isdir(val_input):
@@ -1720,11 +1765,13 @@ class CellMatchrLauncher:
             self._val_channel_var = tk.StringVar(
                 value=f"Channel {channel_options[0]}"
             )
-            ttk.Combobox(
+            _cb_val_ch = ttk.Combobox(
                 cfg_card, textvariable=self._val_channel_var,
                 values=[f"Channel {c}" for c in channel_options],
                 state="readonly", width=20,
-            ).pack(anchor="w")
+            )
+            _cb_val_ch.pack(anchor="w")
+            self._bind_combobox_scroll(_cb_val_ch)
             tk.Label(
                 cfg_card,
                 text="The mask glob pattern is derived automatically from the channel you select.",
@@ -1738,24 +1785,69 @@ class CellMatchrLauncher:
             ).pack(anchor="w")
             self._val_channel_var = None
 
+        # ── Input source selector (which segmentation folder to validate) ──
+        _seg_variants = self._find_variants(SUBFOLDER["seg"])
+        _default_seg  = _seg_variants[-1] if _seg_variants else SUBFOLDER["seg"]
+        self._val_input_var = tk.StringVar(value=_default_seg)
+
+        input_card = self._card(parent, "Segmentation Input")
+        _val_input_cur_lbl = tk.Label(
+            input_card, text=f"Using:  {_default_seg}",
+            bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
+        )
+        _val_input_cur_lbl.pack(anchor="w", pady=(0, 4))
+
+        if len(_seg_variants) > 1:
+            _val_input_ovr_frame = tk.Frame(input_card, bg=CARD)
+            _val_ovr_lbl = tk.Label(
+                input_card,
+                text="▶  Use a different segmentation output",
+                bg=CARD, fg=MUTED,
+                font=(FONT[0], FONT[1], "underline"), cursor="hand2",
+            )
+            _val_ovr_lbl.pack(anchor="w")
+
+            _cb_val_src = ttk.Combobox(
+                _val_input_ovr_frame, textvariable=self._val_input_var,
+                values=_seg_variants, state="readonly", width=44,
+            )
+            _cb_val_src.pack(side="left", pady=(4, 0))
+            self._bind_combobox_scroll(_cb_val_src)
+
+            def _val_src_changed(*_):
+                _val_input_cur_lbl.config(text=f"Using:  {self._val_input_var.get()}")
+            self._val_input_var.trace_add("write", _val_src_changed)
+
+            def _toggle_val_ovr(lbl=_val_ovr_lbl):
+                if _val_input_ovr_frame.winfo_ismapped():
+                    _val_input_ovr_frame.pack_forget()
+                    lbl.config(text="▶  Use a different segmentation output")
+                else:
+                    _val_input_ovr_frame.pack(fill="x", pady=(0, 4))
+                    lbl.config(text="▼  Use a different segmentation output")
+            _val_ovr_lbl.bind("<Button-1>", lambda _: _toggle_val_ovr())
+        elif not _seg_variants:
+            tk.Label(input_card,
+                     text="⚠  No segmentation output found yet — run Step 3 first.",
+                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
+
         # ── Channel display names (one entry per channel) ────────────
         names_card = self._card(parent, "Channel Display Names")
         tk.Label(
             names_card,
-            text="Names are shown in the validator for each channel panel. "
-                 "They are detected automatically from the first image in your input folder.",
+            text="Names and colors are shown in the validator for each channel panel. "
+                 "Populated from your Step 3 channel list — load the preview to refine.",
             bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
         ).pack(anchor="w", pady=(0, 8))
         self._val_ch_names_frame = tk.Frame(names_card, bg=CARD)
         self._val_ch_names_frame.pack(fill="x")
-        self._val_ch_name_vars = []
-        # Show a placeholder message until the background scan finishes
-        tk.Label(
-            self._val_ch_names_frame,
-            text="Scanning input folder for channel count…" if self.config.get("input_root_folder") else
-                 "Set an input folder in Step 2 to detect channels.",
-            bg=CARD, fg=MUTED, font=FONT,
-        ).pack(anchor="w")
+        self._val_ch_name_vars  = []
+        self._val_ch_color_vars = []
+        # Build rows immediately from seg_channels config
+        _ch_labels = [x.strip() for x in
+                      self.config.get("seg_channels", "").split(",")
+                      if x.strip().isdigit()]
+        self._build_val_ch_name_rows(_ch_labels)
 
         # ── Channel preview (read-only, for reference) ────────────────
         has_input = bool(self.config.get("input_root_folder", "").strip())
@@ -1800,18 +1892,7 @@ class CellMatchrLauncher:
             tk.Label(prev_card, text="Install Pillow (pip install Pillow) to enable preview.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
-        # ── Validation progress summary ──────────────────────────────
-        vprog_card = self._card(parent, "Validation Progress")
-        self._val_prog_frame = tk.Frame(vprog_card, bg=CARD)
-        self._val_prog_frame.pack(anchor="w", fill="x")
-        tk.Button(
-            vprog_card, text="↻  Refresh",
-            command=self._refresh_val_status,
-            bg=BG, fg=MUTED, font=FONT, relief="flat", padx=6, pady=2,
-        ).pack(anchor="w", pady=(6, 0))
-        self.root.after(120, self._refresh_val_status)
-
-        # ── Run button ───────────────────────────────────────────────
+        # ── Run button + progress (combined card) ────────────────────
         run_card = self._card(parent, "Open Validation Window")
         run_row = tk.Frame(run_card, bg=CARD)
         run_row.pack(anchor="w")
@@ -1832,6 +1913,20 @@ class CellMatchrLauncher:
             bg=CARD, fg=MUTED, font=FONT, wraplength=660,
         ).pack(anchor="w", pady=(8, 0))
 
+        # ── Validation progress (inside same card, below the button) ─
+        ttk.Separator(run_card, orient="horizontal").pack(fill="x", pady=(14, 6))
+        prog_hdr = tk.Frame(run_card, bg=CARD)
+        prog_hdr.pack(fill="x")
+        tk.Label(prog_hdr, text="Validation Progress",
+                 bg=CARD, fg=ACCENT, font=FONT_BOLD).pack(side="left")
+        tk.Button(prog_hdr, text="↻  Refresh",
+                  command=self._refresh_val_status,
+                  bg=BG, fg=MUTED, font=FONT, relief="flat", padx=6, pady=2).pack(
+            side="left", padx=8)
+        self._val_prog_frame = tk.Frame(run_card, bg=CARD)
+        self._val_prog_frame.pack(anchor="w", fill="x", pady=(4, 0))
+        self.root.after(120, self._refresh_val_status)
+
     # ==================================================================
     # STEP 5 — Analysis
     # ==================================================================
@@ -1851,6 +1946,52 @@ class CellMatchrLauncher:
             bg=CARD, fg=FG, selectcolor=CARD,
             activebackground=CARD, font=FONT_BOLD,
         ).pack(anchor="w")
+
+        # ── Input source selector ────────────────────────────────────
+        _a_seg_variants = self._find_variants(SUBFOLDER["seg"])
+        _a_default_seg  = _a_seg_variants[-1] if _a_seg_variants else SUBFOLDER["seg"]
+        self._ana_input_var = tk.StringVar(value=_a_default_seg)
+
+        ana_input_card = self._card(parent, "Segmentation Input")
+        _ana_input_cur_lbl = tk.Label(
+            ana_input_card, text=f"Using:  {_a_default_seg}",
+            bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
+        )
+        _ana_input_cur_lbl.pack(anchor="w", pady=(0, 4))
+
+        if len(_a_seg_variants) > 1:
+            _ana_input_ovr_frame = tk.Frame(ana_input_card, bg=CARD)
+            _ana_ovr_lbl = tk.Label(
+                ana_input_card,
+                text="▶  Use a different segmentation output",
+                bg=CARD, fg=MUTED,
+                font=(FONT[0], FONT[1], "underline"), cursor="hand2",
+            )
+            _ana_ovr_lbl.pack(anchor="w")
+
+            _cb_ana_src = ttk.Combobox(
+                _ana_input_ovr_frame, textvariable=self._ana_input_var,
+                values=_a_seg_variants, state="readonly", width=44,
+            )
+            _cb_ana_src.pack(side="left", pady=(4, 0))
+            self._bind_combobox_scroll(_cb_ana_src)
+
+            def _ana_src_changed(*_):
+                _ana_input_cur_lbl.config(text=f"Using:  {self._ana_input_var.get()}")
+            self._ana_input_var.trace_add("write", _ana_src_changed)
+
+            def _toggle_ana_ovr(lbl=_ana_ovr_lbl):
+                if _ana_input_ovr_frame.winfo_ismapped():
+                    _ana_input_ovr_frame.pack_forget()
+                    lbl.config(text="▶  Use a different segmentation output")
+                else:
+                    _ana_input_ovr_frame.pack(fill="x", pady=(0, 4))
+                    lbl.config(text="▼  Use a different segmentation output")
+            _ana_ovr_lbl.bind("<Button-1>", lambda _: _toggle_ana_ovr())
+        elif not _a_seg_variants:
+            tk.Label(ana_input_card,
+                     text="⚠  No segmentation output found yet — run Step 3 first.",
+                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
         # ── ROI mask folder ───────────────────────────────────────────
         if self.config.get("input_type") == "vsi":
@@ -2004,15 +2145,17 @@ class CellMatchrLauncher:
 
         tk.Label(g, text="Cell of interest channel:", bg=CARD, fg=FG, font=FONT).grid(
             row=0, column=0, sticky="w", pady=3)
-        ttk.Combobox(g, textvariable=self._ana_coi_chan_var,
-                     values=chan_values, state=state, width=18).grid(
-            row=0, column=1, sticky="w", pady=3, padx=8)
+        _cb_coi = ttk.Combobox(g, textvariable=self._ana_coi_chan_var,
+                               values=chan_values, state=state, width=18)
+        _cb_coi.grid(row=0, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_coi)
 
         tk.Label(g, text="Protein marker channel:", bg=CARD, fg=FG, font=FONT).grid(
             row=1, column=0, sticky="w", pady=3)
-        ttk.Combobox(g, textvariable=self._ana_pm_chan_var,
-                     values=chan_values, state=state, width=18).grid(
-            row=1, column=1, sticky="w", pady=3, padx=8)
+        _cb_pm = ttk.Combobox(g, textvariable=self._ana_pm_chan_var,
+                              values=chan_values, state=state, width=18)
+        _cb_pm.grid(row=1, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_pm)
 
         iou_card = self._card(self._ana_coloc_frame, "Colocalization Settings")
         g2 = tk.Frame(iou_card, bg=CARD)
@@ -2026,10 +2169,11 @@ class CellMatchrLauncher:
             row=0, column=1, sticky="w", pady=3, padx=8)
         tk.Label(g2, text="ROI cell inclusion rule:", bg=CARD, fg=FG, font=FONT).grid(
             row=1, column=0, sticky="w", pady=3)
-        ttk.Combobox(g2, textvariable=self._vars["ana_roi_cell_rule"],
-                     values=["centroid", "any_pixel"],
-                     state="readonly", width=14).grid(
-            row=1, column=1, sticky="w", pady=3, padx=8)
+        _cb_rule = ttk.Combobox(g2, textvariable=self._vars["ana_roi_cell_rule"],
+                                values=["centroid", "any_pixel"],
+                                state="readonly", width=14)
+        _cb_rule.grid(row=1, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_rule)
 
         # Show/hide colocalization section based on current state
         if self._vars["ana_coloc_enabled"].get():
@@ -2243,7 +2387,7 @@ class CellMatchrLauncher:
                     if row_status == "complete":
                         row_status = "partial"
                 else:
-                    icon, col = "✗", RED
+                    icon, col = "–", MUTED
                     row_status = "none"
                 ch_parts.append((f"ch{ch}: {icon}", col))
 
@@ -2279,8 +2423,11 @@ class CellMatchrLauncher:
                 self._ana_status.config(text="⚠  No project folder set. Go to Step 1.", fg=RED)
             return
 
-        seg_variants = self._find_variants(SUBFOLDER["seg"])
-        seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        if self._ana_input_var and self._ana_input_var.get():
+            seg_sub = self._ana_input_var.get()
+        else:
+            seg_variants = self._find_variants(SUBFOLDER["seg"])
+            seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
         ana_input = os.path.join(proj, seg_sub)
 
         if not os.path.isdir(ana_input):

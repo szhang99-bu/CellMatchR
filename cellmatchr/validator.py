@@ -77,6 +77,7 @@ _COLOR_LABEL_TO_INTERNAL = {
     "Purple": "PurePurple",
     "Cyan":   "Cyan",
     "Yellow": "Yellow",
+    "White":  "PureWhite",
 }
 
 # Map internal cmap name → RGB blend weights used in merged/context views
@@ -87,6 +88,7 @@ _COLOR_TO_RGB_WEIGHTS = {
     "PurePurple": (1.0, 0.0, 1.0),
     "Cyan":       (0.0, 1.0, 1.0),
     "Yellow":     (1.0, 1.0, 0.0),
+    "PureWhite":  (1.0, 1.0, 1.0),
 }
 
 
@@ -159,6 +161,7 @@ def get_custom_cmap(color_name):
         'Cyan':      ['black', 'cyan'],
         'Magenta':   ['black', 'magenta'],
         'Yellow':    ['black', 'yellow'],
+        'PureWhite': ['black', 'white'],
     }
     return LinearSegmentedColormap.from_list(f"BlackTo{color_name}", colors.get(color_name, ['black','white']))
 

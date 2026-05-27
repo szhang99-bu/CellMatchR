@@ -33,6 +33,7 @@ YELLOW   = "#f9e2af"
 RED      = "#f38ba8"
 MUTED    = "#6c7086"
 ACTIVE   = "#45475a"
+ORANGE   = "#fab387"   # warm peach — "not started" state (less alarming than RED)
 
 FONT       = ("Segoe UI", 10)
 FONT_BOLD  = ("Segoe UI", 10, "bold")
@@ -1279,36 +1280,68 @@ class CellMatchrLauncher:
             print(f"\n[Preview] Loading: {fname}")
 
             if path.lower().endswith(".czi"):
-                # Use czifile directly — AICSImage internally hits a tifffile
-                # version conflict (_TIFF.RESUNIT) with the pinned env versions.
-                from czifile import CziFile
-                print(f"[Preview] Reading CZI…")
-                with CziFile(path) as czi:
-                    data = czi.asarray()
-                    axes = czi.axes
-                    c_axis = axes.find("C")
-                    z_axis = axes.find("Z")
-                print(f"[Preview] CZI axes: {axes}, shape: {data.shape}")
-                if c_axis == -1:
-                    data_sq = np.squeeze(data)
-                    while data_sq.ndim > 2:
-                        data_sq = np.max(data_sq, axis=0)
-                    channels_np = [data_sq]
-                    print(f"[Preview] No C axis — treated as single channel after MIP")
-                else:
-                    num_channels = data.shape[c_axis]
-                    num_z = data.shape[z_axis] if z_axis != -1 else 1
-                    print(f"[Preview] Channels: {num_channels}, Z-slices: {num_z}")
-                    if num_z > 1:
-                        print(f"[Preview] Z-stack — applying max intensity projection per channel")
-                    channels_np = []
-                    for c in range(num_channels):
-                        ch = np.take(data, c, axis=c_axis)
-                        ch = np.squeeze(ch)
-                        while ch.ndim > 2:          # MIP over Z and any remaining dims
-                            ch = np.max(ch, axis=0)
-                        channels_np.append(ch)
-                        print(f"[Preview]   Channel {c}: shape={ch.shape}")
+                channels_np = None   # filled by fast or slow path below
+
+                # ── Fast path: aicspylibczi — reads ONE Z-slice per channel ──
+                # aicspylibczi is a thin C++ wrapper (no tifffile dependency) and
+                # supports reading individual dimensions, so we only decompress
+                # 1/num_Z of the data for the preview.
+                try:
+                    from aicspylibczi import CziFile as _AicsCziFile
+                    print("[Preview] CZI fast-path via aicspylibczi (single Z per channel)…")
+                    with _AicsCziFile(path) as _aczi:
+                        _dims = _aczi.get_dims_shape()
+                        _d = _dims[0] if _dims else {}
+                        if 'C' in _d:
+                            _num_c = _d['C'][1]
+                            _num_z = _d.get('Z', (0, 1))[1]
+                            _mid_z = min(_num_z // 2, max(0, _num_z - 1))
+                            print(f"[Preview]   {_num_c} channel(s), {_num_z} Z — reading Z={_mid_z}")
+                            channels_np = []
+                            for _c in range(_num_c):
+                                _kw = {'C': _c}
+                                if 'Z' in _d:
+                                    _kw['Z'] = _mid_z
+                                _img, _ = _aczi.read_image(**_kw)
+                                _arr = np.squeeze(_img)
+                                while _arr.ndim > 2:
+                                    _arr = np.max(_arr, axis=0)
+                                channels_np.append(_arr)
+                                print(f"[Preview]   ch{_c}: {_arr.shape}")
+                except Exception as _fe:
+                    print(f"[Preview] aicspylibczi fast-path failed ({_fe}), using czifile…")
+                    channels_np = None
+
+                # ── Slow path: czifile full read ─────────────────────────────
+                if channels_np is None:
+                    from czifile import CziFile
+                    print("[Preview] Reading full CZI with czifile (may be slow for large files)…")
+                    with CziFile(path) as czi:
+                        data = czi.asarray()
+                        axes = czi.axes
+                        c_axis = axes.find("C")
+                        z_axis = axes.find("Z")
+                    print(f"[Preview] CZI axes: {axes}, shape: {data.shape}")
+                    if c_axis == -1:
+                        data_sq = np.squeeze(data)
+                        while data_sq.ndim > 2:
+                            data_sq = np.max(data_sq, axis=0)
+                        channels_np = [data_sq]
+                        print("[Preview] No C axis — treated as single channel after MIP")
+                    else:
+                        num_channels = data.shape[c_axis]
+                        num_z = data.shape[z_axis] if z_axis != -1 else 1
+                        print(f"[Preview] Channels: {num_channels}, Z-slices: {num_z}")
+                        if num_z > 1:
+                            print("[Preview] Z-stack — applying MIP per channel")
+                        channels_np = []
+                        for c in range(num_channels):
+                            ch = np.take(data, c, axis=c_axis)
+                            ch = np.squeeze(ch)
+                            while ch.ndim > 2:
+                                ch = np.max(ch, axis=0)
+                            channels_np.append(ch)
+                            print(f"[Preview]   Channel {c}: shape={ch.shape}")
             else:
                 import tifffile as _tf
                 with _tf.TiffFile(path) as tif:
@@ -1439,6 +1472,45 @@ class CellMatchrLauncher:
 
     _VAL_COLOR_OPTIONS  = ["Blue", "Green", "Red", "Purple", "Cyan", "Yellow", "White"]
     _VAL_COLOR_DEFAULTS = ["Blue", "Green", "Red", "Purple", "Cyan", "Yellow", "White"]
+
+    def _detect_all_channel_labels(self) -> list:
+        """Return sorted channel-index strings for ALL channels in the images.
+
+        Scans the first project subfolder of the selected segmentation output
+        for *_split_ch*.tif files — these are written for every channel,
+        not just the ones that were predicted.  Falls back to seg_channels
+        config if no split files are found yet.
+        """
+        import re as _re
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj:
+            return []
+
+        seg_sub = (
+            (self._val_input_var.get()
+             if hasattr(self, "_val_input_var") and self._val_input_var
+             and self._val_input_var.get() else None)
+            or (self._find_variants(SUBFOLDER["seg"]) or [SUBFOLDER["seg"]])[-1]
+        )
+        seg_root = os.path.join(proj, seg_sub)
+
+        if os.path.isdir(seg_root):
+            for d in sorted(os.listdir(seg_root)):
+                sub = os.path.join(seg_root, d)
+                if not os.path.isdir(sub) or d.startswith((".", "DEBUG")):
+                    continue
+                chs = set()
+                for f in os.listdir(sub):
+                    m = _re.search(r"_split_ch(\d+)\.tif$", f, _re.IGNORECASE)
+                    if m:
+                        chs.add(int(m.group(1)))
+                if chs:
+                    return [str(c) for c in sorted(chs)]
+
+        # Fallback: use seg_channels from config
+        return [x.strip() for x in
+                self.config.get("seg_channels", "").split(",")
+                if x.strip().isdigit()]
 
     def _build_val_ch_name_rows(self, channel_labels: list) -> None:
         """Populate the channel name/color entry grid inside _val_ch_names_frame.
@@ -1831,22 +1903,22 @@ class CellMatchrLauncher:
                      text="⚠  No segmentation output found yet — run Step 3 first.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
-        # ── Channel display names (one entry per channel) ────────────
+        # ── Channel display names (all channels) ─────────────────────
         names_card = self._card(parent, "Channel Display Names")
         tk.Label(
             names_card,
-            text="Names and colors are shown in the validator for each channel panel. "
-                 "Populated from your Step 3 channel list — load the preview to refine.",
+            text="Set a display name and color for every channel in your images — "
+                 "the validator shows ALL channels, not just the predicted ones.\n"
+                 "Detected automatically from split_ch TIFFs in the segmentation output. "
+                 "Falls back to configured channels if no output exists yet.",
             bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
         ).pack(anchor="w", pady=(0, 8))
         self._val_ch_names_frame = tk.Frame(names_card, bg=CARD)
         self._val_ch_names_frame.pack(fill="x")
         self._val_ch_name_vars  = []
         self._val_ch_color_vars = []
-        # Build rows immediately from seg_channels config
-        _ch_labels = [x.strip() for x in
-                      self.config.get("seg_channels", "").split(",")
-                      if x.strip().isdigit()]
+        # Detect ALL channels from split_ch TIFFs in segmentation output
+        _ch_labels = self._detect_all_channel_labels()
         self._build_val_ch_name_rows(_ch_labels)
 
         # ── Channel preview (read-only, for reference) ────────────────
@@ -2318,8 +2390,8 @@ class CellMatchrLauncher:
                     fg = YELLOW
                     any_partial = True
                 else:
-                    label_text = f"Channel {ch}: not yet validated  ✗"
-                    fg = RED
+                    label_text = f"Channel {ch}: not yet validated  –"
+                    fg = ORANGE
 
                 tk.Label(frame, text=label_text, bg=CARD, fg=fg, font=FONT_BOLD, justify="left").pack(anchor="w", pady=2)
 
@@ -2387,7 +2459,7 @@ class CellMatchrLauncher:
                     if row_status == "complete":
                         row_status = "partial"
                 else:
-                    icon, col = "–", MUTED
+                    icon, col = "–", ORANGE
                     row_status = "none"
                 ch_parts.append((f"ch{ch}: {icon}", col))
 
@@ -2395,7 +2467,7 @@ class CellMatchrLauncher:
             row_frame = tk.Frame(frame, bg=CARD)
             row_frame.pack(anchor="w", pady=1, fill="x")
 
-            name_fg = GREEN if row_status == "complete" else (YELLOW if row_status == "partial" else FG)
+            name_fg = GREEN if row_status == "complete" else (YELLOW if row_status == "partial" else ORANGE)
             tk.Label(row_frame, text=f"{d}  ", bg=CARD, fg=name_fg,
                      font=FONT_BOLD, justify="left").pack(side="left")
             for tag_text, tag_col in ch_parts:

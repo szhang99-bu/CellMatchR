@@ -20,7 +20,7 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 │  Step 2  — Input & Paths                                        │
 │    • CZI / TIF  →  point to root input folder                   │
 │    • VSI        →  launch VSI Converter (draws ROIs,            │
-│                    exports full-resolution TIFFs)                │
+│                    exports full-resolution TIFFs)               │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 3  — Segmentation                                         │
 │    • Tiled MicroSAM prediction on chosen channels               │
@@ -34,7 +34,7 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 │  Step 5  — Analysis  (optional)                                 │
 │    • IoU-based colocalization between two channels              │
 │    • Per-ROI cell counts + colocalization percentages           │
-│    • QC PNG overlays; combined summary saved to Analysis/        │
+│    • QC PNG overlays; combined summary saved to Analysis        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

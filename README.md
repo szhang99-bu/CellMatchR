@@ -44,7 +44,7 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 
 ### 1. Get the code
 
-#### Option A — Download ZIP *(no git required, easiest for most users)*
+#### Option A — Download ZIP *(no git required, easiest for most users but difficult for later updates)*
 
 1. Go to **https://github.com/szhang99-bu/CellMatchR**
 2. Click the green **`<> Code`** button at the top of the page → **Download ZIP**

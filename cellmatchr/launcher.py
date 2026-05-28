@@ -185,6 +185,7 @@ class CellMatchrLauncher:
         self._val_spin_job: str | None = None
         self._review_btn: tk.Button | None = None
         self._review_status: tk.Label | None = None
+        self._review_test_mode: tk.BooleanVar | None = None
         # analysis channel selections (populated in Step 5)
         self._ana_coi_chan_var: tk.StringVar | None = None
         self._ana_pm_chan_var: tk.StringVar | None = None
@@ -1779,12 +1780,15 @@ class CellMatchrLauncher:
                     pass
 
         try:
-            subprocess.Popen([
+            cmd = [
                 sys.executable,
                 self._script("roi_editor.py"),
                 "--seg-folder", seg_folder,
                 "--channel",    str(channel),
-            ])
+            ]
+            if self._review_test_mode and self._review_test_mode.get():
+                cmd.append("--test-mode")
+            subprocess.Popen(cmd)
             self.root.after(4000, _restore)
         except Exception as exc:
             _restore()
@@ -2003,6 +2007,15 @@ class CellMatchrLauncher:
             _review_btn_row, text="", bg=CARD, fg=MUTED, font=FONT,
         )
         self._review_status.pack(side="left", padx=(10, 0))
+
+        self._review_test_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            review_card,
+            text="Test mode  (saves to DEBUG_ file only, processes one image, prints ROI comparison)",
+            variable=self._review_test_mode,
+            bg=CARD, fg=MUTED, selectcolor=CARD,
+            activebackground=CARD, font=FONT,
+        ).pack(anchor="w", pady=(6, 0))
 
         # ── Channel display names (all channels) ─────────────────────
         names_card = self._card(parent, "Channel Display Names")

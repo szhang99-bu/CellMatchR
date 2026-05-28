@@ -330,6 +330,30 @@ class RoiEditorApp:
             self._first_paint = False
             print("[roi_editor] First brush stroke received — rendering...")
 
+    def _on_layer_selection_changed(self, event=None) -> None:
+        """Re-prewarm whenever the user switches back to the add layer."""
+        if self._add_lyr is None:
+            return
+        if self._add_lyr in self.viewer.layers.selection:
+            from qtpy.QtCore import QTimer
+            print("[roi_editor] Add layer re-selected — re-warming renderer...")
+            # Short delay so the layer-switch animation completes first
+            QTimer.singleShot(200, self._prewarm_renderer_silent)
+
+    def _prewarm_renderer_silent(self) -> None:
+        """Same as _prewarm_renderer but without status-bar noise — for re-selections."""
+        from qtpy.QtWidgets import QApplication
+        if self._add_lyr is None:
+            return
+        h, w = self._add_lyr.data.shape[:2]
+        tmp = np.zeros((h, w), dtype=np.int32)
+        tmp[h // 2, w // 2] = 1
+        self._add_lyr.data = tmp
+        QApplication.processEvents()
+        self._add_lyr.data = np.zeros((h, w), dtype=np.int32)
+        QApplication.processEvents()
+        print("[roi_editor] Renderer re-warmed.")
+
     # ── Dock widget ──────────────────────────────────────────────────────────
 
     def _build_dock(self):
@@ -372,9 +396,10 @@ class RoiEditorApp:
         freeze_warn = QLabel(
             "⏳  FIRST STROKE MAY FREEZE\n"
             "      FOR UP TO 30 SECONDS\n"
-            "This is normal — macOS is compiling\n"
-            "the GPU renderer on first use.\n"
-            "It only happens once per session."
+            "macOS compiles the GPU renderer\n"
+            "on first use and after switching\n"
+            "layers. Auto re-warms on switch-back.\n"
+            "Just wait — it will unfreeze."
         )
         freeze_warn.setAlignment(Qt.AlignCenter)
         freeze_warn.setWordWrap(True)
@@ -551,6 +576,11 @@ class RoiEditorApp:
             self.viewer.layers.selection.active = self._add_lyr
             # Hook for first-stroke debug output
             self._add_lyr.events.data.connect(self._on_first_paint)
+            # Re-prewarm whenever the user switches back to this layer
+            # (switching away and back deactivates the Metal paint pipeline)
+            self.viewer.layers.selection.events.changed.connect(
+                self._on_layer_selection_changed
+            )
             print("[roi_editor] Layers created — waiting for renderer pre-warm...")
         else:
             self._raw_lyr.data            = raw_d

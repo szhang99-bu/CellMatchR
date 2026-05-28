@@ -417,6 +417,10 @@ class RoiEditorApp:
             self._add_lyr = self.viewer.add_labels(
                 np.zeros_like(msk_d, dtype=np.int32),
                 name="Add ROIs here", opacity=0.75,
+                # Fix label-1 to bright yellow so napari never needs to
+                # recompute the colour LUT on each brush stroke — this is
+                # the main cause of per-stroke freezes on macOS/Metal.
+                color={1: "yellow"},
             )
             self._add_lyr.brush_size     = self.DEFAULT_BRUSH_SIZE
             self._add_lyr.selected_label = 1

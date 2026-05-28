@@ -247,7 +247,7 @@ class RoiEditorApp:
     Add ROIs here  — empty labels layer the user paints on
     """
 
-    DEFAULT_BRUSH_SIZE = 18
+    DEFAULT_BRUSH_SIZE = 7
 
     def __init__(self, seg_folder: str, channel: int, test_mode: bool = False):
         self.seg_folder = seg_folder
@@ -261,6 +261,8 @@ class RoiEditorApp:
         self._scale     = 1           # display stride for current sample
         self._orig_h    = 0           # full-res height
         self._orig_w    = 0           # full-res width
+
+        self._first_paint = True    # used to print one-time debug on first stroke
 
         # napari layer handles
         self.viewer    = None
@@ -279,14 +281,54 @@ class RoiEditorApp:
 
     def run(self) -> None:
         import napari
+        from qtpy.QtCore import QTimer
         title = "CellMatchR — ROI Editor  [TEST MODE]" if self.test_mode \
                 else "CellMatchR — ROI Editor"
+        print("[roi_editor] Creating napari viewer...")
         self.viewer = napari.Viewer(title=title)
+        print("[roi_editor] Loading first sample...")
         self._load_sample(self.idx)
+        print("[roi_editor] Building dock panel...")
         self.viewer.window.add_dock_widget(
             self._build_dock(), name="Navigation", area="right"
         )
+        # Pre-warm the Metal/OpenGL renderer so the first brush stroke
+        # doesn't trigger a ~30s shader compilation freeze.
+        # We paint one pixel, force a render, then clear it — this
+        # runs 800 ms after the window opens so it's fully visible first.
+        print("[roi_editor] Window ready — pre-warming renderer in background...")
+        QTimer.singleShot(800, self._prewarm_renderer)
         napari.run()
+
+    def _prewarm_renderer(self) -> None:
+        """
+        Paint a single invisible pixel and force a Qt render cycle so that
+        macOS/Metal compiles the Labels-layer shader NOW (at load time) rather
+        than on the first real brush stroke, which would freeze the UI for ~30s.
+        """
+        from qtpy.QtWidgets import QApplication
+        if self._add_lyr is None:
+            return
+        print("[roi_editor] Pre-warming renderer (Metal shader compile)...")
+        self.viewer.status = "Initializing renderer — please wait a moment…"
+        h, w = self._add_lyr.data.shape[:2]
+        # Paint one pixel at the centre
+        tmp = np.zeros((h, w), dtype=np.int32)
+        tmp[h // 2, w // 2] = 1
+        self._add_lyr.data = tmp
+        # Process all pending Qt events — this triggers the actual GPU draw call
+        QApplication.processEvents()
+        # Clear immediately
+        self._add_lyr.data = np.zeros((h, w), dtype=np.int32)
+        QApplication.processEvents()
+        self.viewer.status = "Ready — select 'Add ROIs here' layer and press P to paint"
+        print("[roi_editor] Renderer ready. You can now paint without delay.")
+
+    def _on_first_paint(self, event=None) -> None:
+        """Fires on the first data change to the additions layer (i.e. first stroke)."""
+        if self._first_paint:
+            self._first_paint = False
+            print("[roi_editor] First brush stroke received — rendering...")
 
     # ── Dock widget ──────────────────────────────────────────────────────────
 
@@ -325,6 +367,23 @@ class RoiEditorApp:
         title = QLabel("ROI Editor")
         title.setFont(QFont("", 13, QFont.Bold))
         lay.addWidget(title)
+
+        # ── First-stroke warning ──
+        freeze_warn = QLabel(
+            "⏳  FIRST STROKE MAY FREEZE\n"
+            "      FOR UP TO 30 SECONDS\n"
+            "This is normal — macOS is compiling\n"
+            "the GPU renderer on first use.\n"
+            "It only happens once per session."
+        )
+        freeze_warn.setAlignment(Qt.AlignCenter)
+        freeze_warn.setWordWrap(True)
+        freeze_warn.setStyleSheet(
+            "background:#3a3000; color:#f9e2af; font-size:11px;"
+            " font-weight:bold; padding:8px; border-radius:5px;"
+            " border: 1px solid #f9e2af;"
+        )
+        lay.addWidget(freeze_warn)
 
         lay.addWidget(self._hr())
 
@@ -443,8 +502,14 @@ class RoiEditorApp:
 
     def _load_sample(self, idx: int) -> None:
         s   = self.samples[idx]
+        print(f"[roi_editor] Loading sample {idx + 1}/{len(self.samples)}: {s['name']}")
+
+        print(f"[roi_editor]   Reading raw image...")
         raw = tifffile.imread(s["raw"]).astype(np.float32)
+        print(f"[roi_editor]   Reading mask...")
         msk = tifffile.imread(s["mask"]).astype(np.int32)
+        n_rois = len(np.unique(msk)) - 1
+        print(f"[roi_editor]   Mask has {n_rois} existing ROIs")
 
         # ── Compute display scale for this sample ────────────────────
         h, w = raw.shape[:2]
@@ -456,8 +521,10 @@ class RoiEditorApp:
         msk_d = _downsample(msk, self._scale)
 
         if self._scale > 1:
-            print(f"[roi_editor] {s['name']}: {w}×{h} → display at "
+            print(f"[roi_editor]   {w}×{h} → display at "
                   f"{raw_d.shape[1]}×{raw_d.shape[0]} (1/{self._scale})")
+        else:
+            print(f"[roi_editor]   Full resolution ({w}×{h}), no downsampling needed")
 
         lo, hi = np.percentile(raw_d, (1, 99))
 
@@ -482,6 +549,9 @@ class RoiEditorApp:
             self._add_lyr.selected_label = 1
             self._add_lyr.mode           = "paint"
             self.viewer.layers.selection.active = self._add_lyr
+            # Hook for first-stroke debug output
+            self._add_lyr.events.data.connect(self._on_first_paint)
+            print("[roi_editor] Layers created — waiting for renderer pre-warm...")
         else:
             self._raw_lyr.data            = raw_d
             self._raw_lyr.contrast_limits = [lo, hi]

@@ -142,8 +142,9 @@ def _parse_label_image_size(raw_meta: str) -> "tuple[int,int] | tuple[None,None]
         if label_pos < 0:
             return None, None
 
-        # Search in a window before the Label tag
-        window = raw_meta[max(0, label_pos - 3000) : label_pos]
+        # Search the full metadata before the Label tag so we catch files
+        # where "Image size" is thousands of characters earlier (First_run style).
+        window = raw_meta[0 : label_pos]
         img_size_pos = window.rfind('"Image size"')
         if img_size_pos < 0:
             return None, None
@@ -264,7 +265,9 @@ def _extract_label_image_from_vsi(
                         tile_img = _PILImage.open(io.BytesIO(data[t["offset"] : t["end"]]))
                         canvas.paste(tile_img, (col * 512, row * 512))
                 result = canvas.crop((0, 0, content_w, content_h))
-                return np.array(result.convert("RGB"))
+                arr = np.array(result.convert("RGB"))
+                h80 = max(1, int(arr.shape[0] * 0.8))
+                return arr[:h80, :, :]
 
         # ── Fallback: use the single coarsest tile ────────────────────────────
         debug("Label: using single coarsest pyramid tile as fallback.")
@@ -284,38 +287,56 @@ def _parse_scene_physical_coords(slide) -> dict:
     Returns dict mapping stack-name → {'ox': µm, 'oy': µm, 'sx': µm/px, 'sy': µm/px}.
     Each 'ox','oy' is the top-left corner; 'sx','sy' are pixel sizes in µm.
     Returns {} on any failure.
+
+    Strategy: iterate over every "Stack name" entry and search *backward* for
+    the nearest "RWC frame origin" (within 25 000 chars).  This handles both
+    metadata layouts observed in the wild:
+      • Compact (Third_Run): origin appears ~90 chars before Stack name.
+      • Spread (First_run): origin appears ~17 000 chars before Stack name.
+    Searching backward from the Stack name always finds the correct origin
+    without crossing into a neighbouring stack's block.
     """
     try:
         meta = slide.raw_metadata
         coords: dict = {}
         search_start = 0
+
         while True:
-            origin_tag = meta.find('"RWC frame origin"', search_start)
-            if origin_tag < 0:
+            sn_tag = meta.find('"Stack name"', search_start)
+            if sn_tag < 0:
                 break
-            # value of origin tag
+
+            # Parse the stack name value
+            sv0 = meta.find('"value":', sn_tag)
+            if sv0 < 0 or sv0 > sn_tag + 200:
+                search_start = sn_tag + 1
+                continue
+            sq1 = meta.find('"', sv0 + 8) + 1
+            sq2 = meta.find('"', sq1)
+            stack_name = meta[sq1:sq2]
+
+            # Search backward (up to 25 000 chars) for the nearest origin
+            window_start = max(0, sn_tag - 25_000)
+            window = meta[window_start : sn_tag]
+            orig_local = window.rfind('"RWC frame origin"')
+            if orig_local < 0:
+                search_start = sn_tag + 1
+                continue
+            origin_tag = window_start + orig_local
+
+            # Parse origin value
             v0 = meta.find('"value":', origin_tag)
             if v0 < 0 or v0 > origin_tag + 200:
-                search_start = origin_tag + 1
+                search_start = sn_tag + 1
                 continue
             q1 = meta.find('"', v0 + 8) + 1
             q2 = meta.find('"', q1)
             origin_str = meta[q1:q2]
 
-            # stack name (expected within 500 chars after origin tag)
-            sn_tag = meta.find('"Stack name"', origin_tag)
-            if sn_tag < 0 or sn_tag > origin_tag + 500:
-                search_start = origin_tag + 1
-                continue
-            sv0 = meta.find('"value":', sn_tag)
-            sq1 = meta.find('"', sv0 + 8) + 1
-            sq2 = meta.find('"', sq1)
-            stack_name = meta[sq1:sq2]
-
-            # scale (expected within 500 chars after origin tag)
+            # Scale is always close to the origin (within 500 chars forward)
             sc_tag = meta.find('"RWC frame scale"', origin_tag)
             if sc_tag < 0 or sc_tag > origin_tag + 500:
-                search_start = origin_tag + 1
+                search_start = sn_tag + 1
                 continue
             sc0 = meta.find('"value":', sc_tag)
             scq1 = meta.find('"', sc0 + 8) + 1
@@ -329,7 +350,7 @@ def _parse_scene_physical_coords(slide) -> dict:
             except Exception:
                 pass
 
-            search_start = origin_tag + 1
+            search_start = sn_tag + 1
 
         return coords
 
@@ -835,6 +856,14 @@ class VSINapariROIApp:
         layout.addWidget(self.lbl_status)
         layout.addWidget(self.progress)
 
+        name_hint = QLabel("⬅  Name EVERY ROI in the bottom-LEFT panel\n     before exporting / advancing.")
+        name_hint.setWordWrap(True)
+        name_hint.setStyleSheet(
+            "color: #ffcc00; font-weight: bold; padding: 4px;"
+            "border: 1px solid #ffcc00; border-radius: 4px;"
+        )
+        layout.addWidget(name_hint)
+
         proc_box = QGroupBox("Processing")
         proc_layout = QVBoxLayout(proc_box)
 
@@ -886,7 +915,12 @@ class VSINapariROIApp:
 
         layout.addWidget(edit_box)
 
-        name_box = QGroupBox("ROI Names (one per polygon)")
+        name_box = QGroupBox("★ ROI Names (REQUIRED — one per polygon) ★")
+        name_box.setStyleSheet(
+            "QGroupBox { font-weight: bold; color: #ffcc00; "
+            "border: 1px solid #ffcc00; border-radius: 4px; margin-top: 6px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }"
+        )
         name_layout = QVBoxLayout(name_box)
 
         scroll = QScrollArea()
@@ -1158,6 +1192,36 @@ class VSINapariROIApp:
             exported.append({"roi_idx": i, "tiff_path": out_path})
         return exported
 
+    # ---------- ROI naming validation ----------
+    def _unnamed_roi_indices(self) -> list:
+        """Return 1-based indices of ROIs that have no (non-blank) name."""
+        n = len(self.shapes.data)
+        unnamed = []
+        for i in range(n):
+            name = self.roi_names[i].strip() if i < len(self.roi_names) else ""
+            if not name:
+                unnamed.append(i + 1)
+        return unnamed
+
+    def _warn_unnamed_rois(self) -> bool:
+        """
+        If any ROI is unnamed, pop a warning and return True (caller should abort).
+        Returns False when every ROI has a name.
+        """
+        unnamed = self._unnamed_roi_indices()
+        if not unnamed:
+            return False
+        idx_str = ", ".join(str(i) for i in unnamed)
+        QMessageBox.warning(
+            self.viewer.window._qt_window,
+            "Name every ROI first",
+            f"ROI {idx_str} {'has' if len(unnamed) == 1 else 'have'} no name.\n\n"
+            "⬅  Enter a name for EVERY ROI in the \"ROI Names\" panel on the "
+            "BOTTOM-LEFT of the window before continuing.\n\n"
+            "Nothing was saved or exported."
+        )
+        return True
+
     # ---------- Buttons ----------
     def debug_save_and_export_all_now(self):
         if len(self.shapes.data) == 0:
@@ -1179,6 +1243,10 @@ class VSINapariROIApp:
             return
         if len(self.shapes.data) == 0:
             debug("No ROI polygon found. Draw at least one polygon first.")
+            return
+
+        if self._warn_unnamed_rois():
+            debug("Next slice blocked: one or more ROIs unnamed.")
             return
 
         msg = QMessageBox(self.viewer.window._qt_window)
@@ -1237,6 +1305,10 @@ class VSINapariROIApp:
                 "No ROIs",
                 "No ROI polygons found. Draw at least one polygon before closing."
             )
+            return
+
+        if self._warn_unnamed_rois():
+            debug("Save & Close blocked: one or more ROIs unnamed.")
             return
 
         msg = QMessageBox(self.viewer.window._qt_window)
@@ -1512,10 +1584,16 @@ def main():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
-    
+
+    # Keep the process alive after a napari window closes so we can return to
+    # the file picker for the NEXT VSI file. Without this Qt quits on the last
+    # window closing and the scheduled pick_next() never runs. The app is only
+    # explicitly quit when the user cancels the selection dialog (see pick_next).
+    app.setQuitOnLastWindowClosed(False)
+
     # Start picker after Qt loop starts
     QTimer.singleShot(0, pick_next)
-    
+
     napari.run(force=True)
 
 

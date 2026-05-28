@@ -127,18 +127,62 @@ def numpy_to_qpixmap(arr: np.ndarray) -> QPixmap:
     return QPixmap.fromImage(qimg)
 
 
-def _extract_label_image_from_vsi(vsi_path: str) -> "np.ndarray | None":
+def _parse_label_image_size(raw_meta: str) -> "tuple[int,int] | tuple[None,None]":
+    """
+    Extract the pixel size (W, H) of the 'Label' stack from raw VSI JSON metadata.
+    Returns (W, H) or (None, None) on failure.
+    """
+    import re
+    try:
+        # Locate the "Label" stack-name value, then search backward for the
+        # nearest "Image size" tag (format: "(0, 0, W, H)").
+        label_pos = raw_meta.find('"value":"Label"')
+        if label_pos < 0:
+            label_pos = raw_meta.find('"value": "Label"')
+        if label_pos < 0:
+            return None, None
+
+        # Search in a window before the Label tag
+        window = raw_meta[max(0, label_pos - 3000) : label_pos]
+        img_size_pos = window.rfind('"Image size"')
+        if img_size_pos < 0:
+            return None, None
+
+        snippet = window[img_size_pos : img_size_pos + 200]
+        m = re.search(
+            r'"value"\s*:\s*"\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)"',
+            snippet,
+        )
+        if not m:
+            return None, None
+
+        x0, y0, x1, y1 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        W = x1 if x0 == 0 else (x1 - x0)
+        H = y1 if y0 == 0 else (y1 - y0)
+        return W, H
+    except Exception:
+        return None, None
+
+
+def _extract_label_image_from_vsi(
+    vsi_path: str,
+    label_wh: "tuple[int,int] | None" = None,
+) -> "np.ndarray | None":
     """
     Read the slide-label photo from the Olympus VSI companion directory.
 
     Olympus VS200 VSI files keep the label image in:
         <vsi_dir>/_<vsi_base>_/stack1/frame_t.ets
-    as a JPEG-tile pyramid.  The *last* tile in the file is the coarsest
-    pyramid level (a single 512×512 JPEG covering the full label), which we
-    use as a compact thumbnail.
+    as a multi-level JPEG-tile pyramid.
+
+    When ``label_wh`` = (W, H) is provided the function reconstructs the
+    optimal pyramid level (targeting ~500 px in the shorter dimension) so
+    the returned thumbnail has the correct aspect ratio and detail.
+    Without it, a single coarsest-level tile is returned as a fallback.
 
     Returns an (H, W, 3) uint8 RGB array, or None if unavailable.
     """
+    import math
     try:
         vsi_dir = os.path.dirname(vsi_path)
         vsi_base = os.path.splitext(os.path.basename(vsi_path))[0]
@@ -154,7 +198,8 @@ def _extract_label_image_from_vsi(vsi_path: str) -> "np.ndarray | None":
         jpeg_soi = b"\xff\xd8\xff"
         jpeg_eoi = b"\xff\xd9"
 
-        last_valid = None
+        # Collect all valid 512×512 JPEG tiles (ordered by file offset)
+        all_tiles: list = []
         pos = 0
         while True:
             idx = data.find(jpeg_soi, pos)
@@ -166,17 +211,66 @@ def _extract_label_image_from_vsi(vsi_path: str) -> "np.ndarray | None":
                 try:
                     img = _PILImage.open(io.BytesIO(jpeg_bytes))
                     if img.size == (512, 512):
-                        last_valid = jpeg_bytes
+                        all_tiles.append({"offset": idx, "end": end + 2})
                 except Exception:
                     pass
             pos = idx + 1
 
-        if last_valid is None:
+        if not all_tiles:
             debug("No valid 512×512 JPEG tiles found in label ETS.")
             return None
 
-        label_img = _PILImage.open(io.BytesIO(last_valid)).convert("RGB")
-        return np.array(label_img)
+        # ── Reconstruct at the proper pyramid level if dimensions are known ───
+        if label_wh is not None and label_wh[0] and label_wh[1]:
+            W_label, H_label = label_wh
+
+            # Find the pyramid level k such that the reconstructed image is
+            # closest to ~500 px on the shorter side (but ≥ 300 px).
+            best_k = 0
+            for k in range(1, 10):
+                scale = 2 ** k
+                cw = math.ceil(W_label / scale)
+                ch = math.ceil(H_label / scale)
+                if min(cw, ch) < 300:
+                    break
+                best_k = k
+
+            k = best_k
+            scale = 2 ** k
+            n_cols = math.ceil(W_label / (512 * scale))
+            n_rows = math.ceil(H_label / (512 * scale))
+            n_level = n_cols * n_rows
+
+            # Cumulative tile count for all finer levels
+            level_start = sum(
+                math.ceil(W_label / (512 * 2 ** i)) * math.ceil(H_label / (512 * 2 ** i))
+                for i in range(k)
+            )
+            level_end = level_start + n_level
+            content_w = math.ceil(W_label / scale)
+            content_h = math.ceil(H_label / scale)
+
+            debug(
+                f"Label pyramid: W={W_label}, H={H_label}, level={k}, "
+                f"grid={n_cols}×{n_rows}, "
+                f"tiles[{level_start}:{level_end}], content={content_w}×{content_h}"
+            )
+
+            if level_end <= len(all_tiles):
+                canvas = _PILImage.new("RGB", (n_cols * 512, n_rows * 512), (255, 255, 255))
+                for row in range(n_rows):
+                    for col in range(n_cols):
+                        t = all_tiles[level_start + row * n_cols + col]
+                        tile_img = _PILImage.open(io.BytesIO(data[t["offset"] : t["end"]]))
+                        canvas.paste(tile_img, (col * 512, row * 512))
+                result = canvas.crop((0, 0, content_w, content_h))
+                return np.array(result.convert("RGB"))
+
+        # ── Fallback: use the single coarsest tile ────────────────────────────
+        debug("Label: using single coarsest pyramid tile as fallback.")
+        t = all_tiles[-1]
+        img = _PILImage.open(io.BytesIO(data[t["offset"] : t["end"]])).convert("RGB")
+        return np.array(img)
 
     except Exception as exc:
         debug(f"Label image extraction failed: {exc}")
@@ -337,6 +431,7 @@ class VSINapariROIApp:
         self._label_img: "np.ndarray | None" = None     # RGB thumbnail of slide label
         self._scene_coords: dict = {}                    # name -> {ox,oy,sx,sy} in µm
         self._overview_lbl_widget: "QLabel | None" = None  # dock QLabel for scene overview
+        self._tools_panel_ref = None                     # left-dock editing panel
 
     # ---------- Colors ----------
     def _pick_roi_color(self, idx: int):
@@ -368,7 +463,11 @@ class VSINapariROIApp:
             debug(f"Scene {i}: size=({s.size[0]} x {s.size[1]}), channels={s.num_channels}")
 
         # Extract slide-label thumbnail and stage coordinates (non-fatal)
-        self._label_img = _extract_label_image_from_vsi(self.vsi_path)
+        _label_w, _label_h = _parse_label_image_size(self.slide.raw_metadata)
+        debug(f"Label image dimensions from metadata: {_label_w}×{_label_h}")
+        self._label_img = _extract_label_image_from_vsi(
+            self.vsi_path, label_wh=(_label_w, _label_h) if _label_w else None
+        )
         debug(f"Label image: {'OK ' + str(self._label_img.shape) if self._label_img is not None else 'not found'}")
         self._scene_coords = _parse_scene_physical_coords(self.slide)
         debug(f"Scene coords parsed: {list(self._scene_coords.keys())}")
@@ -429,10 +528,17 @@ class VSINapariROIApp:
         self.shapes.events.data.connect(self._on_shapes_data_changed)
         debug("Connected shapes data change event.")
 
+        # Right dock: slice info (label photo + overview) + processing buttons
         panel = self._build_right_panel()
         self._dock_panel_ref = panel
         self.viewer.window.add_dock_widget(self._dock_panel_ref, name="ROI Controls", area="right")
-        debug("Dock widget added and reference stored.")
+
+        # Left dock: editing tools + ROI name fields
+        tools = self._build_tools_panel()
+        self._tools_panel_ref = tools
+        self.viewer.window.add_dock_widget(self._tools_panel_ref, name="ROI Editor", area="left")
+
+        debug("Dock widgets added.")
         debug("Napari launched.")
 
     def _force_polygon_mode(self):
@@ -729,34 +835,6 @@ class VSINapariROIApp:
         layout.addWidget(self.lbl_status)
         layout.addWidget(self.progress)
 
-        edit_box = QGroupBox("Editing")
-        edit_layout = QVBoxLayout(edit_box)
-
-        btn_del_last = QPushButton("Delete last ROI")
-        btn_del_last.clicked.connect(safe_slot(self.delete_last_polygon))
-        edit_layout.addWidget(btn_del_last)
-
-        btn_del_all = QPushButton("Delete ALL ROIs (reset)")
-        btn_del_all.clicked.connect(safe_slot(self.delete_all_polygons))
-        edit_layout.addWidget(btn_del_all)
-
-        layout.addWidget(edit_box)
-
-        name_box = QGroupBox("ROI Names (one per polygon)")
-        name_layout = QVBoxLayout(name_box)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-
-        container = QWidget()
-        self.roi_name_layout = QVBoxLayout(container)
-        self.roi_name_layout.setContentsMargins(4, 4, 4, 4)
-        self.roi_name_layout.setSpacing(6)
-
-        scroll.setWidget(container)
-        name_layout.addWidget(scroll)
-        layout.addWidget(name_box)
-
         proc_box = QGroupBox("Processing")
         proc_layout = QVBoxLayout(proc_box)
 
@@ -788,6 +866,43 @@ class VSINapariROIApp:
         layout.addStretch(1)
 
         self._update_header_ui()
+        return panel
+
+    def _build_tools_panel(self) -> QWidget:
+        """Left-dock panel: Editing buttons + ROI Names scroll area."""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+
+        edit_box = QGroupBox("Editing")
+        edit_layout = QVBoxLayout(edit_box)
+
+        btn_del_last = QPushButton("Delete last ROI")
+        btn_del_last.clicked.connect(safe_slot(self.delete_last_polygon))
+        edit_layout.addWidget(btn_del_last)
+
+        btn_del_all = QPushButton("Delete ALL ROIs (reset)")
+        btn_del_all.clicked.connect(safe_slot(self.delete_all_polygons))
+        edit_layout.addWidget(btn_del_all)
+
+        layout.addWidget(edit_box)
+
+        name_box = QGroupBox("ROI Names (one per polygon)")
+        name_layout = QVBoxLayout(name_box)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+
+        container = QWidget()
+        self.roi_name_layout = QVBoxLayout(container)
+        self.roi_name_layout.setContentsMargins(4, 4, 4, 4)
+        self.roi_name_layout.setSpacing(6)
+
+        scroll.setWidget(container)
+        name_layout.addWidget(scroll)
+        layout.addWidget(name_box)
+
+        layout.addStretch(1)
+
         self._sync_roi_ui()
         return panel
 

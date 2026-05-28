@@ -288,10 +288,12 @@ class RoiVerifierApp:
         self.output_file_path = output_file_path
         
         # State for Sliders and Visibility
-        self.sliders_initialized = False 
+        self.sliders_initialized = False
         self.slider_widgets = []
         self.slider_vars = []
-        self.is_updating = False 
+        self.slider_entries = []            # Entry widgets for typed intensity
+        self._slider_entry_syncing = False  # guard against circular updates
+        self.is_updating = False
         
         # VISIBILITY FLAGS
         self.show_contours_global = True
@@ -308,7 +310,7 @@ class RoiVerifierApp:
         self.plot_container.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         
         # 1. Slider Frame (Left)
-        self.slider_frame = ttk.Frame(self.plot_container, width=80)
+        self.slider_frame = ttk.Frame(self.plot_container, width=90)
         self.slider_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
         
         # --- GLOBAL HIDE BUTTON ---
@@ -317,32 +319,48 @@ class RoiVerifierApp:
         btn_hide_all.bind('<ButtonRelease-1>', lambda e: self.toggle_global_roi(True))
         btn_hide_all.pack(side=tk.TOP, pady=(0, 10))
         
-        # Create one vertical slider + hide button per detected channel
+        # Create one vertical slider + typed entry + hide button per detected channel.
+        # Slider length is adaptive so all 4 channels fit without being cut off.
+        _slider_len = max(55, min(100, 320 // max(self.n_channels, 1)))
+
         for i in range(self.n_channels):
-            # Frame for each slider to center it and add label
+            # Frame for each slider group
             sf = ttk.Frame(self.slider_frame)
-            sf.pack(side=tk.TOP, expand=True, fill=tk.BOTH, pady=5)
-            
-            # Label
+            sf.pack(side=tk.TOP, expand=True, fill=tk.BOTH, pady=2)
+
+            # Channel name label
             name = self.channel_config[i]['name'] if i < len(self.channel_config) else f"Ch{i}"
-            lbl = ttk.Label(sf, text=f"{name}\nMax", font=("Arial", 8), anchor="center", justify="center")
-            lbl.pack(side=tk.TOP, pady=(5,0))
-            
-            # Slider Variable
+            ttk.Label(sf, text=f"{name}\nMax", font=("Arial", 7),
+                      anchor="center", justify="center").pack(side=tk.TOP, pady=(2, 0))
+
+            # Slider variable
             sv = tk.DoubleVar(value=0)
             self.slider_vars.append(sv)
-            
-            # Slider Widget 
-            s = tk.Scale(sf, from_=255, to=0, orient=tk.VERTICAL, variable=sv, 
-                         showvalue=1, resolution=1, length=120, 
+
+            # Slider widget — showvalue=0 because the entry below shows the value
+            s = tk.Scale(sf, from_=255, to=0, orient=tk.VERTICAL, variable=sv,
+                         showvalue=0, resolution=1, length=_slider_len,
                          command=self.on_slider_change)
             s.pack(side=tk.TOP, expand=True, fill=tk.Y)
             self.slider_widgets.append(s)
-            
-            # Channel Hide Button
+
+            # ── Typed-value entry ──────────────────────────────────────────
+            # Shows the current slider value and accepts typed input.
+            # Press Enter (or Tab away) to apply the typed value.
+            entry = tk.Entry(sf, width=7, justify="center",
+                             bg="#3c3c3c", fg=FG_COLOR,
+                             insertbackground=FG_COLOR,
+                             relief="flat", font=("Arial", 8))
+            entry.pack(side=tk.TOP, pady=(1, 2))
+            entry.insert(0, "0")
+            self.slider_entries.append(entry)
+            entry.bind("<Return>",   lambda e, idx=i: self._apply_slider_entry(idx))
+            entry.bind("<FocusOut>", lambda e, idx=i: self._apply_slider_entry(idx))
+
+            # Channel Hide button
             btn_hide = ttk.Button(sf, text="Hide\nROI", width=4)
-            btn_hide.bind('<ButtonPress-1>', lambda e, ch=i: self.toggle_channel_roi(ch, False))
-            btn_hide.bind('<ButtonRelease-1>', lambda e, ch=i: self.toggle_channel_roi(ch, True))
+            btn_hide.bind("<ButtonPress-1>",   lambda e, ch=i: self.toggle_channel_roi(ch, False))
+            btn_hide.bind("<ButtonRelease-1>", lambda e, ch=i: self.toggle_channel_roi(ch, True))
             btn_hide.pack(side=tk.TOP, pady=2)
 
         # 2. Canvas Frame (Right)
@@ -465,6 +483,46 @@ class RoiVerifierApp:
         self.decision_status_label.config(text=f"Marked as {decision}", foreground=color_map.get(decision, FG_COLOR))
 
     def on_slider_change(self, val):
+        if not self.is_updating and not self._slider_entry_syncing:
+            self._sync_entries_from_sliders()
+            self.update_roi_display(recalc_roi=False)
+
+    def _sync_entries_from_sliders(self) -> None:
+        """Update all entry widgets to reflect current slider variable values."""
+        for var, entry in zip(self.slider_vars, self.slider_entries):
+            try:
+                entry.delete(0, tk.END)
+                entry.insert(0, str(int(var.get())))
+            except tk.TclError:
+                pass
+
+    def _apply_slider_entry(self, idx: int, event=None) -> None:
+        """
+        User pressed Enter (or tabbed away) from a slider entry box.
+        Parse the typed value, clamp to the slider's valid range, and apply.
+        Works for any dynamic range — slide-scanner images with values < 100
+        are handled exactly since the user can type the precise number.
+        """
+        if self._slider_entry_syncing or idx >= len(self.slider_entries):
+            return
+        entry  = self.slider_entries[idx]
+        var    = self.slider_vars[idx]
+        slider = self.slider_widgets[idx]
+        try:
+            val = int(entry.get().strip())
+            lo  = int(slider.cget("to"))      # minimum (always 0)
+            hi  = int(slider.cget("from"))    # maximum (255 / 4095 / 65535)
+            val = max(lo, min(hi, val))
+        except (ValueError, tk.TclError):
+            val = int(var.get())              # revert to current on bad input
+        self._slider_entry_syncing = True
+        var.set(val)
+        try:
+            entry.delete(0, tk.END)
+            entry.insert(0, str(val))
+        except tk.TclError:
+            pass
+        self._slider_entry_syncing = False
         if not self.is_updating:
             self.update_roi_display(recalc_roi=False)
             
@@ -606,8 +664,8 @@ class RoiVerifierApp:
                 
                 vmin = img_m.min()
                 if not self.sliders_initialized:
-                     auto_max = img_m.max()
-                     self.slider_vars[i].set(auto_max)
+                    auto_max = img_m.max()
+                    self.slider_vars[i].set(auto_max)
                 vmax = self.slider_vars[i].get()
                 if vmax <= vmin: vmax = vmin + 1
                 
@@ -650,6 +708,8 @@ class RoiVerifierApp:
                         merged_ctx_rgb[..., rgb_idx] += norm_val_c * weight
         
         self.sliders_initialized = True
+        # Populate entry boxes with the auto-detected max values on first load
+        self._sync_entries_from_sliders()
 
         # Display Merged
         merged_zoom_rgb = np.clip(merged_zoom_rgb, 0, 1)

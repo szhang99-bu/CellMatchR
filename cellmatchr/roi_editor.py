@@ -122,28 +122,41 @@ def _find_samples(seg_folder: str, channel: int) -> list[dict]:
 def _merge_additions(existing: np.ndarray,
                      additions: np.ndarray) -> tuple[np.ndarray, int, set[int]]:
     """
-    Connected-components on the drawn layer → unique IDs for each blob.
-    Only fills background pixels (existing == 0).
+    Separate every disconnected painted blob into its own ROI.
 
+    Crucially, this runs connected-components INDEPENDENTLY for each
+    label value (colour).  That means two cells painted in different
+    colours that are physically touching will always become separate
+    ROIs — which is exactly the point of having multiple colours.
+
+    Two cells painted in the SAME colour that are touching will be
+    merged into one ROI (user should use a different colour in that case).
+
+    Only fills pixels where existing mask == 0 (background).
     Returns (new_mask, n_added, new_ids).
     """
-    drawn_binary = (additions > 0).astype(np.uint8)
-    labeled, n   = connected_components(drawn_binary, return_num=True, connectivity=2)
-    if n == 0:
+    label_values = np.unique(additions)
+    label_values = label_values[label_values > 0]   # ignore background
+    if len(label_values) == 0:
         return existing, 0, set()
 
     max_id   = int(existing.max())
     new_mask = existing.copy()
     new_ids  = set()
     added    = 0
-    for i in range(1, n + 1):
-        region = (labeled == i) & (existing == 0)
-        if region.sum() == 0:
-            continue
-        nid = max_id + added + 1
-        new_mask[region] = nid
-        new_ids.add(nid)
-        added += 1
+
+    for lv in label_values:
+        # Binary mask for just this colour
+        single = (additions == lv).astype(np.uint8)
+        labeled, n = connected_components(single, return_num=True, connectivity=2)
+        for i in range(1, n + 1):
+            region = (labeled == i) & (existing == 0)
+            if region.sum() == 0:
+                continue
+            nid = max_id + added + 1
+            new_mask[region] = nid
+            new_ids.add(nid)
+            added += 1
 
     return new_mask, added, new_ids
 
@@ -211,6 +224,16 @@ def _save_debug_png(raw_path: str,
     plt.close(fig)
 
 
+# ── Brush colour palette ────────────────────────────────────────────────────
+# Three visually distinct colours the user can switch between for adjacent cells.
+# Each entry:  (label_value, napari_colour_name, hex_for_qt_button, display_name)
+BRUSH_COLOURS = [
+    (1, "yellow",  "#e6d800", "Yellow"),
+    (2, "cyan",    "#00e5e5", "Cyan"),
+    (3, "magenta", "#e500e5", "Magenta"),
+]
+
+
 # ── Main application ──────────────────────────────────────────────────────────
 
 class RoiEditorApp:
@@ -250,6 +273,7 @@ class RoiEditorApp:
         self._sample_lbl = None
         self._status_lbl = None
         self._save_btn   = None     # stored so we can disable it in test mode
+        self._colour_btns: dict = {}  # label_value → QPushButton
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -268,7 +292,7 @@ class RoiEditorApp:
 
     def _build_dock(self):
         from qtpy.QtWidgets import (
-            QWidget, QVBoxLayout, QPushButton, QLabel, QFrame,
+            QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
         )
         from qtpy.QtCore import Qt
         from qtpy.QtGui import QFont
@@ -309,8 +333,9 @@ class RoiEditorApp:
             "<b>How to add missed cells:</b><br><br>"
             "1. Make sure <i>Add ROIs here</i> layer is selected<br>"
             "2. Press <b>P</b> for the brush<br>"
-            "3. Paint over missed cells — <b>same colour is fine</b>, "
-               "each disconnected blob becomes its own ROI<br>"
+            "3. Paint over missed cells<br>"
+            "   • Same colour + not touching → separate ROIs ✓<br>"
+            "   • <b>Touching cells → use different colours</b><br>"
             "4. Press Save when done<br><br>"
             "<i>[ and ] keys adjust brush size</i>"
         )
@@ -336,6 +361,37 @@ class RoiEditorApp:
         self._status_lbl.setStyleSheet("font-size:11px;")
         lay.addWidget(self._status_lbl)
 
+        lay.addWidget(self._hr())
+
+        # ── Colour picker ──
+        colour_lbl = QLabel("Brush colour  (use different colours for touching cells):")
+        colour_lbl.setWordWrap(True)
+        colour_lbl.setStyleSheet("font-size:10px; color:#aaaaaa;")
+        lay.addWidget(colour_lbl)
+
+        colour_row = QWidget()
+        colour_row_lay = QHBoxLayout()
+        colour_row_lay.setContentsMargins(0, 0, 0, 0)
+        colour_row_lay.setSpacing(4)
+        colour_row.setLayout(colour_row_lay)
+
+        self._colour_btns = {}
+        for lv, _napari_name, hex_col, display_name in BRUSH_COLOURS:
+            btn = QPushButton(display_name)
+            btn.setCheckable(True)
+            btn.setChecked(lv == 1)   # yellow selected by default
+            btn.setStyleSheet(
+                f"QPushButton {{ background:{hex_col}; color:#111; font-weight:bold;"
+                f" padding:4px 6px; border-radius:4px; border:2px solid transparent; }}"
+                f"QPushButton:checked {{ border:2px solid white; }}"
+                f"QPushButton:hover {{ opacity:0.85; }}"
+            )
+            # Capture lv in default arg to avoid closure issue
+            btn.clicked.connect(lambda _, label=lv: self._set_brush_colour(label))
+            colour_row_lay.addWidget(btn)
+            self._colour_btns[lv] = btn
+
+        lay.addWidget(colour_row)
         lay.addWidget(self._hr())
 
         # ── Buttons ──
@@ -414,13 +470,13 @@ class RoiEditorApp:
                 msk_d, name="Existing ROIs", opacity=0.45,
             )
             self._mask_lyr.editable = False
+            # Pre-assign all three brush colours so napari never needs to
+            # recompute the LUT on a stroke (the main cause of freezes).
+            _lut = {lv: name for lv, name, _, _ in BRUSH_COLOURS}
             self._add_lyr = self.viewer.add_labels(
                 np.zeros_like(msk_d, dtype=np.int32),
                 name="Add ROIs here", opacity=0.75,
-                # Fix label-1 to bright yellow so napari never needs to
-                # recompute the colour LUT on each brush stroke — this is
-                # the main cause of per-stroke freezes on macOS/Metal.
-                color={1: "yellow"},
+                color=_lut,
             )
             self._add_lyr.brush_size     = self.DEFAULT_BRUSH_SIZE
             self._add_lyr.selected_label = 1
@@ -438,6 +494,15 @@ class RoiEditorApp:
         self.viewer.reset_view()
 
     # ── Button callbacks ─────────────────────────────────────────────────────
+
+    def _set_brush_colour(self, label: int) -> None:
+        """Switch the active brush label and update button checked states."""
+        if self._add_lyr is not None:
+            self._add_lyr.selected_label = label
+            self._add_lyr.mode = "paint"
+            self.viewer.layers.selection.active = self._add_lyr
+        for lv, btn in self._colour_btns.items():
+            btn.setChecked(lv == label)
 
     def _save_and_next(self) -> None:
         self._save_current()

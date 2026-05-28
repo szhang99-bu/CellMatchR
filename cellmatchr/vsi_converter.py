@@ -3,6 +3,7 @@
 # 02/01/2026
 
 import os
+import io
 import json
 import traceback
 import numpy as np
@@ -17,7 +18,8 @@ from qtpy.QtWidgets import (
     QLineEdit, QHBoxLayout, QScrollArea, QSizePolicy, QProgressBar,
     QApplication, QFileDialog
 )
-from qtpy.QtCore import QTimer, QEventLoop
+from qtpy.QtCore import QTimer, QEventLoop, Qt
+from qtpy.QtGui import QImage, QPixmap
 
 
 # ----------------------------
@@ -29,6 +31,8 @@ OVERVIEW_WIDTH = 2500          # overview width (navigation only)
 START_SCENE_ID = 0             # start slice (0-index internally)
 MASK_DTYPE = np.uint8          # saved mask dtype (0/255 preview mask)
 SHOW_DEBUG_PANEL = False
+
+DOCK_IMG_WIDTH = 270           # max pixel width for label / overview thumbnails in dock
 
 
 # ----------------------------
@@ -104,6 +108,140 @@ def get_channel_label(scene, c: int) -> str:
             except Exception:
                 pass
     return f"ch{c}"
+
+
+def numpy_to_qpixmap(arr: np.ndarray) -> QPixmap:
+    """Convert a uint8 numpy array (H,W,3) or (H,W) to QPixmap."""
+    arr = np.ascontiguousarray(arr.astype(np.uint8))
+    if arr.ndim == 2:
+        h, w = arr.shape
+        qimg = QImage(arr.tobytes(), w, h, w, QImage.Format_Grayscale8)
+    elif arr.ndim == 3 and arr.shape[2] == 3:
+        h, w = arr.shape[:2]
+        qimg = QImage(arr.tobytes(), w, h, 3 * w, QImage.Format_RGB888)
+    elif arr.ndim == 3 and arr.shape[2] == 4:
+        h, w = arr.shape[:2]
+        qimg = QImage(arr.tobytes(), w, h, 4 * w, QImage.Format_RGBA8888)
+    else:
+        raise ValueError(f"Unsupported array shape {arr.shape}")
+    return QPixmap.fromImage(qimg)
+
+
+def _extract_label_image_from_vsi(vsi_path: str) -> "np.ndarray | None":
+    """
+    Read the slide-label photo from the Olympus VSI companion directory.
+
+    Olympus VS200 VSI files keep the label image in:
+        <vsi_dir>/_<vsi_base>_/stack1/frame_t.ets
+    as a JPEG-tile pyramid.  The *last* tile in the file is the coarsest
+    pyramid level (a single 512×512 JPEG covering the full label), which we
+    use as a compact thumbnail.
+
+    Returns an (H, W, 3) uint8 RGB array, or None if unavailable.
+    """
+    try:
+        vsi_dir = os.path.dirname(vsi_path)
+        vsi_base = os.path.splitext(os.path.basename(vsi_path))[0]
+        ets_path = os.path.join(vsi_dir, f"_{vsi_base}_", "stack1", "frame_t.ets")
+        if not os.path.exists(ets_path):
+            debug(f"Label ETS not found: {ets_path}")
+            return None
+
+        with open(ets_path, "rb") as fh:
+            data = fh.read()
+
+        from PIL import Image as _PILImage
+        jpeg_soi = b"\xff\xd8\xff"
+        jpeg_eoi = b"\xff\xd9"
+
+        last_valid = None
+        pos = 0
+        while True:
+            idx = data.find(jpeg_soi, pos)
+            if idx < 0:
+                break
+            end = data.find(jpeg_eoi, idx + 3)
+            if end >= 0:
+                jpeg_bytes = data[idx : end + 2]
+                try:
+                    img = _PILImage.open(io.BytesIO(jpeg_bytes))
+                    if img.size == (512, 512):
+                        last_valid = jpeg_bytes
+                except Exception:
+                    pass
+            pos = idx + 1
+
+        if last_valid is None:
+            debug("No valid 512×512 JPEG tiles found in label ETS.")
+            return None
+
+        label_img = _PILImage.open(io.BytesIO(last_valid)).convert("RGB")
+        return np.array(label_img)
+
+    except Exception as exc:
+        debug(f"Label image extraction failed: {exc}")
+        return None
+
+
+def _parse_scene_physical_coords(slide) -> dict:
+    """
+    Parse physical stage coordinates (µm) for each stack from VSI metadata.
+
+    Returns dict mapping stack-name → {'ox': µm, 'oy': µm, 'sx': µm/px, 'sy': µm/px}.
+    Each 'ox','oy' is the top-left corner; 'sx','sy' are pixel sizes in µm.
+    Returns {} on any failure.
+    """
+    try:
+        meta = slide.raw_metadata
+        coords: dict = {}
+        search_start = 0
+        while True:
+            origin_tag = meta.find('"RWC frame origin"', search_start)
+            if origin_tag < 0:
+                break
+            # value of origin tag
+            v0 = meta.find('"value":', origin_tag)
+            if v0 < 0 or v0 > origin_tag + 200:
+                search_start = origin_tag + 1
+                continue
+            q1 = meta.find('"', v0 + 8) + 1
+            q2 = meta.find('"', q1)
+            origin_str = meta[q1:q2]
+
+            # stack name (expected within 500 chars after origin tag)
+            sn_tag = meta.find('"Stack name"', origin_tag)
+            if sn_tag < 0 or sn_tag > origin_tag + 500:
+                search_start = origin_tag + 1
+                continue
+            sv0 = meta.find('"value":', sn_tag)
+            sq1 = meta.find('"', sv0 + 8) + 1
+            sq2 = meta.find('"', sq1)
+            stack_name = meta[sq1:sq2]
+
+            # scale (expected within 500 chars after origin tag)
+            sc_tag = meta.find('"RWC frame scale"', origin_tag)
+            if sc_tag < 0 or sc_tag > origin_tag + 500:
+                search_start = origin_tag + 1
+                continue
+            sc0 = meta.find('"value":', sc_tag)
+            scq1 = meta.find('"', sc0 + 8) + 1
+            scq2 = meta.find('"', scq1)
+            scale_str = meta[scq1:scq2]
+
+            try:
+                ox, oy = [float(v.strip()) for v in origin_str.strip("()").split(",")]
+                sx, sy = [float(v.strip()) for v in scale_str.strip("()").split(",")]
+                coords[stack_name] = {"ox": ox, "oy": oy, "sx": sx, "sy": sy}
+            except Exception:
+                pass
+
+            search_start = origin_tag + 1
+
+        return coords
+
+    except Exception as exc:
+        debug(f"Scene coord parsing failed: {exc}")
+        return {}
 
 
 def compute_overview(scene, overview_width: int):
@@ -195,6 +333,11 @@ class VSINapariROIApp:
         self._dock_panel_ref = None
         self._syncing_ui = False
 
+        # Slide label & overview panel
+        self._label_img: "np.ndarray | None" = None     # RGB thumbnail of slide label
+        self._scene_coords: dict = {}                    # name -> {ox,oy,sx,sy} in µm
+        self._overview_lbl_widget: "QLabel | None" = None  # dock QLabel for scene overview
+
     # ---------- Colors ----------
     def _pick_roi_color(self, idx: int):
         palette = [
@@ -223,6 +366,12 @@ class VSINapariROIApp:
         for i in range(self.total_scenes):
             s = self.slide.get_scene(i)
             debug(f"Scene {i}: size=({s.size[0]} x {s.size[1]}), channels={s.num_channels}")
+
+        # Extract slide-label thumbnail and stage coordinates (non-fatal)
+        self._label_img = _extract_label_image_from_vsi(self.vsi_path)
+        debug(f"Label image: {'OK ' + str(self._label_img.shape) if self._label_img is not None else 'not found'}")
+        self._scene_coords = _parse_scene_physical_coords(self.slide)
+        debug(f"Scene coords parsed: {list(self._scene_coords.keys())}")
 
     def load_scene(self, scene_id: int):
         if scene_id < 0 or scene_id >= self.total_scenes:
@@ -421,10 +570,152 @@ class VSINapariROIApp:
             visible=True,
         )
 
+    # ---------- Slide label / scene overview ----------
+    def _build_scene_overview_img(self) -> "np.ndarray | None":
+        """
+        Render a small (~DOCK_IMG_WIDTH px wide) composite image of all high-res
+        scenes placed at their physical positions, with a red rectangle around the
+        currently loaded scene.  Uses slideio read_block() at thumbnail resolution.
+        Returns an (H, W, 3) uint8 RGB array, or None on failure.
+        """
+        if not self._scene_coords or self.total_scenes == 0:
+            return None
+        try:
+            from PIL import Image as _PIL, ImageDraw as _Draw
+
+            # Collect physical bounds for every scene that has coord metadata
+            scene_bounds = []
+            for i in range(self.total_scenes):
+                s = self.slide.get_scene(i)
+                p = self._scene_coords.get(s.name)
+                if p is None:
+                    continue
+                w_px, h_px = s.size
+                x0, y0 = p["ox"], p["oy"]
+                x1 = x0 + w_px * p["sx"]
+                y1 = y0 + h_px * p["sy"]
+                scene_bounds.append(
+                    {"i": i, "name": s.name, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
+                )
+
+            if not scene_bounds:
+                return None
+
+            all_x0 = min(b["x0"] for b in scene_bounds)
+            all_y0 = min(b["y0"] for b in scene_bounds)
+            all_x1 = max(b["x1"] for b in scene_bounds)
+            all_y1 = max(b["y1"] for b in scene_bounds)
+
+            phys_w = all_x1 - all_x0
+            phys_h = all_y1 - all_y0
+            if phys_w <= 0 or phys_h <= 0:
+                return None
+
+            canvas_w = DOCK_IMG_WIDTH
+            px_per_um = canvas_w / phys_w
+            canvas_h = max(1, int(phys_h * px_per_um))
+
+            canvas = np.full((canvas_h, canvas_w, 3), 25, dtype=np.uint8)
+
+            for b in scene_bounds:
+                x0_c = int((b["x0"] - all_x0) * px_per_um)
+                y0_c = int((b["y0"] - all_y0) * px_per_um)
+                x1_c = max(x0_c + 1, int((b["x1"] - all_x0) * px_per_um))
+                y1_c = max(y0_c + 1, int((b["y1"] - all_y0) * px_per_um))
+                tw = x1_c - x0_c
+                th = y1_c - y0_c
+
+                scene = self.slide.get_scene(b["i"])
+                img_data = scene.read_block(size=(tw, th))
+
+                # Use first channel (DAPI / brightest) for grayscale composite
+                ch0 = (img_data[:, :, 0] if img_data.ndim == 3 else img_data).astype(np.float32)
+                nonzero = ch0[ch0 > 0]
+                p99 = float(np.percentile(nonzero, 99)) if nonzero.size > 0 else 1.0
+                ch0_u8 = np.clip(ch0 / max(p99, 1.0), 0.0, 1.0)
+                ch0_u8 = (ch0_u8 * 210).astype(np.uint8)
+
+                ph = min(ch0_u8.shape[0], canvas_h - y0_c)
+                pw = min(ch0_u8.shape[1], canvas_w - x0_c)
+                if ph > 0 and pw > 0:
+                    canvas[y0_c : y0_c + ph, x0_c : x0_c + pw] = (
+                        np.stack([ch0_u8[:ph, :pw]] * 3, axis=-1)
+                    )
+
+            # Draw red rectangle for the current scene
+            cur_name = self.scene.name if self.scene is not None else ""
+            pil_img = _PIL.fromarray(canvas)
+            draw = _Draw.Draw(pil_img)
+            for b in scene_bounds:
+                if b["name"] == cur_name:
+                    x0_c = int((b["x0"] - all_x0) * px_per_um)
+                    y0_c = int((b["y0"] - all_y0) * px_per_um)
+                    x1_c = max(x0_c + 1, int((b["x1"] - all_x0) * px_per_um))
+                    y1_c = max(y0_c + 1, int((b["y1"] - all_y0) * px_per_um))
+                    for t in range(3):
+                        draw.rectangle(
+                            [x0_c - t, y0_c - t, x1_c + t, y1_c + t],
+                            outline=(255, 50, 50),
+                        )
+                    break
+
+            return np.array(pil_img)
+
+        except Exception as exc:
+            debug(f"Scene overview render failed: {exc}")
+            return None
+
+    def _update_overview_display(self):
+        """Redraw the scene-overview QLabel with the current scene highlighted."""
+        if self._overview_lbl_widget is None:
+            return
+        try:
+            ov_arr = self._build_scene_overview_img()
+            if ov_arr is not None:
+                pix = numpy_to_qpixmap(ov_arr)
+                self._overview_lbl_widget.setPixmap(
+                    pix.scaledToWidth(DOCK_IMG_WIDTH, Qt.SmoothTransformation)
+                )
+        except Exception as exc:
+            debug(f"Overview display update failed: {exc}")
+
     # ---------- Right panel ----------
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
+
+        # ── Slide label image ─────────────────────────────────────────────────
+        if self._label_img is not None:
+            try:
+                label_box = QGroupBox("Slide Label")
+                label_box_layout = QVBoxLayout(label_box)
+                label_box_layout.setContentsMargins(4, 4, 4, 4)
+                lbl_pix = QLabel()
+                lbl_pix.setAlignment(Qt.AlignCenter)
+                pix = numpy_to_qpixmap(self._label_img)
+                lbl_pix.setPixmap(pix.scaledToWidth(DOCK_IMG_WIDTH, Qt.SmoothTransformation))
+                label_box_layout.addWidget(lbl_pix)
+                layout.addWidget(label_box)
+            except Exception as exc:
+                debug(f"Label image widget failed: {exc}")
+
+        # ── Scene overview (all slices, current highlighted) ──────────────────
+        ov_arr = self._build_scene_overview_img()
+        if ov_arr is not None:
+            try:
+                ov_box = QGroupBox("Slide Overview  (red = current slice)")
+                ov_box_layout = QVBoxLayout(ov_box)
+                ov_box_layout.setContentsMargins(4, 4, 4, 4)
+                self._overview_lbl_widget = QLabel()
+                self._overview_lbl_widget.setAlignment(Qt.AlignCenter)
+                pix = numpy_to_qpixmap(ov_arr)
+                self._overview_lbl_widget.setPixmap(
+                    pix.scaledToWidth(DOCK_IMG_WIDTH, Qt.SmoothTransformation)
+                )
+                ov_box_layout.addWidget(self._overview_lbl_widget)
+                layout.addWidget(ov_box)
+            except Exception as exc:
+                debug(f"Scene overview widget failed: {exc}")
 
         self.lbl_file = QLabel()
         self.lbl_slice = QLabel()
@@ -802,6 +1093,7 @@ class VSINapariROIApp:
 
             self.load_scene(next_id)
             self._add_overview_layers()
+            self._update_overview_display()
 
             # reset ROI layer
             self.shapes.data = []
@@ -926,6 +1218,7 @@ class VSINapariROIApp:
             next_id = self.scene_id + 1
             self.load_scene(next_id)
             self._add_overview_layers()
+            self._update_overview_display()
             self.shapes.data = []
             self.roi_names = []
             self.roi_colors = []

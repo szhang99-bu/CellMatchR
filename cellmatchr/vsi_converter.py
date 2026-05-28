@@ -184,6 +184,7 @@ def _extract_label_image_from_vsi(
     Returns an (H, W, 3) uint8 RGB array, or None if unavailable.
     """
     import math
+    import struct
     try:
         vsi_dir = os.path.dirname(vsi_path)
         vsi_base = os.path.splitext(os.path.basename(vsi_path))[0]
@@ -196,10 +197,89 @@ def _extract_label_image_from_vsi(
             data = fh.read()
 
         from PIL import Image as _PILImage
+
+        # ── Parse the ETS binary tile-index ("used chunks") table ─────────────
+        # The sequential JPEG order in the file is NOT a reliable pyramid
+        # layout (it differs between captures), so we MUST use the authoritative
+        # per-tile coordinates recorded in this index.  Each chunk records its
+        # dims = (x_tile_index, y_tile_index, z, pyramid_level) plus the byte
+        # offset/size of its JPEG payload.
+        TILE = 512
+        chunks: list = []  # each: (x, y, level, offset, nbytes)
+        if data[:4] == b"SIS\x00":
+            try:
+                ndims, = struct.unpack_from("<I", data, 12)
+                used_chunk_off, = struct.unpack_from("<Q", data, 32)
+                n_used_chunks, = struct.unpack_from("<I", data, 40)
+                p = used_chunk_off
+                for _ in range(n_used_chunks):
+                    dims = struct.unpack_from(f"<{ndims}i", data, p + 4)
+                    offset, = struct.unpack_from("<Q", data, p + 4 + ndims * 4)
+                    nbytes, = struct.unpack_from("<I", data, p + 4 + ndims * 4 + 8)
+                    # dims layout: x, y, (z...), level — level is the last dim
+                    x_idx = dims[0]
+                    y_idx = dims[1]
+                    level = dims[-1]
+                    chunks.append((x_idx, y_idx, level, offset, nbytes))
+                    p += 4 + ndims * 4 + 8 + 4 + 4
+            except Exception as exc:
+                debug(f"ETS index parse failed ({exc}); falling back to JPEG scan.")
+                chunks = []
+
+        # ── Reconstruct using the index when dimensions + index are available ──
+        if chunks and label_wh is not None and label_wh[0] and label_wh[1]:
+            W_label, H_label = label_wh
+
+            # Choose the pyramid level whose reconstructed image is closest to
+            # ~500 px on the shorter side (but ≥ 300 px), matching prior behaviour.
+            best_k = 0
+            for k in range(1, 10):
+                scale = 2 ** k
+                cw = math.ceil(W_label / scale)
+                ch = math.ceil(H_label / scale)
+                if min(cw, ch) < 300:
+                    break
+                best_k = k
+
+            # Clamp to a level that actually exists in the index.
+            levels_present = sorted({c[2] for c in chunks})
+            if best_k not in levels_present:
+                best_k = min(levels_present, key=lambda lv: abs(lv - best_k))
+
+            k = best_k
+            scale = 2 ** k
+            lvl_chunks = [c for c in chunks if c[2] == k]
+            if lvl_chunks:
+                n_cols = max(c[0] for c in lvl_chunks) + 1
+                n_rows = max(c[1] for c in lvl_chunks) + 1
+                content_w = math.ceil(W_label / scale)
+                content_h = math.ceil(H_label / scale)
+
+                debug(
+                    f"Label (ETS index): W={W_label}, H={H_label}, level={k}, "
+                    f"grid={n_cols}×{n_rows}, tiles={len(lvl_chunks)}, "
+                    f"content={content_w}×{content_h}"
+                )
+
+                canvas = _PILImage.new(
+                    "RGB", (n_cols * TILE, n_rows * TILE), (255, 255, 255)
+                )
+                for x_idx, y_idx, _lv, off, nb in lvl_chunks:
+                    try:
+                        tile_img = _PILImage.open(
+                            io.BytesIO(data[off : off + nb])
+                        ).convert("RGB")
+                        canvas.paste(tile_img, (x_idx * TILE, y_idx * TILE))
+                    except Exception:
+                        pass
+                result = canvas.crop((0, 0, content_w, content_h))
+                arr = np.array(result.convert("RGB"))
+                h80 = max(1, int(arr.shape[0] * 0.8))
+                return arr[:h80, :, :]
+
+        # ── Fallback: scan sequential JPEG tiles (legacy behaviour) ────────────
         jpeg_soi = b"\xff\xd8\xff"
         jpeg_eoi = b"\xff\xd9"
-
-        # Collect all valid 512×512 JPEG tiles (ordered by file offset)
         all_tiles: list = []
         pos = 0
         while True:
@@ -221,55 +301,6 @@ def _extract_label_image_from_vsi(
             debug("No valid 512×512 JPEG tiles found in label ETS.")
             return None
 
-        # ── Reconstruct at the proper pyramid level if dimensions are known ───
-        if label_wh is not None and label_wh[0] and label_wh[1]:
-            W_label, H_label = label_wh
-
-            # Find the pyramid level k such that the reconstructed image is
-            # closest to ~500 px on the shorter side (but ≥ 300 px).
-            best_k = 0
-            for k in range(1, 10):
-                scale = 2 ** k
-                cw = math.ceil(W_label / scale)
-                ch = math.ceil(H_label / scale)
-                if min(cw, ch) < 300:
-                    break
-                best_k = k
-
-            k = best_k
-            scale = 2 ** k
-            n_cols = math.ceil(W_label / (512 * scale))
-            n_rows = math.ceil(H_label / (512 * scale))
-            n_level = n_cols * n_rows
-
-            # Cumulative tile count for all finer levels
-            level_start = sum(
-                math.ceil(W_label / (512 * 2 ** i)) * math.ceil(H_label / (512 * 2 ** i))
-                for i in range(k)
-            )
-            level_end = level_start + n_level
-            content_w = math.ceil(W_label / scale)
-            content_h = math.ceil(H_label / scale)
-
-            debug(
-                f"Label pyramid: W={W_label}, H={H_label}, level={k}, "
-                f"grid={n_cols}×{n_rows}, "
-                f"tiles[{level_start}:{level_end}], content={content_w}×{content_h}"
-            )
-
-            if level_end <= len(all_tiles):
-                canvas = _PILImage.new("RGB", (n_cols * 512, n_rows * 512), (255, 255, 255))
-                for row in range(n_rows):
-                    for col in range(n_cols):
-                        t = all_tiles[level_start + row * n_cols + col]
-                        tile_img = _PILImage.open(io.BytesIO(data[t["offset"] : t["end"]]))
-                        canvas.paste(tile_img, (col * 512, row * 512))
-                result = canvas.crop((0, 0, content_w, content_h))
-                arr = np.array(result.convert("RGB"))
-                h80 = max(1, int(arr.shape[0] * 0.8))
-                return arr[:h80, :, :]
-
-        # ── Fallback: use the single coarsest tile ────────────────────────────
         debug("Label: using single coarsest pyramid tile as fallback.")
         t = all_tiles[-1]
         img = _PILImage.open(io.BytesIO(data[t["offset"] : t["end"]])).convert("RGB")

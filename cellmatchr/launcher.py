@@ -183,6 +183,8 @@ class CellMatchrLauncher:
         self._val_next_btn: tk.Button | None = None
         self._val_run_btn: tk.Button | None = None
         self._val_spin_job: str | None = None
+        self._review_btn: tk.Button | None = None
+        self._review_status: tk.Label | None = None
         # analysis channel selections (populated in Step 5)
         self._ana_coi_chan_var: tk.StringVar | None = None
         self._ana_pm_chan_var: tk.StringVar | None = None
@@ -1727,6 +1729,68 @@ class CellMatchrLauncher:
 
         threading.Thread(target=_thread, daemon=True).start()
 
+    def _launch_roi_editor(self) -> None:
+        """Launch the napari ROI editor so the user can add missed cells before validation."""
+        self._sync_vars_to_config()
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj:
+            if hasattr(self, "_review_status"):
+                self._review_status.config(text="⚠  No project folder set.", fg=RED)
+            return
+
+        # Resolve segmentation input folder (respects the dropdown selection)
+        if self._val_input_var and self._val_input_var.get():
+            seg_sub = self._val_input_var.get()
+        else:
+            variants = self._find_variants(SUBFOLDER["seg"])
+            seg_sub  = variants[-1] if variants else SUBFOLDER["seg"]
+        seg_folder = os.path.join(proj, seg_sub)
+
+        if not os.path.isdir(seg_folder):
+            if hasattr(self, "_review_status"):
+                self._review_status.config(
+                    text=f"⚠  Segmentation output not found: {seg_sub}", fg=RED)
+            return
+
+        # Derive channel from the channel dropdown
+        channel = 2   # fallback
+        if self._val_channel_var and self._val_channel_var.get():
+            try:
+                channel = int(self._val_channel_var.get().replace("Channel", "").strip())
+            except ValueError:
+                pass
+
+        if hasattr(self, "_review_btn"):
+            self._review_btn.config(state="disabled", text="  Opening…")
+        if hasattr(self, "_review_status"):
+            self._review_status.config(text="Launching napari…", fg=ACCENT)
+
+        def _restore():
+            if hasattr(self, "_review_btn"):
+                try:
+                    self._review_btn.config(state="normal",
+                                            text="🔍  Review Segmented Images")
+                except tk.TclError:
+                    pass
+            if hasattr(self, "_review_status"):
+                try:
+                    self._review_status.config(text="✔  Editor opened.", fg=GREEN)
+                except tk.TclError:
+                    pass
+
+        try:
+            subprocess.Popen([
+                sys.executable,
+                self._script("roi_editor.py"),
+                "--seg-folder", seg_folder,
+                "--channel",    str(channel),
+            ])
+            self.root.after(4000, _restore)
+        except Exception as exc:
+            _restore()
+            if hasattr(self, "_review_status"):
+                self._review_status.config(text=f"✗  {exc}", fg=RED)
+
     def _run_validation_step(self) -> None:
         """Launch the validator from the Validation step card."""
         self._sync_vars_to_config()
@@ -1911,6 +1975,34 @@ class CellMatchrLauncher:
                 bg=CARD, fg=YELLOW, font=FONT, wraplength=660,
             ).pack(anchor="w")
             self._val_channel_var = None
+
+        # ── Pre-validation ROI review ─────────────────────────────────
+        review_card = self._card(parent, "Review Segmented Images")
+        tk.Label(
+            review_card,
+            text="Before validating, you can open a napari window to manually add "
+                 "any cells the model missed. Each disconnected brush stroke is "
+                 "automatically treated as a separate ROI — no need to change colour "
+                 "between cells. Changes are saved back to the mask TIFFs and will "
+                 "appear in the validator.",
+            bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        _review_btn_row = tk.Frame(review_card, bg=CARD)
+        _review_btn_row.pack(anchor="w")
+        self._review_btn = tk.Button(
+            _review_btn_row,
+            text="🔍  Review Segmented Images",
+            command=self._launch_roi_editor,
+            bg=CARD, fg=FG, relief="solid", bd=1,
+            font=FONT, padx=10, pady=4, cursor="hand2",
+            activebackground=CARD, activeforeground=ACCENT,
+        )
+        self._review_btn.pack(side="left")
+        self._review_status = tk.Label(
+            _review_btn_row, text="", bg=CARD, fg=MUTED, font=FONT,
+        )
+        self._review_status.pack(side="left", padx=(10, 0))
 
         # ── Channel display names (all channels) ─────────────────────
         names_card = self._card(parent, "Channel Display Names")

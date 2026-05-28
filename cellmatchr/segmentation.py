@@ -370,6 +370,56 @@ def filter_labeled_tile_by_raw_mean_and_shape(labeled_tile, raw_tile):
 
 
 # =============================================================================
+# FINAL GLOBAL RE-FILTER
+# =============================================================================
+
+def _refilter_final_segmentation(label_image: np.ndarray,
+                                  min_size: float,
+                                  max_size: float) -> np.ndarray:
+    """
+    Remove objects that are too small or too large from the FULLY ASSEMBLED
+    segmentation image.
+
+    Why this is needed
+    ------------------
+    Per-tile size filtering runs on the complete tile before the halo region
+    is cropped away.  A cell with area 800 px may pass the 400-px minimum on
+    the tile, but have only 200 px inside the tile's core region.  That 200-px
+    fragment then gets written into the final image — well below the user's
+    threshold.  This function catches those fragments after stitching.
+    """
+    if label_image.max() == 0:
+        return label_image
+
+    props = regionprops_table(label_image, properties=("label", "area"))
+    props_df = pd.DataFrame(props)
+
+    valid_labels = []
+    for _, row in props_df.iterrows():
+        area = float(row["area"])
+        if min_size > 0 and area < min_size:
+            continue
+        if max_size > 0 and area > max_size:
+            continue
+        valid_labels.append(int(row["label"]))
+
+    n_before  = len(props_df)
+    n_removed = n_before - len(valid_labels)
+
+    if n_removed > 0:
+        print(
+            f"    [GLOBAL RE-FILTER] Removed {n_removed} object(s) "
+            f"that fell below min_size={min_size} after halo trimming. "
+            f"({n_before} → {len(valid_labels)} kept)"
+        )
+    else:
+        print(f"    [GLOBAL RE-FILTER] All {n_before} objects passed (no halo fragments).")
+
+    filtered = np.where(np.isin(label_image, valid_labels), label_image, 0)
+    return filtered.astype(np.uint32)
+
+
+# =============================================================================
 # SMART TILING
 # =============================================================================
 
@@ -891,7 +941,19 @@ def segment_by_tiling(
     print(f"    Tiles with no SAM result: {no_result_tiles}")
     print(f"    Tiles empty after filtering/core: {filtered_empty_tiles}")
     print(f"    Tiles written into final image: {written_tiles}")
-    print(f"    Final objects after tiled SAM: {max_id}")
+    print(f"    Objects before global re-filter: {int(np.count_nonzero(np.unique(final_segmentation) > 0))}")
+
+    # ── Global size re-filter ─────────────────────────────────────────────────
+    # Per-tile filtering runs BEFORE the halo is cropped, so cells near tile
+    # edges can leave fragments smaller than MIN_OBJECT_SIZE in the assembled
+    # image.  Re-apply the size bounds on the full stitched result.
+    if MIN_OBJECT_SIZE > 0 or MAX_OBJECT_SIZE > 0:
+        final_segmentation = _refilter_final_segmentation(
+            final_segmentation, MIN_OBJECT_SIZE, MAX_OBJECT_SIZE
+        )
+
+    n_final = int(np.count_nonzero(np.unique(final_segmentation) > 0))
+    print(f"    Final objects after global re-filter: {n_final}")
 
     # Save full-image combined debug outputs.
     # This is controlled by TEST_RUN/SAVE_DEBUG_IMAGES, so it will not run in normal production.

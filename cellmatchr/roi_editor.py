@@ -275,6 +275,7 @@ class RoiEditorApp:
         self._sample_lbl = None
         self._status_lbl = None
         self._save_btn   = None     # stored so we can disable it in test mode
+        self._skip_btn   = None     # stored so we can disable after all reviewed
         self._colour_btns: dict = {}  # label_value → QPushButton
 
     # ── Entry point ──────────────────────────────────────────────────────────
@@ -296,6 +297,7 @@ class RoiEditorApp:
         # doesn't trigger a ~30s shader compilation freeze.
         # We paint one pixel, force a render, then clear it — this
         # runs 800 ms after the window opens so it's fully visible first.
+        self._setup_right_click_pan()
         print("[roi_editor] Window ready — pre-warming renderer in background...")
         QTimer.singleShot(800, self._prewarm_renderer)
         napari.run()
@@ -353,6 +355,34 @@ class RoiEditorApp:
         self._add_lyr.data = np.zeros((h, w), dtype=np.int32)
         QApplication.processEvents()
         print("[roi_editor] Renderer re-warmed.")
+
+    def _setup_right_click_pan(self) -> None:
+        """
+        Bind right-click drag to pan the camera so users never need to leave
+        paint mode to navigate — left-click paints, right-click pans.
+        """
+        def _right_pan(viewer_arg, event):
+            if event.button != 2:   # 2 = right mouse button
+                return
+            prev = np.array(event.pos, dtype=float)
+            yield
+            while event.type == "mouse_move":
+                curr = np.array(event.pos, dtype=float)
+                # event.pos is (x_canvas, y_canvas): x right→positive, y down→positive
+                dx = float(curr[0] - prev[0])   # positive = dragged right
+                dy = float(curr[1] - prev[1])   # positive = dragged down
+                zoom = viewer_arg.camera.zoom
+                if zoom > 0:
+                    center = list(viewer_arg.camera.center)
+                    # Grab-and-drag: image follows mouse → camera center moves opposite
+                    center[-1] -= dx / zoom   # horizontal (col)
+                    center[-2] -= dy / zoom   # vertical   (row)
+                    viewer_arg.camera.center = tuple(center)
+                prev = curr
+                yield
+
+        self.viewer.mouse_drag_callbacks.append(_right_pan)
+        print("[roi_editor] Right-click pan enabled.")
 
     # ── Dock widget ──────────────────────────────────────────────────────────
 
@@ -417,10 +447,11 @@ class RoiEditorApp:
             "<b>How to add missed cells:</b><br><br>"
             "1. Make sure <i>Add ROIs here</i> layer is selected<br>"
             "2. Press <b>P</b> for the brush<br>"
-            "3. Paint over missed cells<br>"
+            "3. <b>Left-click</b> to paint missed cells<br>"
             "   • Same colour + not touching → separate ROIs ✓<br>"
             "   • <b>Touching cells → use different colours</b><br>"
-            "4. Press Save when done<br><br>"
+            "4. <b>Right-click drag</b> to pan the view<br>"
+            "5. Press Save when done<br><br>"
             "<i>[ and ] keys adjust brush size</i>"
         )
         instr.setWordWrap(True)
@@ -491,10 +522,13 @@ class RoiEditorApp:
         lay.addWidget(self._save_btn)
 
         if not self.test_mode:
-            skip_btn = QPushButton("Skip  →")
-            skip_btn.setStyleSheet("QPushButton { padding:6px; border-radius:4px; }")
-            skip_btn.clicked.connect(self._skip)
-            lay.addWidget(skip_btn)
+            self._skip_btn = QPushButton("Skip  →")
+            self._skip_btn.setStyleSheet(
+                "QPushButton { padding:6px; border-radius:4px; }"
+                "QPushButton:disabled { background:#333; color:#666; }"
+            )
+            self._skip_btn.clicked.connect(self._skip)
+            lay.addWidget(self._skip_btn)
 
             prev_btn = QPushButton("←  Previous")
             prev_btn.setStyleSheet("QPushButton { padding:6px; border-radius:4px; }")
@@ -556,7 +590,7 @@ class RoiEditorApp:
         if self._raw_lyr is None:
             self._raw_lyr = self.viewer.add_image(
                 raw_d, name="Raw Image", colormap="gray",
-                contrast_limits=[lo, hi],
+                contrast_limits=[lo, hi], gamma=2.0,
             )
             self._mask_lyr = self.viewer.add_labels(
                 msk_d, name="Existing ROIs", opacity=0.45,
@@ -615,10 +649,15 @@ class RoiEditorApp:
 
     def _prev(self) -> None:
         if self.idx > 0:
+            # Auto-save any unsaved brush work before leaving this sample
+            if not self.test_mode:
+                self._auto_save_current()
             self.idx -= 1
             self._load_sample(self.idx)
             self._set_status("")
             self._refresh_labels()
+            # Re-enable action buttons in case we came back from "all done" state
+            self._set_action_buttons_enabled(True)
 
     def _advance(self) -> None:
         if self.idx < len(self.samples) - 1:
@@ -627,6 +666,38 @@ class RoiEditorApp:
             self._refresh_labels()
         else:
             self._set_status("✓  All images reviewed!", colour="#a6e3a1")
+            self._set_action_buttons_enabled(False)
+
+    def _auto_save_current(self) -> None:
+        """
+        Silently save any additions the user painted but didn't explicitly save.
+        Called before navigating away (Previous).  No-op in test mode.
+        """
+        if self.test_mode or self._add_lyr is None:
+            return
+        if self._add_lyr.data.max() == 0:
+            return   # nothing painted
+        s = self.samples[self.idx]
+        additions = _upsample_additions(
+            self._add_lyr.data, self._scale, self._orig_h, self._orig_w
+        )
+        existing = tifffile.imread(s["mask"]).astype(np.int32)
+        new_mask, n_added, _ = _merge_additions(existing, additions)
+        if n_added > 0:
+            tifffile.imwrite(s["mask"], new_mask.astype(np.uint32), compression="lzw")
+            print(f"[roi_editor] Auto-saved {n_added} ROI(s) for '{s['name']}'")
+            self._set_status(f"✓  Auto-saved {n_added} ROI(s).", colour="#a6e3a1")
+
+    def _set_action_buttons_enabled(self, enabled: bool) -> None:
+        """Enable or disable the save, skip, and colour-picker buttons."""
+        if self._save_btn is not None:
+            self._save_btn.setEnabled(enabled)
+            if enabled and not self.test_mode:
+                self._save_btn.setText("💾  Save & Next  →")
+        if self._skip_btn is not None:
+            self._skip_btn.setEnabled(enabled)
+        for btn in self._colour_btns.values():
+            btn.setEnabled(enabled)
 
     # ── Save logic ───────────────────────────────────────────────────────────
 

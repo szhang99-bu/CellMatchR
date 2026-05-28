@@ -1009,7 +1009,8 @@ class CellMatchrLauncher:
         self._ch_load_btn = tk.Button(
             nav_row, text="⟳  Load Preview",
             command=self._trigger_ch_preview_load,
-            bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=10, pady=4,
+            bg=ACTIVE, fg=ACCENT, font=FONT_BOLD, relief="flat", padx=10, pady=4,
+            activeforeground=FG,
             state="normal" if (input_ok and _PIL) else "disabled",
         )
         self._ch_load_btn.pack(side="left", padx=(12, 0))
@@ -1998,9 +1999,9 @@ class CellMatchrLauncher:
             _review_btn_row,
             text="🔍  Review Segmented Images",
             command=self._launch_roi_editor,
-            bg=CARD, fg=FG, relief="solid", bd=1,
-            font=FONT, padx=10, pady=4, cursor="hand2",
-            activebackground=CARD, activeforeground=ACCENT,
+            bg=ACCENT, fg="#1e1e2e", relief="flat",
+            font=FONT_BOLD, padx=10, pady=6, cursor="hand2",
+            activebackground="#a6c8f0", activeforeground="#1e1e2e",
         )
         self._review_btn.pack(side="left")
         self._review_status = tk.Label(
@@ -2066,7 +2067,8 @@ class CellMatchrLauncher:
         self._val_load_btn = tk.Button(
             val_nav_row, text="⟳  Load Preview",
             command=self._trigger_val_preview_load,
-            bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=10, pady=4,
+            bg=ACTIVE, fg=ACCENT, font=FONT_BOLD, relief="flat", padx=10, pady=4,
+            activeforeground=FG,
             state="normal" if (has_input and _PIL) else "disabled",
         )
         self._val_load_btn.pack(side="left", padx=(12, 0))

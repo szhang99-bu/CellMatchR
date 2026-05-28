@@ -34,6 +34,46 @@ import numpy as np
 import tifffile
 from skimage.measure import label as connected_components
 
+# ── Display resolution cap ───────────────────────────────────────────────────
+# Large TIFFs freeze napari on the first brush stroke because it must upload
+# the entire array as a GPU texture.  We downsample the *display* layers to
+# at most DISPLAY_MAX pixels on the longest side.  The original mask is never
+# touched — additions are scaled back up before saving.
+DISPLAY_MAX = 2048
+
+
+def _display_scale(h: int, w: int) -> int:
+    """
+    Return the integer stride (1 = no downsampling, 2 = half, 4 = quarter…)
+    so that max(h/s, w/s) <= DISPLAY_MAX.
+    """
+    factor = max(h, w) / DISPLAY_MAX
+    if factor <= 1.0:
+        return 1
+    s = 1
+    while max(h // s, w // s) > DISPLAY_MAX:
+        s *= 2
+    return s
+
+
+def _downsample(arr: np.ndarray, s: int) -> np.ndarray:
+    """Stride-based downsample (nearest-neighbour, no blending — safe for labels)."""
+    if s == 1:
+        return arr
+    return arr[::s, ::s]
+
+
+def _upsample_additions(additions: np.ndarray, s: int,
+                        orig_h: int, orig_w: int) -> np.ndarray:
+    """
+    Scale additions back to full resolution using integer repeat, then trim
+    to the exact original size (in case orig dimensions aren't divisible by s).
+    """
+    if s == 1:
+        return additions
+    up = np.repeat(np.repeat(additions, s, axis=0), s, axis=1)
+    return up[:orig_h, :orig_w]
+
 
 # ── File-finding helpers ─────────────────────────────────────────────────────
 
@@ -192,7 +232,12 @@ class RoiEditorApp:
         self.test_mode  = test_mode
         self.samples    = _find_samples(seg_folder, channel)
         self.idx        = 0
-        self._test_done = False     # flips True after first test-mode save
+        self._test_done    = False     # flips True after first test-mode save
+
+        # Per-sample display state (set in _load_sample)
+        self._scale     = 1           # display stride for current sample
+        self._orig_h    = 0           # full-res height
+        self._orig_w    = 0           # full-res width
 
         # napari layer handles
         self.viewer    = None
@@ -344,19 +389,33 @@ class RoiEditorApp:
         s   = self.samples[idx]
         raw = tifffile.imread(s["raw"]).astype(np.float32)
         msk = tifffile.imread(s["mask"]).astype(np.int32)
-        lo, hi = np.percentile(raw, (1, 99))
+
+        # ── Compute display scale for this sample ────────────────────
+        h, w = raw.shape[:2]
+        self._orig_h = h
+        self._orig_w = w
+        self._scale  = _display_scale(h, w)
+
+        raw_d = _downsample(raw, self._scale)
+        msk_d = _downsample(msk, self._scale)
+
+        if self._scale > 1:
+            print(f"[roi_editor] {s['name']}: {w}×{h} → display at "
+                  f"{raw_d.shape[1]}×{raw_d.shape[0]} (1/{self._scale})")
+
+        lo, hi = np.percentile(raw_d, (1, 99))
 
         if self._raw_lyr is None:
             self._raw_lyr = self.viewer.add_image(
-                raw, name="Raw Image", colormap="gray",
+                raw_d, name="Raw Image", colormap="gray",
                 contrast_limits=[lo, hi],
             )
             self._mask_lyr = self.viewer.add_labels(
-                msk, name="Existing ROIs", opacity=0.45,
+                msk_d, name="Existing ROIs", opacity=0.45,
             )
             self._mask_lyr.editable = False
             self._add_lyr = self.viewer.add_labels(
-                np.zeros_like(msk, dtype=np.int32),
+                np.zeros_like(msk_d, dtype=np.int32),
                 name="Add ROIs here", opacity=0.75,
             )
             self._add_lyr.brush_size     = self.DEFAULT_BRUSH_SIZE
@@ -364,10 +423,10 @@ class RoiEditorApp:
             self._add_lyr.mode           = "paint"
             self.viewer.layers.selection.active = self._add_lyr
         else:
-            self._raw_lyr.data            = raw
+            self._raw_lyr.data            = raw_d
             self._raw_lyr.contrast_limits = [lo, hi]
-            self._mask_lyr.data           = msk
-            self._add_lyr.data            = np.zeros_like(msk, dtype=np.int32)
+            self._mask_lyr.data           = msk_d
+            self._add_lyr.data            = np.zeros_like(msk_d, dtype=np.int32)
             self._add_lyr.selected_label  = 1
             self._add_lyr.mode            = "paint"
             self.viewer.layers.selection.active = self._add_lyr
@@ -403,12 +462,19 @@ class RoiEditorApp:
     # ── Save logic ───────────────────────────────────────────────────────────
 
     def _save_current(self) -> None:
-        additions = self._add_lyr.data
-        if additions.max() == 0:
+        additions_display = self._add_lyr.data
+        if additions_display.max() == 0:
             self._set_status("Nothing drawn — skipped.", colour="#aaaaaa")
             return
 
-        s        = self.samples[self.idx]
+        s = self.samples[self.idx]
+
+        # Scale additions back to full resolution before merging
+        additions = _upsample_additions(
+            additions_display, self._scale, self._orig_h, self._orig_w
+        )
+
+        # Always merge into the original full-res mask from disk
         existing = tifffile.imread(s["mask"]).astype(np.int32)
         new_mask, n_added, new_ids = _merge_additions(existing, additions)
 
@@ -427,8 +493,9 @@ class RoiEditorApp:
     def _normal_save(self, s: dict, new_mask: np.ndarray, n_added: int) -> None:
         """Write directly to the original mask TIF. No PNG, no debug files."""
         tifffile.imwrite(s["mask"], new_mask.astype(np.uint32), compression="lzw")
-        self._mask_lyr.data = new_mask
-        self._add_lyr.data  = np.zeros_like(new_mask, dtype=np.int32)
+        # Refresh display layers at display resolution
+        self._mask_lyr.data = _downsample(new_mask, self._scale)
+        self._add_lyr.data  = np.zeros_like(self._mask_lyr.data, dtype=np.int32)
         self._set_status(f"✓  {n_added} new ROI(s) saved.", colour="#a6e3a1")
 
     def _test_save(self, s: dict, existing: np.ndarray,
@@ -472,9 +539,9 @@ class RoiEditorApp:
         print("=" * 55)
         print()
 
-        # 4. Update viewer for visual confirmation, disable save
-        self._mask_lyr.data = new_mask
-        self._add_lyr.data  = np.zeros_like(new_mask, dtype=np.int32)
+        # 4. Update viewer for visual confirmation (display res), disable save
+        self._mask_lyr.data = _downsample(new_mask, self._scale)
+        self._add_lyr.data  = np.zeros_like(self._mask_lyr.data, dtype=np.int32)
 
         self._set_status(
             f"🧪 Test done: +{n_added} ROI(s)\n"

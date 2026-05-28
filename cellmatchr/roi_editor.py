@@ -470,14 +470,14 @@ class RoiEditorApp:
                 msk_d, name="Existing ROIs", opacity=0.45,
             )
             self._mask_lyr.editable = False
-            # Pre-assign all three brush colours so napari never needs to
-            # recompute the LUT on a stroke (the main cause of freezes).
-            _lut = {lv: name for lv, name, _, _ in BRUSH_COLOURS}
             self._add_lyr = self.viewer.add_labels(
                 np.zeros_like(msk_d, dtype=np.int32),
                 name="Add ROIs here", opacity=0.75,
-                color=_lut,
             )
+            # Pre-assign all three brush colours so napari never needs to
+            # recompute the LUT on a stroke (the main cause of freezes).
+            # Must be set as a property after creation, not as a kwarg.
+            self._add_lyr.color = {lv: name for lv, name, _, _ in BRUSH_COLOURS}
             self._add_lyr.brush_size     = self.DEFAULT_BRUSH_SIZE
             self._add_lyr.selected_label = 1
             self._add_lyr.mode           = "paint"

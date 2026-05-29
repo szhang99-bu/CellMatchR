@@ -1118,6 +1118,20 @@ class VSINapariROIApp:
 
     def delete_all_polygons(self):
         debug("Delete ALL ROIs pressed.")
+        n = len(self.shapes.data)
+        if n > 0:
+            msg = QMessageBox(self.viewer.window._qt_window)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Confirm: delete ALL ROIs")
+            msg.setText(
+                f"This will permanently delete all {n} ROI(s) on this slice.\n\n"
+                "This cannot be undone. Are you sure?"
+            )
+            msg.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
+            msg.setDefaultButton(QMessageBox.Cancel)
+            if msg.exec_() != QMessageBox.Yes:
+                debug("Delete ALL ROIs cancelled by user.")
+                return
         self.shapes.data = []
         self.roi_names = []
         self.roi_colors = []

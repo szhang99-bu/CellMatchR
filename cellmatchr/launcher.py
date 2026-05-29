@@ -8,7 +8,7 @@ import sys
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext
+from tkinter import ttk, filedialog, scrolledtext, messagebox
 
 from .config import (load_config, save_config, save_project_config,
                      load_project_config, CONFIG_PATH, DEFAULT_CONFIG)
@@ -509,7 +509,54 @@ class CellMatchrLauncher:
             bg=CARD, fg=MUTED, relief="flat", font=FONT, padx=6,
         ).pack(side="left", padx=4)
 
+    def _project_has_outputs(self) -> bool:
+        """True if the current project folder already contains segmentation,
+        validation, or analysis output folders (i.e. work that would be
+        orphaned by switching the input folder)."""
+        return bool(
+            self._find_variants(SUBFOLDER["seg"])
+            or self._find_variants(SUBFOLDER["val"])
+            or self._find_variants(SUBFOLDER["ana"])
+        )
+
+    def _confirm_input_folder_change(self) -> bool:
+        """Two-stage warning shown before the input folder of an existing
+        project is changed.  Returns True only if the user confirms BOTH."""
+        first = messagebox.askyesno(
+            "Switching the input folder?",
+            "This project already has segmentation / validation / analysis "
+            "output saved in its working directory.\n\n"
+            "Changing the input folder will break the link to those existing "
+            "results — many project settings (segmentation channels, validation "
+            "paths, etc.) will no longer match what is on disk and the project "
+            "file can lose track of them.\n\n"
+            "If you want to work on a different dataset, it is strongly "
+            "recommended to START A NEW, SEPARATE PROJECT instead.\n\n"
+            "Do you still want to change the input folder?",
+            icon="warning", default="no", parent=self.root,
+        )
+        if not first:
+            return False
+        second = messagebox.askyesno(
+            "Are you absolutely sure?",
+            "There is NO GOING BACK.\n\n"
+            "Once you pick a new input folder and save, the project file will "
+            "point to the new data and the previous configuration may be "
+            "overwritten. The old segmentation/validation outputs will remain "
+            "on disk but this project will no longer reference them.\n\n"
+            "Proceed with changing the input folder?",
+            icon="warning", default="no", parent=self.root,
+        )
+        return bool(second)
+
     def _browse_dir(self, key: str) -> None:
+        # Guard the input folder of an existing project behind two warnings,
+        # so it can't be reset by accident (which would orphan saved outputs).
+        if (key == "input_root_folder"
+                and self.config.get("input_root_folder", "").strip()
+                and self._project_has_outputs()):
+            if not self._confirm_input_folder_change():
+                return
         self.root.lift()
         self.root.attributes("-topmost", True)
         p = filedialog.askdirectory(parent=self.root)
@@ -1523,6 +1570,42 @@ class CellMatchrLauncher:
                 self.config.get("seg_channels", "").split(",")
                 if x.strip().isdigit()]
 
+    def _detect_predicted_channels(self) -> list:
+        """Return sorted channel-index strings that actually have a predicted
+        mask (``*_predict_original_ch*.tif``) on disk, scanning the selected
+        segmentation output folder.
+
+        This lets Validation / Analysis work from an imported project on
+        another computer even when the project file no longer records that a
+        segmentation was run.  Falls back to the configured seg_channels.
+        """
+        import re as _re
+        proj = self.config.get("project_output_folder", "").strip()
+        if proj and os.path.isdir(proj):
+            # The segmentation-folder selection is kept in config and shared
+            # between the Validation and Analysis pages; fall back to newest.
+            seg_sub = (self.config.get("seg_input_subfolder", "").strip()
+                       or (self._find_variants(SUBFOLDER["seg"])
+                           or [SUBFOLDER["seg"]])[-1])
+            seg_root = os.path.join(proj, seg_sub)
+            chs = set()
+            if os.path.isdir(seg_root):
+                for d in sorted(os.listdir(seg_root)):
+                    sub = os.path.join(seg_root, d)
+                    if not os.path.isdir(sub) or d.startswith((".", "DEBUG")):
+                        continue
+                    for f in os.listdir(sub):
+                        m = _re.search(r"_predict_original_ch(\d+)", f,
+                                       _re.IGNORECASE)
+                        if m:
+                            chs.add(int(m.group(1)))
+            if chs:
+                return [str(c) for c in sorted(chs)]
+        # Fallback: use seg_channels from config
+        return [x.strip() for x in
+                self.config.get("seg_channels", "").split(",")
+                if x.strip().isdigit()]
+
     def _build_val_ch_name_rows(self, channel_labels: list) -> None:
         """Populate the channel name/color entry grid inside _val_ch_names_frame.
 
@@ -1957,11 +2040,12 @@ class CellMatchrLauncher:
                      text="⚠  No segmentation output found yet — run Step 3 first.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
-        # ── Channel dropdown (derived from seg_channels) ─────────────
+        # ── Channel dropdown (predicted channels) ────────────────────
+        # Prefer channels that actually have a predicted mask on disk so an
+        # imported project works even when seg_channels is not recorded;
+        # fall back to configured channels.
         cfg_card = self._card(parent, "Channel to Validate")
-        channels_raw = self.config.get("seg_channels", "").strip()
-        channel_options = [x.strip() for x in channels_raw.split(",")
-                           if x.strip().isdigit()]
+        channel_options = self._detect_predicted_channels()
 
         if channel_options:
             tk.Label(cfg_card,
@@ -1985,7 +2069,8 @@ class CellMatchrLauncher:
         else:
             tk.Label(
                 cfg_card,
-                text="⚠  No channels configured — go to Step 3 — Segmentation and set channels first.",
+                text="⚠  No predicted channels found — run Step 3 — Segmentation, "
+                     "or select a segmentation output folder above that contains predictions.",
                 bg=CARD, fg=YELLOW, font=FONT, wraplength=660,
             ).pack(anchor="w")
             self._val_channel_var = None
@@ -2291,9 +2376,9 @@ class CellMatchrLauncher:
         self.root.after(100, self._refresh_ana_val_status)
 
         # ── Colocalization toggle ────────────────────────────────────
-        channel_options = [x.strip() for x in
-                           self.config.get("seg_channels", "").split(",")
-                           if x.strip().isdigit()]
+        # Detect channels with a predicted mask on disk so analysis works on an
+        # imported project even when seg_channels is not recorded in the file.
+        channel_options = self._detect_predicted_channels()
         n_channels = len(channel_options)
 
         # Default colocalization to True only when ≥2 channels configured

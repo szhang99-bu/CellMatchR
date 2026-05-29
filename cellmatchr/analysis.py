@@ -61,9 +61,14 @@ def ensure_dir(path):
 
 
 def safe_percent(numerator, denominator):
+    """Return a fraction in [0, 1] (e.g. 0.3221), not a 0-100 integer.
+
+    Stored as a real fraction so Excel can display it with a percent number
+    format (shows 32.21%, copies as 0.3221) and the CSV holds the raw 0.3221.
+    """
     if denominator == 0:
         return np.nan
-    return 100.0 * numerator / denominator
+    return numerator / denominator
 
 
 def robust_uint8(image, p_low=0.5, p_high=99.8):
@@ -770,10 +775,10 @@ def analyze_project_folder(project_folder):
         f"{pm_ch}_colocalized_whole_image":             pm_coi_coloc_all,
         f"{coi_ch}_colocalized_in_roi":                 coi_pm_coloc_roi,
         f"{pm_ch}_colocalized_in_roi":                  pm_coi_coloc_roi,
-        f"{coi_ch}_percent_colocalized_whole_image":    round(safe_percent(coi_pm_coloc_all, total_coi), 2),
-        f"{pm_ch}_percent_colocalized_whole_image":     round(safe_percent(pm_coi_coloc_all, total_pm), 2),
-        f"{coi_ch}_percent_colocalized_in_roi":         round(safe_percent(coi_pm_coloc_roi or 0, roi_coi or 0), 2),
-        f"{pm_ch}_percent_colocalized_in_roi":          round(safe_percent(pm_coi_coloc_roi or 0, roi_pm or 0), 2),
+        f"{coi_ch}_percent_colocalized_whole_image":    round(safe_percent(coi_pm_coloc_all, total_coi), 4),
+        f"{pm_ch}_percent_colocalized_whole_image":     round(safe_percent(pm_coi_coloc_all, total_pm), 4),
+        f"{coi_ch}_percent_colocalized_in_roi":         round(safe_percent(coi_pm_coloc_roi or 0, roi_coi or 0), 4),
+        f"{pm_ch}_percent_colocalized_in_roi":          round(safe_percent(pm_coi_coloc_roi or 0, roi_pm or 0), 4),
         # File references
         f"{coi_ch}_label_file":                         os.path.basename(coi_label_path),
         f"{pm_ch}_label_file":                          os.path.basename(pm_label_path),
@@ -906,6 +911,20 @@ def main():
         excel_path = os.path.join(out_dir, "combined_analysis_summary.xlsx")
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
             combined.to_excel(writer, sheet_name="Summary", index=False)
+
+            # Format the colocalization-percentage columns as real Excel
+            # percentages: stored as fractions (0.3221) so they show as 32.21%
+            # and copy/paste as 0.3221 rather than a bare 32.21 integer.
+            ws = writer.sheets["Summary"]
+            pct_cols = [
+                i + 1
+                for i, col in enumerate(combined.columns)
+                if "_percent_colocalized_" in str(col)
+            ]
+            for col_idx in pct_cols:
+                letter = ws.cell(row=1, column=col_idx).column_letter
+                for row_idx in range(2, ws.max_row + 1):
+                    ws[f"{letter}{row_idx}"].number_format = "0.00%"
         print(f"\nExcel summary: {excel_path}")
     except ImportError:
         print("[WARNING] openpyxl not installed — Excel output skipped. Run: pip install openpyxl")

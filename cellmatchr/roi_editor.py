@@ -132,7 +132,11 @@ def _merge_additions(existing: np.ndarray,
     Two cells painted in the SAME colour that are touching will be
     merged into one ROI (user should use a different colour in that case).
 
-    Only fills pixels where existing mask == 0 (background).
+    Each painted blob claims its FULL extent — including any pixels that
+    overlap an existing predicted ROI.  The manual ROI is therefore exactly
+    what the user drew (not "manual ROI minus predicted ROI").  Overlapped
+    predicted pixels are reassigned to the new manual ROI.
+
     Returns (new_mask, n_added, new_ids).
     """
     label_values = np.unique(additions)
@@ -150,7 +154,9 @@ def _merge_additions(existing: np.ndarray,
         single = (additions == lv).astype(np.uint8)
         labeled, n = connected_components(single, return_num=True, connectivity=2)
         for i in range(1, n + 1):
-            region = (labeled == i) & (existing == 0)
+            # Claim the entire painted blob, even where it overlaps an
+            # existing predicted ROI — the manual ROI takes precedence.
+            region = (labeled == i)
             if region.sum() == 0:
                 continue
             nid = max_id + added + 1
@@ -263,6 +269,7 @@ class RoiEditorApp:
         self._orig_w    = 0           # full-res width
 
         self._first_paint = True    # used to print one-time debug on first stroke
+        self._prewarmed   = False   # True once the Metal shader has been compiled
 
         # napari layer handles
         self.viewer    = None
@@ -311,6 +318,11 @@ class RoiEditorApp:
         from qtpy.QtWidgets import QApplication
         if self._add_lyr is None:
             return
+        if self._add_lyr.data.max() != 0:
+            # User has already painted — shader is warm and we must not clobber
+            # their ROIs.  Just mark as warmed.
+            self._prewarmed = True
+            return
         print("[roi_editor] Pre-warming renderer (Metal shader compile)...")
         self.viewer.status = "Initializing renderer — please wait a moment…"
         h, w = self._add_lyr.data.shape[:2]
@@ -324,6 +336,7 @@ class RoiEditorApp:
         self._add_lyr.data = np.zeros((h, w), dtype=np.int32)
         QApplication.processEvents()
         self.viewer.status = "Ready — select 'Add ROIs here' layer and press P to paint"
+        self._prewarmed = True
         print("[roi_editor] Renderer ready. You can now paint without delay.")
 
     def _on_first_paint(self, event=None) -> None:
@@ -333,20 +346,42 @@ class RoiEditorApp:
             print("[roi_editor] First brush stroke received — rendering...")
 
     def _on_layer_selection_changed(self, event=None) -> None:
-        """Re-prewarm whenever the user switches back to the add layer."""
+        """
+        Re-prewarm when the user switches back to the add layer — but only if
+        the renderer was never warmed this session AND the layer is still empty.
+
+        The previous version re-warmed on EVERY selection change, which (a) wiped
+        any ROIs the user had already painted whenever they clicked the Raw Image
+        layer to adjust gamma/contrast and clicked back, and (b) flooded the Qt
+        event loop with full-frame redraws, making the brush cursor lag after a
+        dozen slices.  The Metal shader only needs compiling once per session, so
+        a single warm is sufficient.
+        """
         if self._add_lyr is None:
             return
+        if getattr(self, "_prewarmed", False):
+            return
+        if self._add_lyr.data.max() != 0:
+            return  # already has painted content → shader warm, never clobber
         if self._add_lyr in self.viewer.layers.selection:
             from qtpy.QtCore import QTimer
-            print("[roi_editor] Add layer re-selected — re-warming renderer...")
             # Short delay so the layer-switch animation completes first
             QTimer.singleShot(200, self._prewarm_renderer_silent)
 
     def _prewarm_renderer_silent(self) -> None:
-        """Same as _prewarm_renderer but without status-bar noise — for re-selections."""
+        """
+        Same as _prewarm_renderer but without status-bar noise — for re-selections.
+
+        Guards against clobbering painted ROIs and against repeated churn: it is
+        a no-op once the renderer has been warmed or if the user has painted.
+        """
         from qtpy.QtWidgets import QApplication
         if self._add_lyr is None:
             return
+        if getattr(self, "_prewarmed", False):
+            return
+        if self._add_lyr.data.max() != 0:
+            return  # never clobber the user's painted ROIs
         h, w = self._add_lyr.data.shape[:2]
         tmp = np.zeros((h, w), dtype=np.int32)
         tmp[h // 2, w // 2] = 1
@@ -354,6 +389,7 @@ class RoiEditorApp:
         QApplication.processEvents()
         self._add_lyr.data = np.zeros((h, w), dtype=np.int32)
         QApplication.processEvents()
+        self._prewarmed = True
         print("[roi_editor] Renderer re-warmed.")
 
     def _setup_right_click_pan(self) -> None:

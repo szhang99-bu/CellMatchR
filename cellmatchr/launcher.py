@@ -1889,7 +1889,14 @@ class CellMatchrLauncher:
         # ── Input source selector (which segmentation folder to validate) ──
         _seg_variants = self._find_variants(SUBFOLDER["seg"])
         _default_seg  = _seg_variants[-1] if _seg_variants else SUBFOLDER["seg"]
+        # Honour a segmentation-input choice previously made on the Analysis step
+        # (the selection is shared between Validation and Analysis).
+        _saved_seg = self.config.get("seg_input_subfolder", "").strip()
+        if _saved_seg and _saved_seg in _seg_variants:
+            _default_seg = _saved_seg
         self._val_input_var = tk.StringVar(value=_default_seg)
+        # Persist the (possibly default) choice so Analysis picks up the same one.
+        self.config["seg_input_subfolder"] = _default_seg
 
         toggle_card = self._card(parent, "Enable")
         tk.Checkbutton(
@@ -1932,6 +1939,8 @@ class CellMatchrLauncher:
 
             def _val_src_changed(*_):
                 _val_input_cur_lbl.config(text=f"Using:  {self._val_input_var.get()}")
+                # Share the choice with the Analysis step.
+                self.config["seg_input_subfolder"] = self._val_input_var.get()
                 self._build_val_ch_name_rows(self._detect_all_channel_labels())
             self._val_input_var.trace_add("write", _val_src_changed)
 
@@ -2129,7 +2138,13 @@ class CellMatchrLauncher:
         # ── Enable toggle ────────────────────────────────────────────
         _a_seg_variants = self._find_variants(SUBFOLDER["seg"])
         _a_default_seg  = _a_seg_variants[-1] if _a_seg_variants else SUBFOLDER["seg"]
+        # Honour the segmentation-input choice made on the Validation step so the
+        # same folder (and its validation results) is used for analysis.
+        _a_saved_seg = self.config.get("seg_input_subfolder", "").strip()
+        if _a_saved_seg and _a_saved_seg in _a_seg_variants:
+            _a_default_seg = _a_saved_seg
         self._ana_input_var = tk.StringVar(value=_a_default_seg)
+        self.config["seg_input_subfolder"] = _a_default_seg
 
         toggle_card = self._card(parent, "Enable")
         tk.Checkbutton(
@@ -2166,6 +2181,8 @@ class CellMatchrLauncher:
 
             def _ana_src_changed(*_):
                 _ana_input_cur_lbl.config(text=f"Using:  {self._ana_input_var.get()}")
+                # Share the choice with the Validation step.
+                self.config["seg_input_subfolder"] = self._ana_input_var.get()
             self._ana_input_var.trace_add("write", _ana_src_changed)
 
             def _toggle_ana_ovr(lbl=_ana_ovr_lbl):
@@ -2463,6 +2480,21 @@ class CellMatchrLauncher:
                 self._ana_partial_check.pack_forget()
             return
 
+        # Sample folders (with their "ROI Validation Results") live inside the
+        # segmentation output subfolder — NOT directly under the project root.
+        # Use the same segmentation-input selection the analysis run will use.
+        if getattr(self, "_ana_input_var", None) and self._ana_input_var.get():
+            seg_sub = self._ana_input_var.get()
+        else:
+            seg_variants = self._find_variants(SUBFOLDER["seg"])
+            seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        scan_root = os.path.join(proj, seg_sub)
+        if not os.path.isdir(scan_root):
+            tk.Label(frame, text="No segmentation output found yet.", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
+            if hasattr(self, "_ana_partial_check"):
+                self._ana_partial_check.pack_forget()
+            return
+
         coi_ch = self.config.get("ana_red_channel", "")
         pm_ch  = self.config.get("ana_pv_channel",  "")
         channels_to_check = []
@@ -2472,11 +2504,11 @@ class CellMatchrLauncher:
             except (ValueError, TypeError):
                 pass
 
-        # Collect per-channel aggregate status across all project sub-folders
+        # Collect per-channel aggregate status across all sample sub-folders
         import glob as _glob
         project_dirs = [
-            d for d in sorted(os.listdir(proj))
-            if os.path.isdir(os.path.join(proj, d))
+            d for d in sorted(os.listdir(scan_root))
+            if os.path.isdir(os.path.join(scan_root, d))
             and not d.startswith(".")
             and not d.startswith("DEBUG")
         ]
@@ -2487,7 +2519,7 @@ class CellMatchrLauncher:
                      bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
         else:
             for ch in channels_to_check:
-                statuses = [self._get_val_status_for_channel(os.path.join(proj, d), ch)
+                statuses = [self._get_val_status_for_channel(os.path.join(scan_root, d), ch)
                             for d in project_dirs]
                 n_total    = len(statuses)
                 n_complete = statuses.count("complete")
@@ -2543,8 +2575,13 @@ class CellMatchrLauncher:
             return
 
         # Project sub-folders live inside the segmentation output, not the root folder.
-        seg_variants = self._find_variants(SUBFOLDER["seg"])
-        seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        # Use the same segmentation-input selection that the validator was launched
+        # with, so the progress reflects exactly where markers were written.
+        if getattr(self, "_val_input_var", None) and self._val_input_var.get():
+            seg_sub = self._val_input_var.get()
+        else:
+            seg_variants = self._find_variants(SUBFOLDER["seg"])
+            seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
         val_root = os.path.join(proj, seg_sub)
 
         if not os.path.isdir(val_root):

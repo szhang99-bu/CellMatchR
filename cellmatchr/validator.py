@@ -445,7 +445,7 @@ class RoiVerifierApp:
         self.btn_no.grid(row=row, column=0, sticky="ew", pady=3); row+=1
         self.btn_maybe = ttk.Button(self.control_frame, text="MAYBE (Up)",    style="Ctrl.TButton", command=lambda: self.make_decision("MAYBE"))
         self.btn_maybe.grid(row=row, column=0, sticky="ew", pady=3); row+=1
-        self.btn_art   = ttk.Button(self.control_frame, text="Artifact (Del)",style="Ctrl.TButton", command=lambda: self.make_decision("ARTIFACT"))
+        self.btn_art   = ttk.Button(self.control_frame, text="Artifact (Shift)",style="Ctrl.TButton", command=lambda: self.make_decision("ARTIFACT"))
         self.btn_art.grid(row=row, column=0, sticky="ew", pady=3); row+=1
 
         self.decision_status_label = ttk.Label(self.control_frame, text="No decision made", font=("Arial", 10, "italic"), anchor="center")
@@ -468,14 +468,37 @@ class RoiVerifierApp:
                                    style="CtrlNav.TButton", command=self.save_and_next)
         self.save_btn.grid(row=1, column=0, sticky="ew")
         
-        # Keys
-        self.root.bind('<Left>', lambda e: self.make_decision("YES"))
-        self.root.bind('<Right>', lambda e: self.make_decision("NO"))
-        self.root.bind('<Up>', lambda e: self.make_decision("MAYBE"))
-        self.root.bind('<BackSpace>', lambda e: self.make_decision("ARTIFACT"))
-        self.root.bind('<Down>', lambda e: self.save_and_next())
+        # Keys — decision shortcuts are ignored while the Notes box has focus so
+        # typing notes never triggers an accidental decision.  Artifact is bound
+        # to Shift (left or right) instead of Delete/Backspace, which used to fire
+        # while editing notes.
+        self.root.bind('<Left>',    lambda e: self._key_decision("YES"))
+        self.root.bind('<Right>',   lambda e: self._key_decision("NO"))
+        self.root.bind('<Up>',      lambda e: self._key_decision("MAYBE"))
+        self.root.bind('<Shift_L>', lambda e: self._key_decision("ARTIFACT"))
+        self.root.bind('<Shift_R>', lambda e: self._key_decision("ARTIFACT"))
+        self.root.bind('<Down>',    lambda e: self._key_save_and_next())
         
         self.load_data()
+
+    def _typing_in_notes(self) -> bool:
+        """True when keyboard focus is inside the Notes text box."""
+        try:
+            return self.root.focus_get() is self.notes_text
+        except Exception:
+            return False
+
+    def _key_decision(self, decision):
+        """Keyboard shortcut wrapper — ignored while the user is typing notes."""
+        if self._typing_in_notes():
+            return
+        self.make_decision(decision)
+
+    def _key_save_and_next(self):
+        """Keyboard wrapper for Save & Next — ignored while typing notes."""
+        if self._typing_in_notes():
+            return
+        self.save_and_next()
 
     def make_decision(self, decision):
         self.decision_var.set(decision)
@@ -799,6 +822,13 @@ class ProjectChooser:
         self.btn = ttk.Button(self.main_frame, text="Launch", command=self.launch, state=tk.DISABLED); self.btn.pack(fill=tk.X)
         self.root.geometry("800x500"); self.load_last()
 
+        # Pop in front of the CellMatchR launcher (which spawned this as a
+        # subprocess) so the window is not hidden behind the main menu.
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.focus_force()
+        self.root.after(600, lambda: self.root.attributes("-topmost", False))
+
     def on_close(self):
         """Forces the python process to stop the mainloop."""
         self.root.quit()
@@ -971,6 +1001,10 @@ class ProjectChooser:
 
         self.root.withdraw()
         top = tk.Toplevel(self.root)
+        top.lift()
+        top.attributes("-topmost", True)
+        top.focus_force()
+        top.after(600, lambda: top.attributes("-topmost", False))
 
         def on_app_close():
             top.destroy()

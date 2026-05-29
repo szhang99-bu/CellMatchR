@@ -838,6 +838,16 @@ class CellMatchrLauncher:
             return
         # Load config into memory and re-sync all vars
         self.config = cfg
+        # Always repoint the project to where the .json actually lives — the
+        # stored project_output_folder may be a stale path from another machine
+        # or a moved/renamed folder. Using the json's own directory guarantees
+        # the segmentation/validation/analysis folders are found on disk.
+        self.config["project_output_folder"] = folder
+        # A stored seg-folder selection from another machine may not exist
+        # here; clear it so the dropdowns default to a folder actually on disk.
+        saved_seg = self.config.get("seg_input_subfolder", "").strip()
+        if saved_seg and not os.path.isdir(os.path.join(folder, saved_seg)):
+            self.config["seg_input_subfolder"] = ""
         for k, v in self._vars.items():
             val = self.config.get(k)
             if val is not None:

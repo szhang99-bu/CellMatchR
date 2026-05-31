@@ -983,9 +983,9 @@ def segment_by_tiling(
 
 def find_input_files(root_folder):
     input_paths = []
-    exts = (".czi", ".lif", ".tif", ".tiff")
+    exts = (".czi", ".lif", ".nd2", ".oib", ".oif", ".tif", ".tiff")
 
-    print(f"Scanning for CZI, LIF and TIF files in: {root_folder}"
+    print(f"Scanning for CZI, LIF, ND2, OIB/OIF and TIF files in: {root_folder}"
           + (" (root only, subfolders skipped)" if SKIP_SUBDIRS else " (+ one level of subfolders)"))
 
     if not os.path.isdir(root_folder):
@@ -1024,6 +1024,47 @@ def _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_
     tiff_path = os.path.join(output_subfolder, f"{base_name}_split_ch{ch_index}.tif")
     imwrite(tiff_path, channel_data, photometric="minisblack", imagej=True)
     split_tiff_paths[ch_index] = tiff_path
+
+
+def _split_array_by_channel(data, axes, output_subfolder, base_name,
+                            split_tiff_paths, label="image"):
+    """Split a labelled N-D array into one 2D TIFF per channel.
+
+    `axes` is a string naming each array dimension (e.g. 'TCZYX').  Non-spatial,
+    non-channel axes (T, P, M, S, …) are reduced by taking the first index;
+    Z is collapsed by max-intensity projection; C is split into channels.
+    """
+    axes = list(axes.upper())
+    print(f"    {label} axes: {''.join(axes)}, shape: {data.shape}")
+
+    # Drop time / position / mosaic / sample axes (take first index), from the
+    # end so the remaining axis indices stay valid.
+    for i in range(len(axes) - 1, -1, -1):
+        if axes[i] not in ("C", "Z", "Y", "X"):
+            data = np.take(data, 0, axis=i)
+            axes.pop(i)
+    axes = "".join(axes)
+    c_axis = axes.find("C")
+    z_axis = axes.find("Z")
+
+    if c_axis == -1:
+        ch = np.squeeze(data)
+        while ch.ndim > 2:
+            ch = np.max(ch, axis=0)
+        print(f"    No C axis — single channel after MIP: shape={ch.shape}")
+        _save_split_tiff(ch.astype(np.uint16), 0, output_subfolder, base_name, split_tiff_paths)
+    else:
+        num_channels = data.shape[c_axis]
+        num_z = data.shape[z_axis] if z_axis != -1 else 1
+        print(f"    Channels: {num_channels}, Z-slices: {num_z}")
+        if num_z > 1:
+            print("    Z-stack detected — applying max intensity projection per channel")
+        for ch_index in range(num_channels):
+            ch = np.take(data, ch_index, axis=c_axis)
+            ch = np.squeeze(ch)
+            while ch.ndim > 2:
+                ch = np.max(ch, axis=0)
+            _save_split_tiff(ch.astype(np.uint16), ch_index, output_subfolder, base_name, split_tiff_paths)
 
 
 def _pick_main_lif_image(lif):
@@ -1076,6 +1117,34 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name):
                 ch = np.max(ch, axis=0)
             _save_split_tiff(ch.astype(np.uint16), ch_index,
                              output_subfolder, base_name, split_tiff_paths)
+
+    elif file_path.lower().endswith(".nd2"):
+        try:
+            import nd2
+        except ImportError:
+            raise ImportError(
+                "Reading Nikon .nd2 files requires the 'nd2' package. "
+                "Install it with:  pip install nd2"
+            )
+        with nd2.ND2File(file_path) as f:
+            axes = "".join(f.sizes.keys())   # ordered dim labels, e.g. 'TCZYX'
+            data = f.asarray()
+        _split_array_by_channel(data, axes, output_subfolder, base_name,
+                                split_tiff_paths, label="ND2")
+
+    elif file_path.lower().endswith((".oib", ".oif")):
+        try:
+            from oiffile import OifFile
+        except ImportError:
+            raise ImportError(
+                "Reading Olympus .oib/.oif files requires the 'oiffile' package. "
+                "Install it with:  pip install oiffile"
+            )
+        with OifFile(file_path) as oif:
+            data = oif.asarray()
+            axes = oif.axes
+        _split_array_by_channel(data, axes, output_subfolder, base_name,
+                                split_tiff_paths, label="OIF/OIB")
 
     elif file_path.lower().endswith(".czi"):
         with CziFile(file_path) as czi:

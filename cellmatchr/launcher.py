@@ -1063,7 +1063,7 @@ class CellMatchrLauncher:
         # ── Input type radio ─────────────────────────────────────────
         type_card = self._card(parent, "Input Data Format")
         for val, lbl in [
-            ("czi", "CZI or TIF files  (Zeiss / slide scanner — use directly)"),
+            ("czi", "CZI / LIF / TIF files  (Zeiss / Leica / slide scanner — use directly)"),
             ("vsi", "VSI file  (Olympus — convert to TIF first via VSI Converter below)"),
         ]:
             tk.Radiobutton(
@@ -1143,11 +1143,11 @@ class CellMatchrLauncher:
             else self._vsi_input_override_frame.pack(fill="x", pady=(4, 0))
         ))
 
-        # ── CZI/TIF section (shown when input_type == "czi") ─────────
+        # ── CZI/LIF/TIF section (shown when input_type == "czi") ─────
         self._czi_section = tk.Frame(parent, bg=BG)
-        czi_card = self._card(self._czi_section, "CZI / TIF Input Folder")
+        czi_card = self._card(self._czi_section, "CZI / LIF / TIF Input Folder")
         tk.Label(czi_card,
-                 text="Select the root folder. Each subfolder should contain one CZI or TIF file.",
+                 text="Select the root folder. Each subfolder should contain one CZI, LIF, or TIF file.",
                  bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 8))
         self._path_row(czi_card,
                        "Input root folder:",
@@ -1510,7 +1510,7 @@ class CellMatchrLauncher:
         folder = self.config.get("input_root_folder", "").strip()
         if not folder or not os.path.isdir(folder):
             return None
-        exts = (".czi", ".tif", ".tiff")
+        exts = (".czi", ".lif", ".tif", ".tiff")
         for item in sorted(os.listdir(folder)):
             sub = os.path.join(folder, item)
             if os.path.isdir(sub):
@@ -1599,6 +1599,33 @@ class CellMatchrLauncher:
                                 ch = np.max(ch, axis=0)
                             channels_np.append(ch)
                             print(f"[Preview]   Channel {c}: shape={ch.shape}")
+            elif path.lower().endswith(".lif"):
+                from readlif.reader import LifFile
+                print("[Preview] Reading Leica LIF via readlif…")
+                _lif = LifFile(path)
+                # Pick the image with the largest XY area (the real acquisition).
+                _img, _best = None, -1
+                for _im in _lif.get_iter_image():
+                    _a = int(_im.dims.x) * int(_im.dims.y)
+                    if _a > _best:
+                        _img, _best = _im, _a
+                if _img is None:
+                    raise ValueError("No images found in LIF file")
+                _nc = int(_img.channels)
+                _nz = max(int(_img.nz), 1)
+                print(f"[Preview] LIF '{_img.name}': {_nc} channel(s), {_nz} Z")
+                if _nz > 1:
+                    print("[Preview] Z-stack — applying MIP per channel")
+                channels_np = []
+                for _c in range(_nc):
+                    _frames = [np.asarray(_img.get_frame(z=_z, t=0, c=_c))
+                               for _z in range(_nz)]
+                    _ch = _frames[0] if _nz == 1 else np.max(np.stack(_frames, axis=0), axis=0)
+                    _ch = np.squeeze(_ch)
+                    while _ch.ndim > 2:
+                        _ch = np.max(_ch, axis=0)
+                    channels_np.append(_ch)
+                    print(f"[Preview]   Channel {_c}: shape={_ch.shape}")
             else:
                 import tifffile as _tf
                 with _tf.TiffFile(path) as tif:
@@ -2542,8 +2569,8 @@ class CellMatchrLauncher:
                 else self._ana_roi_override_frame.pack(fill="x", pady=(4, 0))
             ))
         else:
-            # TIF / CZI: manual ROI mask folder (optional, hidden by default)
-            roi_card = self._card(parent, "ROI Mask Folder  (optional, TIF/CZI)")
+            # TIF / CZI / LIF: manual ROI mask folder (optional, hidden by default)
+            roi_card = self._card(parent, "ROI Mask Folder  (optional, TIF/CZI/LIF)")
             tk.Label(
                 roi_card,
                 text="Optional: provide a folder of ROI mask files to restrict "

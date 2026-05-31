@@ -165,6 +165,9 @@ class CellMatchrLauncher:
         self.current_step = 0
         self._spinning = False
         self._spin_idx  = 0
+        # Live background processes (segmentation/analysis runs, validation
+        # windows). Used to warn before navigating away mid-run.
+        self._active_procs: list = []
 
         # per-step input-variant selections (populated on Run step)
         self._val_input_var: tk.StringVar | None = None
@@ -418,7 +421,82 @@ class CellMatchrLauncher:
         cb.bind("<Button-4>",   _cb_scroll)
         cb.bind("<Button-5>",   _cb_scroll)
 
+    # ------------------------------------------------------------------
+    # Background-process tracking + leave-while-running guard
+    # ------------------------------------------------------------------
+
+    def _track_proc(self, proc, label: str) -> None:
+        """Register a launched subprocess so we can warn before leaving it."""
+        try:
+            self._active_procs.append((proc, label))
+        except Exception:
+            pass
+
+    def _running_procs(self) -> list:
+        """Return [(proc, label), …] for processes still alive; prune the rest."""
+        live = []
+        for proc, label in list(self._active_procs):
+            try:
+                if proc.poll() is None:
+                    live.append((proc, label))
+            except Exception:
+                pass
+        self._active_procs = live
+        return live
+
+    def _terminate_running(self) -> None:
+        """Terminate (then kill) every tracked process that is still alive."""
+        for proc, _ in self._running_procs():
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        for proc, _ in list(self._active_procs):
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        self._active_procs = []
+
+    def _confirm_leave_running(self) -> bool:
+        """If a process is running, require TWO confirmations before leaving.
+        Returns True if it is safe to navigate (nothing running, or the user
+        confirmed twice — in which case the process is terminated)."""
+        running = self._running_procs()
+        if not running:
+            return True
+        labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
+        first = messagebox.askyesno(
+            "⚠  PROCESS IN PROGRESS  ⚠",
+            "⚠  A PROCESS IS CURRENTLY RUNNING  ⚠\n\n"
+            f"      • {labels}\n\n"
+            "Leaving this page will CANCEL the running process and you may lose "
+            "the results of the current run.\n\n"
+            "Do you want to cancel it and move to another page?",
+            icon="warning", default="no", parent=self.root,
+        )
+        if not first:
+            return False
+        second = messagebox.askyesno(
+            "⚠  ARE YOU ABSOLUTELY SURE?  ⚠",
+            "❗  THIS WILL TERMINATE THE RUNNING PROCESS IMMEDIATELY  ❗\n\n"
+            "Any unfinished work from this run will be lost and cannot be "
+            "recovered.\n\n"
+            "Terminate the running process and switch pages?",
+            icon="warning", default="no", parent=self.root,
+        )
+        if not second:
+            return False
+        self._terminate_running()
+        return True
+
     def _show_step(self, idx: int) -> None:
+        # Guard against navigating away while a run/window is in progress.
+        if idx != self.current_step and not self._confirm_leave_running():
+            return
         self._sync_vars_to_config()
         save_config(self.config)
         save_project_config(self.config)
@@ -459,6 +537,8 @@ class CellMatchrLauncher:
             self._show_step(self.current_step - 1)
 
     def _save_and_close(self):
+        if not self._confirm_leave_running():
+            return
         self._sync_vars_to_config()
         save_config(self.config)
         self.root.quit()
@@ -643,22 +723,33 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
 
     def _log(self, msg: str) -> None:
-        if hasattr(self, "_log_box"):
-            self._log_box.insert("end", msg + "\n")
-            self._log_box.see("end")
+        # Guard against the log widget having been destroyed by page navigation
+        # while a background thread is still streaming output.
+        try:
+            if hasattr(self, "_log_box") and self._log_box.winfo_exists():
+                self._log_box.insert("end", msg + "\n")
+                self._log_box.see("end")
+        except tk.TclError:
+            pass
 
     def _vsi_log_append(self, msg: str) -> None:
         """Append a line to the VSI converter output log box."""
-        if not hasattr(self, "_vsi_log"):
-            return
-        self._vsi_log.config(state="normal")
-        self._vsi_log.insert("end", msg + "\n")
-        self._vsi_log.see("end")
-        self._vsi_log.config(state="disabled")
+        try:
+            if not (hasattr(self, "_vsi_log") and self._vsi_log.winfo_exists()):
+                return
+            self._vsi_log.config(state="normal")
+            self._vsi_log.insert("end", msg + "\n")
+            self._vsi_log.see("end")
+            self._vsi_log.config(state="disabled")
+        except tk.TclError:
+            pass
 
     def _set_run_status(self, msg: str, color: str = MUTED) -> None:
-        if hasattr(self, "_run_status"):
-            self._run_status.config(text=msg, fg=color)
+        try:
+            if hasattr(self, "_run_status") and self._run_status.winfo_exists():
+                self._run_status.config(text=msg, fg=color)
+        except tk.TclError:
+            pass
 
     # ------------------------------------------------------------------
     # Script path helper
@@ -686,6 +777,7 @@ class CellMatchrLauncher:
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
+                self._track_proc(proc, label)
                 for line in proc.stdout:
                     self.root.after(0, self._log, line.rstrip())
                 proc.wait()
@@ -1800,15 +1892,19 @@ class CellMatchrLauncher:
         script = self._script("segmentation.py")
 
         def _seg_log_line(line: str) -> None:
-            if not hasattr(self, "_seg_log"):
-                return
-            self._seg_log.config(state="normal")
-            self._seg_log.insert("end", line + "\n")
-            self._seg_log.see("end")
-            self._seg_log.config(state="disabled")
-            # Also update the one-liner status with the last meaningful line
-            if line.strip() and hasattr(self, "_seg_status"):
-                self._seg_status.config(text=line.strip()[:120], fg=MUTED)
+            try:
+                if not (hasattr(self, "_seg_log") and self._seg_log.winfo_exists()):
+                    return
+                self._seg_log.config(state="normal")
+                self._seg_log.insert("end", line + "\n")
+                self._seg_log.see("end")
+                self._seg_log.config(state="disabled")
+                # Also update the one-liner status with the last meaningful line
+                if line.strip() and hasattr(self, "_seg_status") \
+                        and self._seg_status.winfo_exists():
+                    self._seg_status.config(text=line.strip()[:120], fg=MUTED)
+            except tk.TclError:
+                pass
 
         def _thread():
             try:
@@ -1817,26 +1913,33 @@ class CellMatchrLauncher:
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
+                self._track_proc(proc, "Segmentation")
                 for line in proc.stdout:
                     self.root.after(0, _seg_log_line, line.rstrip())
                 proc.wait()
                 ok = proc.returncode == 0
                 def _done():
-                    self._seg_progress.stop()
-                    self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
-                    if ok:
-                        self._seg_status.config(text="✔  Segmentation complete.", fg=GREEN)
-                        _seg_log_line("\n✔  Segmentation complete.")
-                    else:
-                        self._seg_status.config(
-                            text=f"✗  Failed (exit {proc.returncode}).", fg=RED)
-                        _seg_log_line(f"\n✗  Failed (exit code {proc.returncode}).")
+                    try:
+                        self._seg_progress.stop()
+                        self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
+                        if ok:
+                            self._seg_status.config(text="✔  Segmentation complete.", fg=GREEN)
+                            _seg_log_line("\n✔  Segmentation complete.")
+                        else:
+                            self._seg_status.config(
+                                text=f"✗  Failed (exit {proc.returncode}).", fg=RED)
+                            _seg_log_line(f"\n✗  Failed (exit code {proc.returncode}).")
+                    except tk.TclError:
+                        pass
                 self.root.after(0, _done)
             except Exception as exc:
                 def _err():
-                    self._seg_progress.stop()
-                    self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
-                    self._seg_status.config(text=f"✗  {exc}", fg=RED)
+                    try:
+                        self._seg_progress.stop()
+                        self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
+                        self._seg_status.config(text=f"✗  {exc}", fg=RED)
+                    except tk.TclError:
+                        pass
                 self.root.after(0, _err)
 
         threading.Thread(target=_thread, daemon=True).start()
@@ -1899,7 +2002,7 @@ class CellMatchrLauncher:
             ]
             if self._review_test_mode and self._review_test_mode.get():
                 cmd.append("--test-mode")
-            subprocess.Popen(cmd)
+            self._track_proc(subprocess.Popen(cmd), "Review Segmented Images window")
             self.root.after(4000, _restore)
         except Exception as exc:
             _restore()
@@ -1974,9 +2077,9 @@ class CellMatchrLauncher:
                     pass
 
         try:
-            subprocess.Popen(
+            self._track_proc(subprocess.Popen(
                 [sys.executable, self._script("validator.py"), "--config", CONFIG_PATH]
-            )
+            ), "Validation window")
             _spin()
             # Re-enable after 5 s — enough time for the window to appear
             self.root.after(5000, _done)
@@ -2638,15 +2741,18 @@ class CellMatchrLauncher:
                 n_partial  = statuses.count("partial")
                 n_none     = statuses.count("none")
 
+                _img = "image" if n_total == 1 else "images"
                 if n_total == 0:
                     label_text = f"Channel {ch}: no project folders found"
                     fg = MUTED
                 elif n_complete == n_total:
-                    label_text = f"Channel {ch}: validation COMPLETE ({n_complete}/{n_total})  ✓  — filter will be applied automatically"
+                    label_text = (f"Channel {ch}: validation COMPLETE "
+                                  f"({n_complete}/{n_total} {_img})  ✓  — filter will be applied automatically")
                     fg = GREEN
                 elif n_complete + n_partial > 0:
                     label_text = (f"Channel {ch}: PARTIAL — "
-                                  f"{n_complete} complete  {n_partial} in-progress  {n_none} not started  ⟳")
+                                  f"{n_complete} complete  {n_partial} in-progress  {n_none} not started "
+                                  f"(of {n_total} {_img})  ⟳  — filter NOT applied by default")
                     fg = YELLOW
                     any_partial = True
                 else:
@@ -2796,14 +2902,18 @@ class CellMatchrLauncher:
         script = self._script("analysis.py")
 
         def _ana_log_line(line: str) -> None:
-            if not hasattr(self, "_ana_log"):
-                return
-            self._ana_log.config(state="normal")
-            self._ana_log.insert("end", line + "\n")
-            self._ana_log.see("end")
-            self._ana_log.config(state="disabled")
-            if line.strip() and hasattr(self, "_ana_status"):
-                self._ana_status.config(text=line.strip()[:120], fg=MUTED)
+            try:
+                if not (hasattr(self, "_ana_log") and self._ana_log.winfo_exists()):
+                    return
+                self._ana_log.config(state="normal")
+                self._ana_log.insert("end", line + "\n")
+                self._ana_log.see("end")
+                self._ana_log.config(state="disabled")
+                if line.strip() and hasattr(self, "_ana_status") \
+                        and self._ana_status.winfo_exists():
+                    self._ana_status.config(text=line.strip()[:120], fg=MUTED)
+            except tk.TclError:
+                pass
 
         def _thread():
             try:
@@ -2812,29 +2922,36 @@ class CellMatchrLauncher:
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
+                self._track_proc(proc, "Analysis")
                 for line in proc.stdout:
                     self.root.after(0, _ana_log_line, line.rstrip())
                 proc.wait()
                 ok = proc.returncode == 0
                 def _done():
-                    if hasattr(self, "_ana_progress"):
-                        self._ana_progress.stop()
-                    if ok:
-                        if hasattr(self, "_ana_status"):
-                            self._ana_status.config(text="✔  Analysis complete.", fg=GREEN)
-                        _ana_log_line("\n✔  Analysis complete.")
-                    else:
-                        if hasattr(self, "_ana_status"):
-                            self._ana_status.config(
-                                text=f"✗  Failed (exit {proc.returncode}).", fg=RED)
-                        _ana_log_line(f"\n✗  Failed (exit code {proc.returncode}).")
+                    try:
+                        if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
+                            self._ana_progress.stop()
+                        if ok:
+                            if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
+                                self._ana_status.config(text="✔  Analysis complete.", fg=GREEN)
+                            _ana_log_line("\n✔  Analysis complete.")
+                        else:
+                            if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
+                                self._ana_status.config(
+                                    text=f"✗  Failed (exit {proc.returncode}).", fg=RED)
+                            _ana_log_line(f"\n✗  Failed (exit code {proc.returncode}).")
+                    except tk.TclError:
+                        pass
                 self.root.after(0, _done)
             except Exception as exc:
                 def _err():
-                    if hasattr(self, "_ana_progress"):
-                        self._ana_progress.stop()
-                    if hasattr(self, "_ana_status"):
-                        self._ana_status.config(text=f"✗  {exc}", fg=RED)
+                    try:
+                        if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
+                            self._ana_progress.stop()
+                        if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
+                            self._ana_status.config(text=f"✗  {exc}", fg=RED)
+                    except tk.TclError:
+                        pass
                 self.root.after(0, _err)
 
         threading.Thread(target=_thread, daemon=True).start()
@@ -3043,6 +3160,7 @@ class CellMatchrLauncher:
             stderr=subprocess.STDOUT,   # merge stderr into stdout so we capture everything
             text=True, bufsize=1,
         )
+        self._track_proc(proc, "VSI Converter window")
 
         def _watch():
             output_lines = []
@@ -3109,9 +3227,9 @@ class CellMatchrLauncher:
         save_config(self.config)
 
         self._log(f"\n▶  Validation — opening window (input: {seg_sub})…")
-        subprocess.Popen(
+        self._track_proc(subprocess.Popen(
             [sys.executable, self._script("validator.py"), "--config", CONFIG_PATH]
-        )
+        ), "Validation window")
 
     def _run_analysis(self) -> None:
         proj = self.config.get("project_output_folder", "").strip()
@@ -3187,6 +3305,7 @@ class CellMatchrLauncher:
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
+                self._track_proc(proc1, "Segmentation")
                 for line in proc1.stdout:
                     self.root.after(0, self._log, line.rstrip())
                 proc1.wait()
@@ -3215,6 +3334,7 @@ class CellMatchrLauncher:
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
+                self._track_proc(proc2, "Analysis")
                 for line in proc2.stdout:
                     self.root.after(0, self._log, line.rstrip())
                 proc2.wait()

@@ -4,8 +4,14 @@
 
 Neuronal confocal image segmentation, manual validation, and colocalization analysis pipeline.
 
-Supports **Zeiss CZI** and **Olympus VSI** slide-scanner images.  
+Reads images directly from most major microscope brands — **Zeiss `.czi`**,
+**Leica `.lif`**, **Nikon `.nd2`**, **Olympus FluoView `.oib` / `.oif`**, and
+plain **`.tif` / `.tiff`** — plus **Olympus `.vsi`** slide-scanner files via the
+built-in VSI Converter.  
 Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Segment Anything for microscopy) for automatic cell segmentation.
+
+> **Not supported:** Olympus `.oir` (newer FV3000 format). Open it in
+> [Fiji/ImageJ](https://imagej.net/software/fiji/) and export to `.tif` first.
 
 ---
 
@@ -18,7 +24,7 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 │    • Open existing: select cellmatchr_project.json              │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 2  — Input & Paths                                        │
-│    • CZI / TIF  →  point to root input folder                   │
+│    • CZI/LIF/ND2/OIB-OIF/TIF → point to root input folder       │
 │    • VSI        →  launch VSI Converter (draws ROIs,            │
 │                    exports full-resolution TIFFs)               │
 ├─────────────────────────────────────────────────────────────────┤
@@ -93,29 +99,80 @@ pip install -e .
 
 ---
 
+## Updating an existing install (other computers)
+
+If a computer already has a working `cellmatchr` environment from an earlier
+version, you only need to (1) get the new code and (2) add the new microscope
+readers — **you do not need to rebuild the conda environment.**
+
+```bash
+# 1. Get the latest code
+cd /path/to/CellMatchR
+git pull                      # (or re-download the ZIP and replace the folder)
+
+# 2. Add the new file-format readers into the existing env.
+#    --no-deps is IMPORTANT: it adds only these packages and will NOT touch
+#    numpy or anything else already installed.
+conda activate cellmatchr
+pip install --no-deps "readlif==0.6.5" "nd2==0.11.3" "oiffile==2026.2.8"
+```
+
+> ⚠️ Use the exact versions above. In particular **do not** let `readlif`
+> install 0.6.6 — that version requires `numpy>=2`, which would break the
+> segmentation stack (this env must stay on `numpy 1.26.x`). The `--no-deps`
+> flag prevents that.
+
+**About the macOS app:** `CellMatchR.app` ships with the code, so a `git pull`
+updates it automatically. If you got the code as a **ZIP** (which can drop the
+executable bit), re-arm the launcher once after unzipping:
+
+```bash
+chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR"
+```
+
+---
+
 ## Launching CellMatchR
 
-### Option A — double-click (macOS)
+### Option A — double-click the app (macOS, recommended)
 
-Double-click **`launch_cellmatchr.command`** in Finder.  
-The first time, right-click → **Open** to bypass Gatekeeper.
+Double-click **`CellMatchR.app`** in Finder. It opens the CellMatchR window
+**with no Terminal window**, finds your conda installation, and runs the wizard.
 
-The script automatically:
-1. Finds your conda installation (miniforge3, miniconda3, anaconda3, …)
-2. Activates the `cellmatchr` environment
-3. Launches the CellMatchR wizard from the correct directory
+**First launch (one time):** macOS Gatekeeper blocks unsigned apps, so the first
+time **right-click the app → Open → Open** to approve it. After that, a normal
+double-click works.
 
-> The `.command` file must stay in the **CellMatchR root folder** (next to
-> `run_cellmatchr.py`) — you can create an alias / shortcut anywhere else.
+**Important — keep the app in the project folder:**
 
-### Option B — terminal
+- `CellMatchR.app` must stay **inside the CellMatchR folder** (next to
+  `run_cellmatchr.py`); it locates the code relative to its own position.
+- To launch it from the **Dock or Applications**, do **not** move it — instead
+  make an **alias** (right-click → **Make Alias**) and put the *alias* there, or
+  drag the app to the Dock while holding **⌥⌘** (which creates a Dock alias).
+  An alias remembers the original location, so the app still finds the code.
+- If the app is ever moved out of the folder, it shows an alert explaining this
+  instead of failing silently.
+
+> Got the code as a ZIP? Run `chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR"`
+> once (see *Updating an existing install* above) — ZIP downloads can strip the
+> executable bit.
+
+### Option B — double-click the `.command` (macOS, shows a Terminal/log window)
+
+Double-click **`launch_cellmatchr.command`** in Finder (first time: right-click →
+**Open**). This does the same thing as the app but keeps a Terminal window open
+showing the live log — handy for debugging. It must also stay in the CellMatchR
+root folder.
+
+### Option C — terminal
 
 ```bash
 conda activate cellmatchr
 python run_cellmatchr.py
 ```
 
-### Option C — entry-point (after `pip install -e .`)
+### Option D — entry-point (after `pip install -e .`)
 
 ```bash
 conda activate cellmatchr
@@ -166,7 +223,8 @@ automatically on the next launch.
 ```
 CellMatchr/
 ├── CellMatchr_Logo.png            # application logo
-├── launch_cellmatchr.command      # macOS double-click launcher
+├── CellMatchR.app/                # macOS double-click launcher (no Terminal)
+├── launch_cellmatchr.command      # macOS launcher with a Terminal/log window
 ├── run_cellmatchr.py              # CLI entry point
 ├── environment.yml                # conda environment (flexible versions)
 ├── pyproject.toml

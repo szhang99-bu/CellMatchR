@@ -19,7 +19,7 @@ dependencies = [
     "opencv-python",
     "tqdm",
     "czifile",
-    "readlif",
+    "readlif==0.6.5",
 ]
 
 # Heavy dependencies (GPU / napari) are not listed here because they require

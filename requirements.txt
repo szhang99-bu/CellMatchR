@@ -7,7 +7,7 @@ matplotlib
 opencv-python
 tqdm
 czifile           # Zeiss CZI support
-readlif           # Leica LIF support  (use readlif<=0.6.6 with numpy<2)
+readlif==0.6.5    # Leica LIF support — 0.6.5 needs ONLY Pillow (no numpy>=2 pin); do NOT use 0.6.6 with numpy<2
 
 # VSI converter (Olympus) — requires napari / Qt
 # qtpy is an abstraction layer; PyQt5 is the backend used here

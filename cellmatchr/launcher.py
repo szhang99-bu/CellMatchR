@@ -1063,7 +1063,7 @@ class CellMatchrLauncher:
         # ── Input type radio ─────────────────────────────────────────
         type_card = self._card(parent, "Input Data Format")
         for val, lbl in [
-            ("czi", "CZI / LIF / ND2 / OIB-OIF / TIF files  (Zeiss / Leica / Nikon / Olympus confocal / slide scanner — use directly)"),
+            ("czi", "CZI / LIF / ND2 / OIB-OIF / TIF files  (Zeiss / Leica / Nikon / Olympus confocal — or import TIF directly)"),
             ("vsi", "VSI file  (Olympus slide scanner — convert to TIF first via VSI Converter below)"),
         ]:
             tk.Radiobutton(
@@ -1077,8 +1077,8 @@ class CellMatchrLauncher:
             type_card,
             text="Supported directly: Zeiss .czi · Leica .lif · Nikon .nd2 · "
                  "Olympus FluoView .oib / .oif · .tif / .tiff.\n"
-                 "Not currently supported: Olympus .oir (newer FV3000 format — "
-                 "would require a Bio-Formats / Java backend).",
+                 "Not currently supported: Olympus .oir (newer FV3000 format) — "
+                 "please use Fiji to convert the file to TIF first.",
             bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=700,
         ).pack(anchor="w", pady=(8, 0))
 

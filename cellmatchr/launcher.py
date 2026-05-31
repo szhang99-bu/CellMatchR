@@ -1037,6 +1037,13 @@ class CellMatchrLauncher:
         saved_seg = self.config.get("seg_input_subfolder", "").strip()
         if saved_seg and not os.path.isdir(os.path.join(folder, saved_seg)):
             self.config["seg_input_subfolder"] = ""
+        # Repair a stale input folder (e.g. the converter output folder was
+        # renamed after saving) so the channel preview and segmentation still
+        # find the images.
+        if self._folder_image_count(self.config.get("input_root_folder", "").strip()) == 0:
+            healed = self._resolve_existing_input_folder()
+            if self._folder_image_count(healed) > 0:
+                self.config["input_root_folder"] = healed
         for k, v in self._vars.items():
             val = self.config.get(k)
             if val is not None:
@@ -1516,18 +1523,99 @@ class CellMatchrLauncher:
     # Segmentation channel preview helpers
     # ------------------------------------------------------------------
 
+    _INPUT_EXTS = (".czi", ".lif", ".nd2", ".oib", ".oif", ".tif", ".tiff")
+
+    def _folder_image_count(self, folder: str) -> int:
+        """Number of readable input images directly in `folder` or one level
+        down (matches how the input folder is scanned)."""
+        if not folder or not os.path.isdir(folder):
+            return 0
+        n = 0
+        try:
+            for item in os.listdir(folder):
+                full = os.path.join(folder, item)
+                if os.path.isfile(full) and item.lower().endswith(self._INPUT_EXTS):
+                    n += 1
+                elif os.path.isdir(full):
+                    try:
+                        for f in os.listdir(full):
+                            if f.lower().endswith(self._INPUT_EXTS):
+                                n += 1
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return n
+
+    def _direct_image_count(self, folder: str) -> int:
+        """Number of input images located DIRECTLY in `folder` (not in subdirs)."""
+        if not folder or not os.path.isdir(folder):
+            return 0
+        n = 0
+        try:
+            for item in os.listdir(folder):
+                if item.lower().endswith(self._INPUT_EXTS) \
+                        and os.path.isfile(os.path.join(folder, item)):
+                    n += 1
+        except OSError:
+            pass
+        return n
+
+    def _resolve_existing_input_folder(self) -> str:
+        """Return a folder that actually contains input images.
+
+        If the stored `input_root_folder` is missing or empty (e.g. the
+        converter output folder was renamed/moved after the project was saved),
+        look under the project for the converter `exports` folder — so the
+        preview and segmentation keep working instead of silently finding
+        nothing. Output folders (Segmentation/Validation/Analysis) and the
+        converter's intermediate/mask folders are never chosen as input.
+        """
+        cfg_folder = self.config.get("input_root_folder", "").strip()
+        if self._folder_image_count(cfg_folder) > 0:
+            return cfg_folder
+
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj or not os.path.isdir(proj):
+            return cfg_folder
+
+        exclude = {SUBFOLDER["seg"], SUBFOLDER["val"], SUBFOLDER["ana"]}
+        # Candidates are *leaf* folders that hold images directly; prefer the
+        # converter's `exports` subfolder.
+        candidates = [proj]
+        try:
+            for name in sorted(os.listdir(proj)):
+                if any(name == e or name.startswith(e + "_") for e in exclude):
+                    continue
+                full = os.path.join(proj, name)
+                if os.path.isdir(full):
+                    candidates.append(os.path.join(full, "exports"))  # converter output
+                    candidates.append(full)
+        except OSError:
+            pass
+        best, best_n = cfg_folder, 0
+        for c in candidates:
+            n = self._direct_image_count(c)  # leaf folder = images directly inside
+            if n > best_n:
+                best, best_n = c, n
+        return best
+
     def _find_first_image(self) -> str | None:
-        folder = self.config.get("input_root_folder", "").strip()
+        folder = self._resolve_existing_input_folder()
+        # Self-heal: if we relocated to a valid folder, remember it so the
+        # segmentation run uses the same images.
+        cfg = self.config.get("input_root_folder", "").strip()
+        if folder and folder != cfg and self._folder_image_count(folder) > 0:
+            self.config["input_root_folder"] = folder
         if not folder or not os.path.isdir(folder):
             return None
-        exts = (".czi", ".lif", ".nd2", ".oib", ".oif", ".tif", ".tiff")
         for item in sorted(os.listdir(folder)):
             sub = os.path.join(folder, item)
             if os.path.isdir(sub):
                 for fname in sorted(os.listdir(sub)):
-                    if fname.lower().endswith(exts):
+                    if fname.lower().endswith(self._INPUT_EXTS):
                         return os.path.join(sub, fname)
-            elif item.lower().endswith(exts):
+            elif item.lower().endswith(self._INPUT_EXTS):
                 return sub
         return None
 
@@ -1539,7 +1627,14 @@ class CellMatchrLauncher:
             return
         path = self._find_first_image()
         if not path:
-            self.root.after(0, callback, [], "(no image found)")
+            looked = self.config.get("input_root_folder", "").strip()
+            if not looked:
+                msg = "No input folder set — go to Step 2."
+            elif not os.path.isdir(looked):
+                msg = f"Input folder not found:  {looked}"
+            else:
+                msg = f"No images found in:  {looked}"
+            self.root.after(0, callback, [], msg)
             return
         try:
             import numpy as np

@@ -1225,7 +1225,19 @@ class CellMatchrLauncher:
 
         # ── Input folder status ──────────────────────────────────────
         input_card = self._card(parent, "Input Folder")
+
+        # Converter outputs available to segment (VSI_Converted_TIFF[_*]).
+        self._seg_input_variants = self._find_input_variants()
+        _path_by_name = {n: p for n, p in self._seg_input_variants}
+
         folder = self.config.get("input_root_folder", "").strip()
+        # If the stored folder has no images (e.g. it was renamed), default to a
+        # converter output that does, so the preview and run work out of the box.
+        if self._folder_image_count(folder) == 0 and self._seg_input_variants:
+            folder = next((p for _, p in self._seg_input_variants
+                           if self._direct_image_count(p) > 0),
+                          self._seg_input_variants[0][1])
+            self.config["input_root_folder"] = folder
         input_ok = bool(folder and os.path.isdir(folder))
 
         self._seg_input_warn = tk.Label(
@@ -1241,6 +1253,65 @@ class CellMatchrLauncher:
             bg=CARD, fg=FG if input_ok else MUTED, font=FONT_MONO, wraplength=700,
         )
         self._seg_input_display.pack(anchor="w", pady=(2, 0))
+
+        # Dropdown to choose among multiple converter outputs (like Val/Analysis)
+        if len(self._seg_input_variants) > 1:
+            _names = [n for n, _ in self._seg_input_variants]
+            _cur = next((n for n, p in self._seg_input_variants
+                         if os.path.normpath(p) == os.path.normpath(folder)), _names[0])
+            self._seg_src_var = tk.StringVar(value=_cur)
+
+            ttk.Separator(input_card, orient="horizontal").pack(fill="x", pady=(8, 6))
+            tk.Label(input_card, text="Converted output to use:", bg=CARD, fg=MUTED,
+                     font=FONT).pack(anchor="w")
+            self._seg_src_cur_lbl = tk.Label(input_card, text=f"Using:  {_cur}",
+                                             bg=CARD, fg=FG, font=FONT_MONO, wraplength=660)
+            self._seg_src_cur_lbl.pack(anchor="w", pady=(0, 4))
+
+            _ovr_frame = tk.Frame(input_card, bg=CARD)
+            _ovr_lbl = tk.Label(input_card, text="▶  Use a different converted output",
+                                bg=CARD, fg=MUTED, font=(FONT[0], FONT[1], "underline"),
+                                cursor="hand2")
+            _ovr_lbl.pack(anchor="w")
+            _cb_src = ttk.Combobox(_ovr_frame, textvariable=self._seg_src_var,
+                                   values=_names, state="readonly", width=46)
+            _cb_src.pack(side="left", pady=(4, 0))
+            self._bind_combobox_scroll(_cb_src)
+
+            def _seg_src_changed(*_):
+                nm = self._seg_src_var.get()
+                p = _path_by_name.get(nm, "")
+                self.config["input_root_folder"] = p
+                self._seg_src_cur_lbl.config(text=f"Using:  {nm}")
+                has = self._folder_image_count(p) > 0
+                self._seg_input_display.config(text=p if p else "—", fg=FG if has else MUTED)
+                self._seg_input_warn.config(
+                    text="" if has else f"⚠  No images found in:  {p}")
+                # reset the channel preview for the newly chosen source
+                self._ch_images = []
+                self._ch_photo_refs = []
+                self._ch_index = 0
+                try:
+                    self._ch_preview_img.config(image="")
+                    self._ch_lbl.config(
+                        text="Press 'Load Preview' to load channels." if has
+                        else "No images in this output",
+                        fg=ACCENT if has else MUTED)
+                    self._ch_load_btn.config(state="normal" if (has and _PIL) else "disabled")
+                    self._ch_prev_btn.config(state="disabled")
+                    self._ch_next_btn.config(state="disabled")
+                except (tk.TclError, AttributeError):
+                    pass
+            self._seg_src_var.trace_add("write", _seg_src_changed)
+
+            def _toggle_seg_src(lbl=_ovr_lbl):
+                if _ovr_frame.winfo_ismapped():
+                    _ovr_frame.pack_forget()
+                    lbl.config(text="▶  Use a different converted output")
+                else:
+                    _ovr_frame.pack(fill="x", pady=(0, 4))
+                    lbl.config(text="▼  Use a different converted output")
+            _ovr_lbl.bind("<Button-1>", lambda _: _toggle_seg_src())
 
         # ── Channel preview + picker ─────────────────────────────────
         ch_card = self._card(parent, "Channel Preview  (click to toggle prediction)")
@@ -1560,6 +1631,22 @@ class CellMatchrLauncher:
         except OSError:
             pass
         return n
+
+    def _find_input_variants(self) -> list:
+        """[(display_name, images_folder)] for every converter output
+        (VSI_Converted_TIFF[_*]) under the project — so the user can pick which
+        one to segment, the same way Validation/Analysis pick a segmentation
+        output. The images folder is the variant's `exports` subfolder when it
+        exists, else the variant folder itself."""
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj or not os.path.isdir(proj):
+            return []
+        out = []
+        for name in self._find_variants(SUBFOLDER["vsi"]):
+            base = os.path.join(proj, name)
+            exp = os.path.join(base, "exports")
+            out.append((name, exp if os.path.isdir(exp) else base))
+        return out
 
     def _resolve_existing_input_folder(self) -> str:
         """Return a folder that actually contains input images.

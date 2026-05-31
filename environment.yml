@@ -64,4 +64,4 @@ dependencies:
   - pip:
       - roifile==2026.1.29     # exact CellTinder version; read Fiji/ImageJ .roi files
       - slideio                # VSI (Olympus) file reader for the VSI Converter
-      - readlif==0.6.6         # Leica LIF reader (works with numpy 1.26 despite its >=2 pin)
+      - readlif==0.6.5         # Leica LIF reader — 0.6.5 depends ONLY on Pillow (0.6.6 pins numpy>=2 and would break the numpy 1.26 stack)

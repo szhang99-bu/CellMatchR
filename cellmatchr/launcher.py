@@ -160,6 +160,7 @@ class CellMatchrLauncher:
         self.root.configure(bg=BG)
         self.root.geometry("1150x800")
         self.root.minsize(900, 640)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.config = DEFAULT_CONFIG.copy()  # always start clean
         self.current_step = 0
@@ -492,6 +493,24 @@ class CellMatchrLauncher:
             return False
         self._terminate_running()
         return True
+
+    def _on_close(self) -> None:
+        """Window-close (X) handler — single warning if a process is running."""
+        running = self._running_procs()
+        if running:
+            labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
+            if not messagebox.askyesno(
+                "⚠  PROCESS IN PROGRESS  ⚠",
+                "⚠  A PROCESS IS CURRENTLY RUNNING  ⚠\n\n"
+                f"      • {labels}\n\n"
+                "Closing CellMatchR will terminate it and you may lose the "
+                "results of the current run.\n\n"
+                "Close anyway?",
+                icon="warning", default="no", parent=self.root,
+            ):
+                return
+            self._terminate_running()
+        self.root.quit()
 
     def _show_step(self, idx: int) -> None:
         # Guard against navigating away while a run/window is in progress.

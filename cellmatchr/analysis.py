@@ -32,10 +32,17 @@ IOU_THRESHOLD = 0.35
 # "any_pixel" = object inside ROI if any pixel touches ROI
 ROI_CELL_RULE = "centroid"
 
-# When True, validation filtering is applied even if only some (not all) ROIs
-# in a project have been reviewed.  Default False — only fully-validated
-# projects are filtered automatically.
+# When True, validation filtering is applied even if only some (not all) images
+# for a channel have been reviewed.  Default False — a channel is filtered only
+# when EVERY image in the run has been validated for it, so a partially-reviewed
+# channel does not mix validated and unvalidated images (which would bias the
+# dataset).  Enable this to opt into partial filtering.
 APPLY_PARTIAL_VALIDATION = False
+
+# Populated in main(): {channel:int -> bool} — True only when every image in the
+# run carries the completion marker for that channel.  Gates auto-filtering so
+# we never filter a channel that is only partially validated across images.
+CHANNEL_FULLY_VALIDATED = {}
 
 ANALYSIS_SUBFOLDER_NAME = "colocalization_analysis"
 
@@ -654,9 +661,10 @@ def analyze_project_folder(project_folder):
     pm_ch  = f"channel_{PM_CHANNEL}"
 
     # ── Validation — per-channel artifact filtering ───────────────────────────
-    # Complete validation (marker present): always applied.
-    # Partial validation (TSV exists, no marker): applied only when
-    # APPLY_PARTIAL_VALIDATION is True.
+    # Auto-filtering requires the WHOLE channel to be validated (every image in
+    # the run).  When only some images are validated, filtering is skipped by
+    # default so the dataset does not mix validated and unvalidated images;
+    # set APPLY_PARTIAL_VALIDATION to opt in to per-image partial filtering.
     def _apply_val(label_img, channel, ch_token):
         val_data = read_validation_tsv(project_folder, channel)
         if val_data is None:
@@ -664,10 +672,12 @@ def analyze_project_folder(project_folder):
             return label_img, None, "none"
 
         complete = is_validation_complete(project_folder, channel)
-        if not complete and not APPLY_PARTIAL_VALIDATION:
+        channel_done = CHANNEL_FULLY_VALIDATED.get(channel, False)
+        if not channel_done and not APPLY_PARTIAL_VALIDATION:
             n_reviewed = len(val_data["label_decisions"])
-            print(f"  {ch_token}: [PARTIAL ~ {n_reviewed} reviewed] "
-                  "filter NOT applied — enable 'apply_partial_validation' to override")
+            print(f"  {ch_token}: [PARTIAL — channel not fully validated across all "
+                  f"images; {n_reviewed} reviewed here] filter NOT applied — "
+                  "enable 'apply_partial_validation' to override")
             return label_img, val_data, "partial_skipped"
 
         artifacts = val_data["artifact_labels"]
@@ -890,6 +900,25 @@ def main():
         return
 
     print(f"Found {len(project_folders)} project folder(s).")
+
+    # A channel is auto-filtered only when EVERY image in the run is validated
+    # for it; otherwise filtering is skipped (unless APPLY_PARTIAL_VALIDATION).
+    global CHANNEL_FULLY_VALIDATED
+    CHANNEL_FULLY_VALIDATED = {}
+    for ch in {COI_CHANNEL, PM_CHANNEL}:
+        CHANNEL_FULLY_VALIDATED[ch] = bool(project_folders) and all(
+            is_validation_complete(pf, ch) for pf in project_folders
+        )
+        if CHANNEL_FULLY_VALIDATED[ch]:
+            print(f"  Channel {ch}: fully validated across all images "
+                  "— validation filter will be applied.")
+        elif APPLY_PARTIAL_VALIDATION:
+            print(f"  Channel {ch}: not fully validated — partial filtering "
+                  "ENABLED (per-image).")
+        else:
+            print(f"  Channel {ch}: not fully validated — filter NOT applied "
+                  "(enable partial validation to override).")
+
     all_summaries = []
 
     for project_folder in tqdm(project_folders, desc="Analyzing projects"):

@@ -65,3 +65,5 @@ dependencies:
       - roifile==2026.1.29     # exact CellTinder version; read Fiji/ImageJ .roi files
       - slideio                # VSI (Olympus) file reader for the VSI Converter
       - readlif==0.6.5         # Leica LIF reader — 0.6.5 depends ONLY on Pillow (0.6.6 pins numpy>=2 and would break the numpy 1.26 stack)
+      - nd2==0.11.3            # Nikon ND2 reader (pure-python; all deps already in this env, numpy unpinned)
+      - oiffile==2026.2.8      # Olympus FluoView .oib/.oif reader (deps: numpy + tifffile, already present). NOTE: Olympus .oir is NOT supported (needs Bio-Formats/Java).

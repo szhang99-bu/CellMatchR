@@ -1063,8 +1063,8 @@ class CellMatchrLauncher:
         # ── Input type radio ─────────────────────────────────────────
         type_card = self._card(parent, "Input Data Format")
         for val, lbl in [
-            ("czi", "CZI / LIF / TIF files  (Zeiss / Leica / slide scanner — use directly)"),
-            ("vsi", "VSI file  (Olympus — convert to TIF first via VSI Converter below)"),
+            ("czi", "CZI / LIF / ND2 / OIB-OIF / TIF files  (Zeiss / Leica / Nikon / Olympus confocal / slide scanner — use directly)"),
+            ("vsi", "VSI file  (Olympus slide scanner — convert to TIF first via VSI Converter below)"),
         ]:
             tk.Radiobutton(
                 type_card, text=lbl,
@@ -1072,6 +1072,15 @@ class CellMatchrLauncher:
                 bg=CARD, fg=FG, selectcolor=CARD,
                 activebackground=CARD, font=FONT,
             ).pack(anchor="w", pady=2)
+
+        tk.Label(
+            type_card,
+            text="Supported directly: Zeiss .czi · Leica .lif · Nikon .nd2 · "
+                 "Olympus FluoView .oib / .oif · .tif / .tiff.\n"
+                 "Not currently supported: Olympus .oir (newer FV3000 format — "
+                 "would require a Bio-Formats / Java backend).",
+            bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=700,
+        ).pack(anchor="w", pady=(8, 0))
 
         # ── VSI section (shown when input_type == "vsi") ─────────────
         self._vsi_section = tk.Frame(parent, bg=BG)
@@ -1143,11 +1152,12 @@ class CellMatchrLauncher:
             else self._vsi_input_override_frame.pack(fill="x", pady=(4, 0))
         ))
 
-        # ── CZI/LIF/TIF section (shown when input_type == "czi") ─────
+        # ── CZI/LIF/ND2/OIB-OIF/TIF section (shown when input_type == "czi") ─
         self._czi_section = tk.Frame(parent, bg=BG)
-        czi_card = self._card(self._czi_section, "CZI / LIF / TIF Input Folder")
+        czi_card = self._card(self._czi_section, "CZI / LIF / ND2 / OIB-OIF / TIF Input Folder")
         tk.Label(czi_card,
-                 text="Select the root folder. Each subfolder should contain one CZI, LIF, or TIF file.",
+                 text="Select the root folder. Each subfolder should contain one "
+                      "CZI, LIF, ND2, OIB/OIF, or TIF file.",
                  bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 8))
         self._path_row(czi_card,
                        "Input root folder:",
@@ -1510,7 +1520,7 @@ class CellMatchrLauncher:
         folder = self.config.get("input_root_folder", "").strip()
         if not folder or not os.path.isdir(folder):
             return None
-        exts = (".czi", ".lif", ".tif", ".tiff")
+        exts = (".czi", ".lif", ".nd2", ".oib", ".oif", ".tif", ".tiff")
         for item in sorted(os.listdir(folder)):
             sub = os.path.join(folder, item)
             if os.path.isdir(sub):
@@ -1626,6 +1636,41 @@ class CellMatchrLauncher:
                         _ch = np.max(_ch, axis=0)
                     channels_np.append(_ch)
                     print(f"[Preview]   Channel {_c}: shape={_ch.shape}")
+            elif path.lower().endswith((".nd2", ".oib", ".oif")):
+                # Nikon ND2 / Olympus OIB-OIF: read array + axis labels, then
+                # drop T/P/M axes (first index), MIP Z, split channels.
+                if path.lower().endswith(".nd2"):
+                    import nd2
+                    print("[Preview] Reading Nikon ND2 via nd2…")
+                    with nd2.ND2File(path) as _f:
+                        _axes = list("".join(_f.sizes.keys()).upper())
+                        _data = _f.asarray()
+                else:
+                    from oiffile import OifFile
+                    print("[Preview] Reading Olympus OIB/OIF via oiffile…")
+                    with OifFile(path) as _oif:
+                        _data = _oif.asarray()
+                        _axes = list(_oif.axes.upper())
+                print(f"[Preview] axes: {''.join(_axes)}, shape: {_data.shape}")
+                for _i in range(len(_axes) - 1, -1, -1):
+                    if _axes[_i] not in ("C", "Z", "Y", "X"):
+                        _data = np.take(_data, 0, axis=_i)
+                        _axes.pop(_i)
+                _axes = "".join(_axes)
+                _ci = _axes.find("C")
+                if _ci == -1:
+                    _d = np.squeeze(_data)
+                    while _d.ndim > 2:
+                        _d = np.max(_d, axis=0)
+                    channels_np = [_d]
+                else:
+                    channels_np = []
+                    for _c in range(_data.shape[_ci]):
+                        _ch = np.squeeze(np.take(_data, _c, axis=_ci))
+                        while _ch.ndim > 2:
+                            _ch = np.max(_ch, axis=0)
+                        channels_np.append(_ch)
+                        print(f"[Preview]   Channel {_c}: shape={_ch.shape}")
             else:
                 import tifffile as _tf
                 with _tf.TiffFile(path) as tif:
@@ -2569,8 +2614,8 @@ class CellMatchrLauncher:
                 else self._ana_roi_override_frame.pack(fill="x", pady=(4, 0))
             ))
         else:
-            # TIF / CZI / LIF: manual ROI mask folder (optional, hidden by default)
-            roi_card = self._card(parent, "ROI Mask Folder  (optional, TIF/CZI/LIF)")
+            # Direct-read formats: manual ROI mask folder (optional, hidden by default)
+            roi_card = self._card(parent, "ROI Mask Folder  (optional, TIF/CZI/LIF/ND2/OIB)")
             tk.Label(
                 roi_card,
                 text="Optional: provide a folder of ROI mask files to restrict "

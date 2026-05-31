@@ -14,8 +14,8 @@ DEFAULT_CONFIG: dict = {
     "project_output_folder": "",   # single root folder for all outputs
 
     # --- Input ---
-    "input_type": "czi",           # "czi" (CZI/LIF/TIF direct) | "vsi"
-    "input_root_folder": "",       # where raw CZI/LIF/TIF files live
+    "input_type": "czi",           # "czi" (CZI/LIF/ND2/OIB-OIF/TIF direct) | "vsi"
+    "input_root_folder": "",       # where raw CZI/LIF/ND2/OIB-OIF/TIF files live
 
     # --- Segmentation ---
     "seg_channels": "",

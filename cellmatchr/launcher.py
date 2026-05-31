@@ -156,6 +156,7 @@ class CellMatchrLauncher:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("CellMatchR")
+        self._set_window_icon()
         self.root.configure(bg=BG)
         self.root.geometry("1150x800")
         self.root.minsize(900, 640)
@@ -249,6 +250,22 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
     # Layout
     # ------------------------------------------------------------------
+
+    def _set_window_icon(self) -> None:
+        """Use CellMatchr_Logo.png as the window / Dock / taskbar icon."""
+        logo_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "CellMatchr_Logo.png",
+        )
+        if not (_PIL and os.path.exists(logo_path)):
+            return
+        try:
+            img = Image.open(logo_path)
+            # Keep a reference so Tk doesn't garbage-collect the image.
+            self._icon_img = ImageTk.PhotoImage(img)
+            self.root.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
 
     def _build_layout(self) -> None:
         self.root.grid_rowconfigure(0, weight=1)

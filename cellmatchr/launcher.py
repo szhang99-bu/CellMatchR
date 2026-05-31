@@ -445,6 +445,10 @@ class CellMatchrLauncher:
         self._active_procs = live
         return live
 
+    def _is_running(self, label: str) -> bool:
+        """True if a tracked process with this label is still alive."""
+        return any(lbl == label for _, lbl in self._running_procs())
+
     def _terminate_running(self) -> None:
         """Terminate (then kill) every tracked process that is still alive."""
         for proc, _ in self._running_procs():
@@ -462,6 +466,63 @@ class CellMatchrLauncher:
                     pass
         self._active_procs = []
 
+    def _warn_yesno(self, title: str, message: str,
+                    yes_text: str = "Yes", no_text: str = "No") -> bool:
+        """Modal warning dialog. 'No' is the highlighted default and sits on
+        the RIGHT (so Enter / the obvious button is the safe choice); 'Yes'
+        (the destructive action) is de-emphasised on the left.  Returns True
+        only if the user explicitly chooses Yes."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=CARD)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        result = {"v": False}
+
+        tk.Label(dlg, text="⚠", bg=CARD, fg=RED,
+                 font=("Segoe UI", 34, "bold")).pack(pady=(18, 2))
+        tk.Label(dlg, text=title, bg=CARD, fg=RED,
+                 font=("Segoe UI", 12, "bold")).pack(padx=28)
+        tk.Label(dlg, text=message, bg=CARD, fg=FG, font=FONT,
+                 justify="left", wraplength=440).pack(padx=28, pady=(10, 18))
+
+        def _yes():
+            result["v"] = True
+            dlg.destroy()
+
+        def _no():
+            result["v"] = False
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg, bg=CARD)
+        btn_row.pack(pady=(0, 20))
+        # Yes (destructive) on the LEFT, muted; No (safe default) on the RIGHT.
+        tk.Button(btn_row, text=yes_text, command=_yes,
+                  bg=ACTIVE, fg=MUTED, font=FONT, relief="flat",
+                  activebackground=ACTIVE, activeforeground=FG,
+                  padx=16, pady=7).pack(side="left", padx=(0, 12))
+        no_btn = tk.Button(btn_row, text=no_text, command=_no,
+                           bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat",
+                           activebackground=ACCENT, padx=20, pady=7)
+        no_btn.pack(side="left")
+
+        no_btn.focus_set()
+        dlg.bind("<Return>", lambda _e: _no())
+        dlg.bind("<Escape>", lambda _e: _no())
+        dlg.protocol("WM_DELETE_WINDOW", _no)
+
+        dlg.update_idletasks()
+        x = self.root.winfo_rootx() + max(
+            (self.root.winfo_width() - dlg.winfo_width()) // 2, 0)
+        y = self.root.winfo_rooty() + max(
+            (self.root.winfo_height() - dlg.winfo_height()) // 3, 0)
+        dlg.geometry(f"+{x}+{y}")
+        dlg.lift()
+        dlg.attributes("-topmost", True)
+        dlg.grab_set()
+        self.root.wait_window(dlg)
+        return result["v"]
+
     def _confirm_leave_running(self) -> bool:
         """If a process is running, require TWO confirmations before leaving.
         Returns True if it is safe to navigate (nothing running, or the user
@@ -470,24 +531,24 @@ class CellMatchrLauncher:
         if not running:
             return True
         labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
-        first = messagebox.askyesno(
-            "⚠  PROCESS IN PROGRESS  ⚠",
-            "⚠  A PROCESS IS CURRENTLY RUNNING  ⚠\n\n"
+        first = self._warn_yesno(
+            "PROCESS IN PROGRESS",
+            "A process is currently running:\n\n"
             f"      • {labels}\n\n"
             "Leaving this page will CANCEL the running process and you may lose "
             "the results of the current run.\n\n"
             "Do you want to cancel it and move to another page?",
-            icon="warning", default="no", parent=self.root,
+            yes_text="Yes, cancel it", no_text="No, stay here",
         )
         if not first:
             return False
-        second = messagebox.askyesno(
-            "⚠  ARE YOU ABSOLUTELY SURE?  ⚠",
-            "❗  THIS WILL TERMINATE THE RUNNING PROCESS IMMEDIATELY  ❗\n\n"
+        second = self._warn_yesno(
+            "ARE YOU ABSOLUTELY SURE?",
+            "❗  This will TERMINATE the running process immediately.\n\n"
             "Any unfinished work from this run will be lost and cannot be "
             "recovered.\n\n"
             "Terminate the running process and switch pages?",
-            icon="warning", default="no", parent=self.root,
+            yes_text="Yes, terminate", no_text="No, go back",
         )
         if not second:
             return False
@@ -499,14 +560,14 @@ class CellMatchrLauncher:
         running = self._running_procs()
         if running:
             labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
-            if not messagebox.askyesno(
-                "⚠  PROCESS IN PROGRESS  ⚠",
-                "⚠  A PROCESS IS CURRENTLY RUNNING  ⚠\n\n"
+            if not self._warn_yesno(
+                "PROCESS IN PROGRESS",
+                "A process is currently running:\n\n"
                 f"      • {labels}\n\n"
                 "Closing CellMatchR will terminate it and you may lose the "
                 "results of the current run.\n\n"
                 "Close anyway?",
-                icon="warning", default="no", parent=self.root,
+                yes_text="Yes, close", no_text="No, stay open",
             ):
                 return
             self._terminate_running()
@@ -1881,6 +1942,10 @@ class CellMatchrLauncher:
 
     def _run_segmentation_step(self) -> None:
         """Run segmentation from within the Segmentation step card."""
+        if self._is_running("Segmentation"):
+            if hasattr(self, "_seg_status"):
+                self._seg_status.config(text="Segmentation is already running…", fg=ACCENT)
+            return
         self._sync_vars_to_config()
         folder = self.config.get("input_root_folder", "").strip()
         channels = self.config.get("seg_channels", "").strip()
@@ -1965,6 +2030,11 @@ class CellMatchrLauncher:
 
     def _launch_roi_editor(self) -> None:
         """Launch the napari ROI editor so the user can add missed cells before validation."""
+        if self._is_running("Review Segmented Images window"):
+            if hasattr(self, "_review_status"):
+                self._review_status.config(
+                    text="A Review window is already open.", fg=ACCENT)
+            return
         self._sync_vars_to_config()
         proj = self.config.get("project_output_folder", "").strip()
         if not proj:
@@ -2030,6 +2100,11 @@ class CellMatchrLauncher:
 
     def _run_validation_step(self) -> None:
         """Launch the validator from the Validation step card."""
+        if self._is_running("Validation window"):
+            if hasattr(self, "_val_status"):
+                self._val_status.config(
+                    text="A Validation window is already open.", fg=ACCENT)
+            return
         self._sync_vars_to_config()
         proj = self.config.get("project_output_folder", "").strip()
         if not proj:
@@ -2866,6 +2941,10 @@ class CellMatchrLauncher:
 
     def _run_analysis_step(self) -> None:
         """Run analysis from the Analysis step card."""
+        if self._is_running("Analysis"):
+            if hasattr(self, "_ana_status"):
+                self._ana_status.config(text="Analysis is already running…", fg=ACCENT)
+            return
         self._sync_vars_to_config()
 
         # Sync channel selections from dropdowns
@@ -3144,7 +3223,7 @@ class CellMatchrLauncher:
 
     def _launch_vsi(self) -> None:
         # Guard: don't allow re-launch while already running
-        if self._spinning:
+        if self._spinning or self._is_running("VSI Converter window"):
             return
 
         proj = self.config.get("project_output_folder", "").strip()
@@ -3220,6 +3299,9 @@ class CellMatchrLauncher:
         threading.Thread(target=_watch, daemon=True).start()
 
     def _run_segmentation(self) -> None:
+        if self._is_running("Segmentation"):
+            self._log("Segmentation is already running…")
+            return
         out = self._resolve_output_dir(SUBFOLDER["seg"])
         if out is None:
             return
@@ -3229,6 +3311,9 @@ class CellMatchrLauncher:
         self._run_subprocess_in_log(self._script("segmentation.py"), "Segmentation")
 
     def _run_validation(self) -> None:
+        if self._is_running("Validation window"):
+            self._log("A Validation window is already open.")
+            return
         proj = self.config.get("project_output_folder", "").strip()
         if not proj:
             self._log("ERROR: No project output folder set.")
@@ -3251,6 +3336,9 @@ class CellMatchrLauncher:
         ), "Validation window")
 
     def _run_analysis(self) -> None:
+        if self._is_running("Analysis"):
+            self._log("Analysis is already running…")
+            return
         proj = self.config.get("project_output_folder", "").strip()
         if not proj:
             self._log("ERROR: No project output folder set.")
@@ -3275,6 +3363,9 @@ class CellMatchrLauncher:
         self._run_subprocess_in_log(self._script("analysis.py"), "Analysis")
 
     def _run_all(self) -> None:
+        if self._is_running("Segmentation") or self._is_running("Analysis"):
+            self._log("A pipeline run is already in progress…")
+            return
         proj = self.config.get("project_output_folder", "").strip()
         if not proj:
             self._log("ERROR: No project output folder set. Go to Step 1 — Create Project.")

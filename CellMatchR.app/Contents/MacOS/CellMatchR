@@ -1,0 +1,45 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# CellMatchR — macOS .app launcher (no Terminal window).
+#
+# Keep CellMatchR.app INSIDE the CellMatchR project folder (next to
+# run_cellmatchr.py).  To put it in the Dock or Applications, make an ALIAS
+# of it (right-click → Make Alias) — an alias remembers the original path, so
+# the app can still find the project files.  Do not MOVE the .app out of the
+# project folder.
+# ---------------------------------------------------------------------------
+
+# Contents/MacOS/CellMatchR  →  three levels up is the project root.
+APP_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$APP_BIN_DIR/../../.." && pwd)"
+
+# If the app was moved out of the project, the script next to it is gone.
+if [ ! -f "$PROJECT_DIR/run_cellmatchr.py" ]; then
+    /usr/bin/osascript -e 'display alert "CellMatchR" message "Could not find run_cellmatchr.py.\n\nKeep CellMatchR.app inside the CellMatchR project folder. To launch it from the Dock or Applications, use an ALIAS of the app rather than moving it."' >/dev/null 2>&1
+    exit 1
+fi
+cd "$PROJECT_DIR"
+
+# ── Find the cellmatchr env Python directly (no conda activate needed) ───────
+PYTHON_BIN=""
+for CONDA_BASE in \
+    "$HOME/miniforge3" \
+    "$HOME/miniconda3" \
+    "$HOME/anaconda3" \
+    "/opt/homebrew/Caskroom/miniforge/base" \
+    "/opt/miniconda3" \
+    "/opt/miniforge3" \
+    "/opt/conda"; do
+    if [ -f "$CONDA_BASE/envs/cellmatchr/bin/python" ]; then
+        PYTHON_BIN="$CONDA_BASE/envs/cellmatchr/bin/python"
+        break
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    /usr/bin/osascript -e 'display alert "CellMatchR" message "Could not find the '\''cellmatchr'\'' conda environment.\n\nCreate it with:\n    conda env create -f environment.yml"' >/dev/null 2>&1
+    exit 1
+fi
+
+# Launch the GUI (detached from this helper process).
+exec "$PYTHON_BIN" "$PROJECT_DIR/run_cellmatchr.py"

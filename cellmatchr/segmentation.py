@@ -983,9 +983,9 @@ def segment_by_tiling(
 
 def find_input_files(root_folder):
     input_paths = []
-    exts = (".czi", ".tif", ".tiff")
+    exts = (".czi", ".lif", ".tif", ".tiff")
 
-    print(f"Scanning for CZI and TIF files in: {root_folder}"
+    print(f"Scanning for CZI, LIF and TIF files in: {root_folder}"
           + (" (root only, subfolders skipped)" if SKIP_SUBDIRS else " (+ one level of subfolders)"))
 
     if not os.path.isdir(root_folder):
@@ -1026,6 +1026,17 @@ def _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_
     split_tiff_paths[ch_index] = tiff_path
 
 
+def _pick_main_lif_image(lif):
+    """A Leica .lif container may hold several images (overviews, snapshots,
+    the real acquisition).  Pick the one with the largest XY area."""
+    best, best_area = None, -1
+    for img in lif.get_iter_image():
+        area = int(img.dims.x) * int(img.dims.y)
+        if area > best_area:
+            best, best_area = img, area
+    return best
+
+
 def save_raw_split_tiffs(file_path, output_subfolder, base_name):
     """
     Split a multi-channel (and optionally multi-Z) microscopy file into
@@ -1034,7 +1045,39 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name):
     """
     split_tiff_paths = {}
 
-    if file_path.lower().endswith(".czi"):
+    if file_path.lower().endswith(".lif"):
+        try:
+            from readlif.reader import LifFile
+        except ImportError:
+            raise ImportError(
+                "Reading Leica .lif files requires the 'readlif' package. "
+                "Install it with:  pip install readlif"
+            )
+
+        lif = LifFile(file_path)
+        img = _pick_main_lif_image(lif)
+        if img is None:
+            raise ValueError(f"No images found in LIF file: {file_path}")
+
+        num_channels = int(img.channels)
+        num_z = max(int(img.nz), 1)
+        print(f"    LIF image: '{img.name}', "
+              f"X={int(img.dims.x)} Y={int(img.dims.y)} "
+              f"Z={num_z} channels={num_channels}")
+        if num_z > 1:
+            print("    Z-stack detected — applying max intensity projection per channel")
+
+        for ch_index in range(num_channels):
+            frames = [np.asarray(img.get_frame(z=z, t=0, c=ch_index))
+                      for z in range(num_z)]
+            ch = frames[0] if num_z == 1 else np.max(np.stack(frames, axis=0), axis=0)
+            ch = np.squeeze(ch)
+            while ch.ndim > 2:
+                ch = np.max(ch, axis=0)
+            _save_split_tiff(ch.astype(np.uint16), ch_index,
+                             output_subfolder, base_name, split_tiff_paths)
+
+    elif file_path.lower().endswith(".czi"):
         with CziFile(file_path) as czi:
             data = czi.asarray()
             axes = czi.axes

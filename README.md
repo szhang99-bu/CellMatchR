@@ -145,8 +145,8 @@ double-click works.
 
 **Important — keep the app in the project folder:**
 
-- `CellMatchR.app` must stay **inside the CellMatchR folder** (next to
-  `run_cellmatchr.py`); it locates the code relative to its own position.
+- `CellMatchR.app` must stay **inside the CellMatchR folder** (at the project
+  root); it locates the code relative to its own position.
 - To launch it from the **Dock or Applications**, do **not** move it — instead
   make an **alias** (right-click → **Make Alias**) and put the *alias* there, or
   drag the app to the Dock while holding **⌥⌘** (which creates a Dock alias).
@@ -160,16 +160,16 @@ double-click works.
 
 ### Option B — double-click the `.command` (macOS, shows a Terminal/log window)
 
-Double-click **`launch_cellmatchr.command`** in Finder (first time: right-click →
-**Open**). This does the same thing as the app but keeps a Terminal window open
-showing the live log — handy for debugging. It must also stay in the CellMatchR
-root folder.
+Double-click **`scripts/launch_cellmatchr.command`** in Finder (first time:
+right-click → **Open**). This does the same thing as the app but keeps a Terminal
+window open showing the live log — handy for debugging. Keep it inside the
+`scripts/` folder.
 
 ### Option C — terminal
 
 ```bash
 conda activate cellmatchr
-python run_cellmatchr.py
+python scripts/run_cellmatchr.py
 ```
 
 ### Option D — entry-point (after `pip install -e .`)
@@ -222,13 +222,15 @@ automatically on the next launch.
 
 ```
 CellMatchr/
-├── CellMatchr_Logo.png            # application logo
 ├── CellMatchR.app/                # macOS double-click launcher (no Terminal)
-├── launch_cellmatchr.command      # macOS launcher with a Terminal/log window
-├── run_cellmatchr.py              # CLI entry point
+├── CellMatchr_Logo.png            # application logo
+├── README.md
 ├── environment.yml                # conda environment (flexible versions)
 ├── pyproject.toml
 ├── requirements.txt
+├── scripts/
+│   ├── run_cellmatchr.py          # CLI entry point  (python scripts/run_cellmatchr.py)
+│   └── launch_cellmatchr.command  # macOS launcher with a Terminal/log window
 └── cellmatchr/
     ├── __init__.py
     ├── config.py                  # config load/save (~/.cellmatchr/config.json)

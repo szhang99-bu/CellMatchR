@@ -12,10 +12,11 @@
 # Contents/MacOS/CellMatchR  →  three levels up is the project root.
 APP_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$APP_BIN_DIR/../../.." && pwd)"
+RUN_SCRIPT="$PROJECT_DIR/scripts/run_cellmatchr.py"
 
 # If the app was moved out of the project, the script next to it is gone.
-if [ ! -f "$PROJECT_DIR/run_cellmatchr.py" ]; then
-    /usr/bin/osascript -e 'display alert "CellMatchR" message "Could not find run_cellmatchr.py.\n\nKeep CellMatchR.app inside the CellMatchR project folder. To launch it from the Dock or Applications, use an ALIAS of the app rather than moving it."' >/dev/null 2>&1
+if [ ! -f "$RUN_SCRIPT" ]; then
+    /usr/bin/osascript -e 'display alert "CellMatchR" message "Could not find scripts/run_cellmatchr.py.\n\nKeep CellMatchR.app inside the CellMatchR project folder. To launch it from the Dock or Applications, use an ALIAS of the app rather than moving it."' >/dev/null 2>&1
     exit 1
 fi
 cd "$PROJECT_DIR"
@@ -42,4 +43,4 @@ if [ -z "$PYTHON_BIN" ]; then
 fi
 
 # Launch the GUI (detached from this helper process).
-exec "$PYTHON_BIN" "$PROJECT_DIR/run_cellmatchr.py"
+exec "$PYTHON_BIN" "$RUN_SCRIPT"

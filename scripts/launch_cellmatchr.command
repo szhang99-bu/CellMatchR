@@ -1,15 +1,16 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# CellMatchr — double-click launcher for macOS
-# Stays in the CellMatchr root folder (next to run_cellmatchr.py).
+# CellMatchr — double-click launcher for macOS (shows a Terminal/log window).
+# Lives in  <project>/scripts/  next to run_cellmatchr.py.
 # First time: right-click → Open to bypass Gatekeeper.
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../scripts
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                     # project root
+cd "$ROOT_DIR"
 
 # ── Set CellMatchr icon on this file (runs silently every launch) ────────────
-ICON_PATH="$SCRIPT_DIR/CellMatchr_Logo.png"
+ICON_PATH="$ROOT_DIR/CellMatchr_Logo.png"
 LAUNCHER_PATH="$SCRIPT_DIR/launch_cellmatchr.command"
 if [ -f "$ICON_PATH" ]; then
     /usr/bin/osascript 2>/dev/null -e "
@@ -42,7 +43,7 @@ if [ -z "$PYTHON_BIN" ]; then
     echo "ERROR: Could not find the 'cellmatchr' conda environment."
     echo ""
     echo "Create it with:"
-    echo "    conda env create -f \"$SCRIPT_DIR/environment.yml\""
+    echo "    conda env create -f \"$ROOT_DIR/environment.yml\""
     echo ""
     read -p "Press Enter to close..."
     exit 1

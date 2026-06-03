@@ -22,17 +22,24 @@ fi
 
 # ── Find the cellmatchr env Python directly (no conda activate needed) ───────
 # Using the env's Python binary directly is more reliable than conda activate
-# in non-interactive shells.
+# in non-interactive shells.  Search common conda/anaconda layouts and, when
+# available, the actual base reported by conda itself.
 PYTHON_BIN=""
-for CONDA_BASE in \
-    "$HOME/miniforge3" \
-    "$HOME/miniconda3" \
-    "$HOME/anaconda3" \
-    "/opt/homebrew/Caskroom/miniforge/base" \
-    "/opt/miniconda3" \
-    "/opt/miniforge3" \
-    "/opt/conda"; do
-    if [ -f "$CONDA_BASE/envs/cellmatchr/bin/python" ]; then
+CONDA_BASES=()
+if command -v conda >/dev/null 2>&1; then
+    _b="$(conda info --base 2>/dev/null)"
+    [ -n "$_b" ] && CONDA_BASES+=("$_b")
+fi
+[ -n "$CONDA_EXE" ] && CONDA_BASES+=("$(dirname "$(dirname "$CONDA_EXE")")")
+CONDA_BASES+=(
+    "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/mambaforge"
+    "$HOME/opt/anaconda3" "$HOME/opt/miniconda3"
+    "/opt/anaconda3" "/opt/miniconda3" "/opt/miniforge3" "/opt/mambaforge"
+    "/opt/homebrew/anaconda3" "/opt/homebrew/Caskroom/miniforge/base"
+    "/opt/conda" "/anaconda3" "/miniconda3" "/usr/local/anaconda3"
+)
+for CONDA_BASE in "${CONDA_BASES[@]}"; do
+    if [ -n "$CONDA_BASE" ] && [ -x "$CONDA_BASE/envs/cellmatchr/bin/python" ]; then
         PYTHON_BIN="$CONDA_BASE/envs/cellmatchr/bin/python"
         break
     fi

@@ -48,6 +48,40 @@ Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Seg
 
 ## Installation
 
+### Prerequisites — install **conda** and **git** (one-time)
+
+CellMatchR is installed into a `conda` environment, and the easiest way to get
+(and later update) the code is with `git`. Install these two free tools first —
+if you already have them, skip ahead to step 1.
+
+**conda** — a Python environment/package manager. Install **Miniforge**
+(recommended — lightweight, conda-forge based) or Miniconda:
+
+- Miniforge install guide: <https://github.com/conda-forge/miniforge#install>
+- Miniconda install guide: <https://www.anaconda.com/docs/getting-started/miniconda/install/>
+- New to conda? Getting-started guide:
+  <https://conda.io/projects/conda/en/latest/user-guide/getting-started.html>
+
+**git** — version control, used to download and update the code (needed for
+Option B below):
+
+- Download git: <https://git-scm.com/downloads>
+- GitHub's "Set up Git" walkthrough:
+  <https://docs.github.com/en/get-started/getting-started-with-git/set-up-git>
+
+**Verify both are installed** — open a **new** Terminal and run:
+
+```bash
+conda --version     # e.g. conda 24.11.3
+git --version       # e.g. git version 2.43.0
+```
+
+If you see a version number for each, you're ready. If you get
+`conda: command not found` (or `git: command not found`), the install didn't
+finish hooking into your shell — **quit and reopen Terminal**, and on macOS/Linux
+make sure the installer's init step ran (e.g. `conda init "$(basename "$SHELL")"`
+then reopen Terminal). Then re-run the checks above.
+
 ### 1. Get the code
 
 #### Option A — Download ZIP *(no git required, easiest for most users but difficult for later updates)*
@@ -73,13 +107,36 @@ cd ~/Desktop/CellMatchR
 
 ### 2. Create the conda environment
 
-The simplest way is to use the provided `environment.yml`, which specifies all
-required packages with flexible version constraints (works on macOS arm64 and
-Linux x86-64):
+First, confirm conda is working and that you're inside the project folder (the
+one containing `environment.yml`):
+
+```bash
+conda --version                 # should print a version (see Prerequisites if not)
+cd /path/to/CellMatchR          # the folder from step 1
+ls environment.yml              # should list the file
+```
+
+> If `conda --version` fails, finish the **Prerequisites** above (install
+> Miniforge/Miniconda, then reopen Terminal). Miniforge is recommended because
+> it defaults to the free **conda-forge** channel; with Miniconda you may be
+> prompted to accept the Anaconda Terms of Service the first time — accept it,
+> or run `conda config --add channels conda-forge`.
+
+Then build the environment from the provided `environment.yml`, which specifies
+all required packages with flexible version constraints (works on macOS arm64
+and Linux x86-64). This downloads a lot of packages, so it can take **10–20+
+minutes**:
 
 ```bash
 conda env create -f environment.yml
 conda activate cellmatchr
+```
+
+Confirm it worked — your prompt should now start with `(cellmatchr)`:
+
+```bash
+conda env list                  # 'cellmatchr' should appear in the list
+python -c "import torch, micro_sam; print('env OK')"
 ```
 
 > **GPU users:** The `environment.yml` installs a CPU-only PyTorch build.

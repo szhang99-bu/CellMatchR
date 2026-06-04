@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, font, filedialog
 import numpy as np
@@ -98,6 +99,56 @@ MID_CONTEXT_PADDING = 150 # "2x" Zoom Out
 CONTEXT_PADDING = 400     # "Context" Zoom Out
 OUTPUT_FILENAME = "roi_verification_results.tsv"
 CONFIG_FILE = ".roi_verifier_config"
+
+# --- Customizable decision buttons -------------------------------------------
+# Users may rename the decision words and reassign their keyboard shortcuts
+# (up to 6).  ARTIFACT is fixed: it is always present, always bound to Shift,
+# and nothing else may use Shift.  'Down' is reserved for Save & Next.
+VAL_BUTTONS_FILE = os.path.expanduser("~/.cellmatchr/validator_buttons.json")
+DEFAULT_DECISIONS = [
+    {"word": "YES",   "key": "Left"},
+    {"word": "NO",    "key": "Right"},
+    {"word": "MAYBE", "key": "Up"},
+]
+ARTIFACT_WORD = "ARTIFACT"
+RESERVED_KEYS = {"Shift", "Shift_L", "Shift_R", "Down"}  # Shift=Artifact, Down=Save&Next
+MAX_DECISIONS = 6
+DECISION_COLORS = ["#40a02b", "#d20f39", "#fe640b", "#1e88e5", "#8e44ad", "#b8860b"]
+
+
+def load_decisions():
+    """Load the user's custom decision buttons, or the defaults."""
+    try:
+        if os.path.exists(VAL_BUTTONS_FILE):
+            with open(VAL_BUTTONS_FILE) as f:
+                cats = json.load(f).get("categories", [])
+            out = []
+            for c in cats[:MAX_DECISIONS]:
+                w = str(c.get("word", "")).strip()
+                k = str(c.get("key", "")).strip()
+                if w and k and w.upper() != ARTIFACT_WORD and k not in RESERVED_KEYS:
+                    out.append({"word": w, "key": k})
+            if out:
+                for i, c in enumerate(out):
+                    c["color"] = DECISION_COLORS[i % len(DECISION_COLORS)]
+                return out
+    except Exception as e:
+        print(f"[validator] Could not read {VAL_BUTTONS_FILE}: {e}")
+    out = [dict(d) for d in DEFAULT_DECISIONS]
+    for i, c in enumerate(out):
+        c["color"] = DECISION_COLORS[i % len(DECISION_COLORS)]
+    return out
+
+
+def save_decisions(cats):
+    """Persist the custom decision buttons to ~/.cellmatchr/validator_buttons.json."""
+    try:
+        os.makedirs(os.path.dirname(VAL_BUTTONS_FILE), exist_ok=True)
+        with open(VAL_BUTTONS_FILE, "w") as f:
+            json.dump({"categories": [{"word": c["word"], "key": c["key"]} for c in cats]},
+                      f, indent=2)
+    except Exception as e:
+        print(f"[validator] Could not save decision buttons: {e}")
 
 
 # =============================================================================
@@ -439,14 +490,21 @@ class RoiVerifierApp:
         ttk.Label(self.control_frame, text="Decision:", font=("Arial", 12)).grid(row=row, column=0, sticky="w", pady=(0, 5)); row+=1
         self.decision_var = tk.StringVar()
 
-        self.btn_yes   = ttk.Button(self.control_frame, text="YES (Left)",    style="Ctrl.TButton", command=lambda: self.make_decision("YES"))
-        self.btn_yes.grid(row=row, column=0, sticky="ew", pady=3); row+=1
-        self.btn_no    = ttk.Button(self.control_frame, text="NO (Right)",    style="Ctrl.TButton", command=lambda: self.make_decision("NO"))
-        self.btn_no.grid(row=row, column=0, sticky="ew", pady=3); row+=1
-        self.btn_maybe = ttk.Button(self.control_frame, text="MAYBE (Up)",    style="Ctrl.TButton", command=lambda: self.make_decision("MAYBE"))
-        self.btn_maybe.grid(row=row, column=0, sticky="ew", pady=3); row+=1
-        self.btn_art   = ttk.Button(self.control_frame, text="Artifact (Shift)",style="Ctrl.TButton", command=lambda: self.make_decision("ARTIFACT"))
-        self.btn_art.grid(row=row, column=0, sticky="ew", pady=3); row+=1
+        # Decision buttons live in their own frame so they can be rebuilt when
+        # the user customizes the words / keys.
+        self.decisions = load_decisions()
+        self._bound_keys = []
+        self._decision_box = ttk.Frame(self.control_frame)
+        self._decision_box.grid(row=row, column=0, sticky="ew"); row+=1
+        self._decision_box.grid_columnconfigure(0, weight=1)
+        self._build_decision_buttons()
+
+        # Hidden-ish "customize" link (change words / keys)
+        self._customize_lbl = ttk.Label(
+            self.control_frame, text="⚙  Customize buttons…",
+            font=("Arial", 9, "underline"), foreground=HIGHLIGHT, cursor="hand2")
+        self._customize_lbl.grid(row=row, column=0, sticky="e", pady=(2, 0)); row+=1
+        self._customize_lbl.bind("<Button-1>", lambda e: self._open_customize_dialog())
 
         self.decision_status_label = ttk.Label(self.control_frame, text="No decision made", font=("Arial", 10, "italic"), anchor="center")
         self.decision_status_label.grid(row=row, column=0, sticky="ew", pady=8); row+=1
@@ -469,16 +527,11 @@ class RoiVerifierApp:
         self.save_btn.grid(row=1, column=0, sticky="ew")
         
         # Keys — decision shortcuts are ignored while the Notes box has focus so
-        # typing notes never triggers an accidental decision.  Artifact is bound
-        # to Shift (left or right) instead of Delete/Backspace, which used to fire
-        # while editing notes.
-        self.root.bind('<Left>',    lambda e: self._key_decision("YES"))
-        self.root.bind('<Right>',   lambda e: self._key_decision("NO"))
-        self.root.bind('<Up>',      lambda e: self._key_decision("MAYBE"))
-        self.root.bind('<Shift_L>', lambda e: self._key_decision("ARTIFACT"))
-        self.root.bind('<Shift_R>', lambda e: self._key_decision("ARTIFACT"))
-        self.root.bind('<Down>',    lambda e: self._key_save_and_next())
-        
+        # typing notes never triggers an accidental decision.  Bindings are built
+        # from the (customizable) decision list; Artifact is always Shift and
+        # Save & Next is always Down.
+        self._rebind_decision_keys()
+
         self.load_data()
 
     def _typing_in_notes(self) -> bool:
@@ -502,8 +555,145 @@ class RoiVerifierApp:
 
     def make_decision(self, decision):
         self.decision_var.set(decision)
-        color_map = {"YES": "green", "NO": "red", "MAYBE": "orange", "ARTIFACT": "purple"}
-        self.decision_status_label.config(text=f"Marked as {decision}", foreground=color_map.get(decision, FG_COLOR))
+        cmap = {c["word"]: c["color"] for c in self.decisions}
+        cmap[ARTIFACT_WORD] = "#8e44ad"
+        self.decision_status_label.config(
+            text=f"Marked as {decision}", foreground=cmap.get(decision, FG_COLOR))
+
+    # ── Customizable decision buttons ────────────────────────────────────────
+    def _build_decision_buttons(self):
+        """(Re)create the decision buttons from self.decisions plus the fixed
+        ARTIFACT button, and (re)bind their keyboard shortcuts."""
+        for w in self._decision_box.winfo_children():
+            w.destroy()
+        self._decision_btns = {}
+        r = 0
+        for cat in self.decisions:
+            word, key = cat["word"], cat["key"]
+            b = ttk.Button(self._decision_box, text=f"{word}  ({key})",
+                           style="Ctrl.TButton",
+                           command=lambda w=word: self.make_decision(w))
+            b.grid(row=r, column=0, sticky="ew", pady=3); r += 1
+            self._decision_btns[word] = b
+        # Fixed ARTIFACT button — always present, always Shift.
+        b = ttk.Button(self._decision_box, text="Artifact  (Shift)",
+                       style="Ctrl.TButton",
+                       command=lambda: self.make_decision(ARTIFACT_WORD))
+        b.grid(row=r, column=0, sticky="ew", pady=3)
+        self._decision_btns[ARTIFACT_WORD] = b
+        if hasattr(self, "load_data"):   # only rebind after root exists
+            self._rebind_decision_keys()
+
+    def _rebind_decision_keys(self):
+        """Bind each decision's key; ARTIFACT→Shift and Save&Next→Down are fixed."""
+        for k in getattr(self, "_bound_keys", []):
+            try:
+                self.root.unbind(f"<{k}>")
+            except Exception:
+                pass
+        self._bound_keys = []
+        for cat in self.decisions:
+            key, word = cat["key"], cat["word"]
+            if key in RESERVED_KEYS:
+                continue
+            try:
+                self.root.bind(f"<{key}>", lambda e, w=word: self._key_decision(w))
+                self._bound_keys.append(key)
+            except Exception as ex:
+                print(f"[validator] Could not bind key '{key}': {ex}")
+        # Fixed bindings
+        self.root.bind('<Shift_L>', lambda e: self._key_decision(ARTIFACT_WORD))
+        self.root.bind('<Shift_R>', lambda e: self._key_decision(ARTIFACT_WORD))
+        self.root.bind('<Down>',    lambda e: self._key_save_and_next())
+
+    def _open_customize_dialog(self):
+        """Editor to rename decision words and reassign keys (max 6)."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Customize decision buttons")
+        setup_dark_theme(dlg)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        ttk.Label(
+            dlg, justify="left", font=("Arial", 10),
+            text=("Rename the decision words and set each shortcut key (up to 6).\n"
+                  "Keys: arrow names (Left / Right / Up) or a single letter (a, n, …).\n\n"
+                  "Reserved — cannot be reused:  Shift = Artifact   ·   Down = Save & Next.\n"
+                  "The Artifact button is always present and always bound to Shift."),
+        ).grid(row=0, column=0, columnspan=3, padx=14, pady=(14, 8), sticky="w")
+
+        hdr = ttk.Frame(dlg); hdr.grid(row=1, column=0, columnspan=3, padx=14, sticky="w")
+        ttk.Label(hdr, text="Word", font=("Arial", 10, "bold"), width=18).pack(side=tk.LEFT)
+        ttk.Label(hdr, text="Key",  font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT)
+
+        rows_frame = ttk.Frame(dlg); rows_frame.grid(row=2, column=0, columnspan=3, padx=14, sticky="ew")
+        cust_rows = []
+
+        def add_row(word="", key=""):
+            if len(cust_rows) >= MAX_DECISIONS:
+                return
+            rf = ttk.Frame(rows_frame); rf.pack(fill="x", pady=2)
+            wv, kv = tk.StringVar(value=word), tk.StringVar(value=key)
+            ttk.Entry(rf, textvariable=wv, width=18).pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Entry(rf, textvariable=kv, width=12).pack(side=tk.LEFT, padx=(0, 6))
+            ttk.Button(rf, text="✕", width=3,
+                       command=lambda: remove_row(rf)).pack(side=tk.LEFT)
+            cust_rows.append((wv, kv, rf))
+            _update_add_state()
+
+        def remove_row(rf):
+            if len(cust_rows) <= 1:
+                messagebox.showwarning("Keep one", "You need at least one decision button.", parent=dlg)
+                return
+            cust_rows[:] = [t for t in cust_rows if t[2] is not rf]
+            rf.destroy()
+            _update_add_state()
+
+        add_btn = ttk.Button(dlg, text="＋  Add button", command=lambda: add_row())
+        def _update_add_state():
+            add_btn.config(state=(tk.NORMAL if len(cust_rows) < MAX_DECISIONS else tk.DISABLED))
+
+        for c in self.decisions:
+            add_row(c["word"], c["key"])
+
+        # Locked Artifact row (display only)
+        artf = ttk.Frame(dlg); artf.grid(row=3, column=0, columnspan=3, padx=14, pady=(6, 0), sticky="w")
+        ttk.Label(artf, text="ARTIFACT", width=18, foreground="#8e44ad",
+                  font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+        ttk.Label(artf, text="Shift  (fixed)", width=12, foreground="#888888").pack(side=tk.LEFT)
+
+        add_btn.grid(row=4, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="w")
+        _update_add_state()
+
+        def do_save():
+            cats, seen_w, seen_k = [], set(), set()
+            for wv, kv, _ in cust_rows:
+                w, k = wv.get().strip(), kv.get().strip()
+                if not w or not k:
+                    messagebox.showwarning("Incomplete", "Every button needs a word and a key.", parent=dlg); return
+                if w.upper() == ARTIFACT_WORD:
+                    messagebox.showwarning("Reserved", "'ARTIFACT' is reserved — it always exists.", parent=dlg); return
+                if k in RESERVED_KEYS:
+                    messagebox.showwarning("Reserved key", f"'{k}' is reserved (Shift = Artifact, Down = Save & Next).", parent=dlg); return
+                if w.upper() in seen_w:
+                    messagebox.showwarning("Duplicate word", f"'{w}' is used more than once.", parent=dlg); return
+                if k in seen_k:
+                    messagebox.showwarning("Duplicate key", f"Key '{k}' is used more than once.", parent=dlg); return
+                seen_w.add(w.upper()); seen_k.add(k)
+                cats.append({"word": w, "key": k})
+            if not (1 <= len(cats) <= MAX_DECISIONS):
+                messagebox.showwarning("Count", f"Use between 1 and {MAX_DECISIONS} buttons.", parent=dlg); return
+            for i, c in enumerate(cats):
+                c["color"] = DECISION_COLORS[i % len(DECISION_COLORS)]
+            self.decisions = cats
+            save_decisions(cats)
+            self._build_decision_buttons()
+            dlg.destroy()
+
+        btns = ttk.Frame(dlg); btns.grid(row=5, column=0, columnspan=3, padx=14, pady=(8, 14), sticky="e")
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btns, text="Save", command=do_save).pack(side=tk.LEFT)
 
     def on_slider_change(self, val):
         if not self.is_updating and not self._slider_entry_syncing:

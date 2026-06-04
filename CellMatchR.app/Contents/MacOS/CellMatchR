@@ -48,7 +48,7 @@ if [ ! -f "$RUN_SCRIPT" ]; then
 fi
 cd "$PROJECT_DIR"
 
-# ── Find the cellmatchr env Python directly (no conda activate needed) ───────
+# ── Find the cellmatchr env Python ───────────────────────────────────────────
 PYTHON_BIN="$(find_cellmatchr_python)"
 
 if [ -z "$PYTHON_BIN" ]; then
@@ -56,5 +56,37 @@ if [ -z "$PYTHON_BIN" ]; then
     exit 1
 fi
 
-# Launch the GUI (detached from this helper process).
-exec "$PYTHON_BIN" "$RUN_SCRIPT"
+# Derive the conda base from the env python:  <base>/envs/cellmatchr/bin/python
+ENV_DIR="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"     # <base>/envs/cellmatchr
+CONDA_BASE="$(cd "$ENV_DIR/../.." && pwd)"               # <base>
+
+LOG="$HOME/Library/Logs/CellMatchR.log"
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+
+# Launch the GUI.  IMPORTANT: when started from Finder the process has a minimal
+# environment, and running the env's python bare can fail to locate Tcl/Tk (so
+# the window silently never appears).  Activating the env replicates the Terminal
+# environment exactly, which is why the .command works.  Fall back to bare python
+# if conda.sh isn't present.  All output goes to a log, and any non-zero exit
+# raises a visible alert instead of vanishing.
+{
+    echo "===== CellMatchR launch: $(date) ====="
+    echo "PYTHON_BIN=$PYTHON_BIN"
+    echo "CONDA_BASE=$CONDA_BASE"
+    if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
+        # shellcheck disable=SC1090
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+        conda activate cellmatchr && echo "activated env: cellmatchr"
+        python "$RUN_SCRIPT"
+    else
+        echo "conda.sh not found under $CONDA_BASE — running env python directly"
+        "$PYTHON_BIN" "$RUN_SCRIPT"
+    fi
+} >"$LOG" 2>&1
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+    LAST="$(tail -n 25 "$LOG" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/["\\]/ /g')"
+    /usr/bin/osascript -e "display alert \"CellMatchR failed to start\" message \"Exit code $STATUS. ${LAST}   (full log: $LOG)\"" >/dev/null 2>&1
+    exit "$STATUS"
+fi

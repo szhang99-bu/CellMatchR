@@ -60,8 +60,8 @@ fi
 ENV_DIR="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"     # <base>/envs/cellmatchr
 CONDA_BASE="$(cd "$ENV_DIR/../.." && pwd)"               # <base>
 
-LOG="$HOME/Library/Logs/CellMatchR.log"
-mkdir -p "$(dirname "$LOG")" 2>/dev/null
+# Log next to the project so it's easy to find (overwritten each launch).
+LOG="$PROJECT_DIR/CellMatchR_last_run.log"
 
 # Launch the GUI.  IMPORTANT: when started from Finder the process has a minimal
 # environment, and running the env's python bare can fail to locate Tcl/Tk (so

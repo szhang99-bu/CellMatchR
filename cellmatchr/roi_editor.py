@@ -718,9 +718,10 @@ class RoiEditorApp:
             self._add_lyr.data, self._scale, self._orig_h, self._orig_w
         )
         existing = tifffile.imread(s["mask"]).astype(np.int32)
-        new_mask, n_added, _ = _merge_additions(existing, additions)
+        new_mask, n_added, new_ids = _merge_additions(existing, additions)
         if n_added > 0:
             tifffile.imwrite(s["mask"], new_mask.astype(np.uint32), compression="lzw")
+            self._record_added_rois(s, new_mask, new_ids)
             print(f"[roi_editor] Auto-saved {n_added} ROI(s) for '{s['name']}'")
             self._set_status(f"✓  Auto-saved {n_added} ROI(s).", colour="#a6e3a1")
 
@@ -736,6 +737,43 @@ class RoiEditorApp:
             btn.setEnabled(enabled)
 
     # ── Save logic ───────────────────────────────────────────────────────────
+
+    def _record_added_rois(self, s: dict, new_mask: np.ndarray, new_ids) -> None:
+        """Record the label IDs of manually-added ROIs (cells the model missed)
+        to a TSV next to the prediction mask.  These are kept for a future
+        fine-tuning step — they mark false negatives (objects the model should
+        have detected but didn't).  Appends one row per added ROI."""
+        if not new_ids:
+            return
+        try:
+            import datetime
+            sample_dir = os.path.dirname(s["mask"])
+            out_path = os.path.join(
+                sample_dir, f"_manual_additions_ch{self.channel}.tsv")
+            write_header = not os.path.exists(out_path)
+            ts = datetime.datetime.now().isoformat(timespec="seconds")
+            sample_name = s.get("name", os.path.basename(sample_dir))
+            rows = []
+            for nid in sorted(int(i) for i in new_ids):
+                ys, xs = np.where(new_mask == nid)
+                if ys.size == 0:
+                    continue
+                rows.append((nid, float(ys.mean()), float(xs.mean()), int(ys.size),
+                             int(ys.min()), int(xs.min()),
+                             int(ys.max()) + 1, int(xs.max()) + 1))
+            with open(out_path, "a") as f:
+                if write_header:
+                    f.write("label_id\tcentroid_row\tcentroid_col\tarea_px\t"
+                            "bbox_min_row\tbbox_min_col\tbbox_max_row\tbbox_max_col\t"
+                            "channel\tsample\tsource\tadded_at\n")
+                for r in rows:
+                    f.write(f"{r[0]}\t{r[1]:.1f}\t{r[2]:.1f}\t{r[3]}\t"
+                            f"{r[4]}\t{r[5]}\t{r[6]}\t{r[7]}\t"
+                            f"{self.channel}\t{sample_name}\tmanual_missed_cell\t{ts}\n")
+            print(f"[roi_editor] Recorded {len(rows)} manually-added ROI id(s) "
+                  f"-> {os.path.basename(out_path)}")
+        except Exception as exc:
+            print(f"[roi_editor] WARNING: could not record added ROI ids: {exc}")
 
     def _save_current(self) -> None:
         additions_display = self._add_lyr.data
@@ -764,6 +802,7 @@ class RoiEditorApp:
         if self.test_mode:
             self._test_save(s, existing, new_mask, new_ids, n_added)
         else:
+            self._record_added_rois(s, new_mask, new_ids)
             self._normal_save(s, new_mask, n_added)
 
     def _normal_save(self, s: dict, new_mask: np.ndarray, n_added: int) -> None:

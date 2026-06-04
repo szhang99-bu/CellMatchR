@@ -45,3 +45,6 @@ DEBUG_*/
 
 # CellTinder validator last-used folder (local path, do not commit)
 .roi_verifier_config
+
+# CellMatchR launcher run log (local diagnostics)
+CellMatchR_last_run.log

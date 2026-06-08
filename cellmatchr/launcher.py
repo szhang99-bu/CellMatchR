@@ -1429,25 +1429,45 @@ class CellMatchrLauncher:
 
         # ── Cellpose-SAM parameters (shown only when that backend is chosen) ──
         self._cellpose_frame = tk.Frame(model_card, bg=CARD)
+        tk.Label(self._cellpose_frame,
+                 text="Cellpose-SAM parameters  (defaults work for most images — tune on a test image if needed):",
+                 bg=CARD, fg=FG, font=FONT_BOLD, wraplength=700, justify="left").pack(anchor="w", pady=(0, 4))
         _cg = tk.Frame(self._cellpose_frame, bg=CARD)
         _cg.pack(fill="x")
-        _cg.grid_columnconfigure(0, minsize=260)
+        _cg.grid_columnconfigure(0, minsize=240)
         _cg.grid_columnconfigure(1, weight=1)
-        for _r, (_lbl, _key, _hint) in enumerate([
-            ("Cell diameter (px, 0 = auto):", "seg_cellpose_diameter", "0 lets Cellpose estimate size"),
-            ("Flow threshold:", "seg_cellpose_flow_threshold", "higher = accept more irregular shapes"),
-            ("Cell-probability threshold:", "seg_cellpose_cellprob_threshold", "lower = detect more / dimmer cells"),
-        ]):
-            tk.Label(_cg, text=_lbl, bg=CARD, fg=FG, font=FONT).grid(row=_r, column=0, sticky="w", pady=3)
-            _row = tk.Frame(_cg, bg=CARD)
-            _row.grid(row=_r, column=1, sticky="w", pady=3, padx=8)
-            tk.Entry(_row, textvariable=self._vars[_key], bg=BG, fg=FG,
-                     insertbackground=FG, relief="flat", font=FONT, width=10).pack(side="left")
-            tk.Label(_row, text=f"  {_hint}", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
+        # (label, config key, short unit hint, full explanation line)
+        _cp_fields = [
+            ("Cell diameter (px)", "seg_cellpose_diameter", "0 = auto",
+             "Expected cell size in pixels. 0 = let the model decide (recommended — "
+             "Cellpose-SAM handles scale itself). Set your cells' typical diameter only "
+             "if detections look systematically too coarse or too fine."),
+            ("Flow threshold", "seg_cellpose_flow_threshold", "~0.0–3.0, default 0.4",
+             "Shape-quality filter: discards masks whose recomputed flow error exceeds this. "
+             "Higher = keep more cells (incl. irregular ones); lower = stricter, drops "
+             "poorly-formed blobs. Raise if real odd-shaped cells are missed; lower if you get junk."),
+            ("Cell-probability threshold", "seg_cellpose_cellprob_threshold", "−6 to +6, default 0.0",
+             "Detection sensitivity. Lower (toward −6) = more and larger masks, catches dim/small "
+             "cells (more false positives); higher (toward +6) = fewer, only-confident masks "
+             "(cleaner but misses faint cells). Lower if cells are missed; raise if background is segmented."),
+        ]
+        _r = 0
+        for _lbl, _key, _unit, _expl in _cp_fields:
+            _lf = tk.Frame(_cg, bg=CARD)
+            _lf.grid(row=_r, column=0, sticky="w", pady=(4, 0))
+            tk.Label(_lf, text=_lbl, bg=CARD, fg=FG, font=FONT).pack(side="left")
+            tk.Label(_lf, text=f"  ({_unit})", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
+            tk.Entry(_cg, textvariable=self._vars[_key], bg=BG, fg=FG, insertbackground=FG,
+                     relief="flat", font=FONT, width=10).grid(row=_r, column=1, sticky="w", pady=(4, 0), padx=8)
+            _r += 1
+            tk.Label(_cg, text=_expl, bg=CARD, fg=MUTED, font=("Segoe UI", 8),
+                     wraplength=700, justify="left").grid(row=_r, column=0, columnspan=2,
+                                                          sticky="w", pady=(0, 2))
+            _r += 1
         tk.Label(self._cellpose_frame,
-                 text="Cellpose-SAM uses one unified model. First run downloads ~1 GB of weights to ~/.cellpose. "
-                      "The preprocessing, tiling and object filters above still apply.",
-                 bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=680, justify="left").pack(anchor="w", pady=(4, 0))
+                 text="Cellpose-SAM uses one unified model; the first run downloads ~1 GB of weights to ~/.cellpose. "
+                      "The preprocessing, tiling and object-size/shape filters above still apply to its output.",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=700, justify="left").pack(anchor="w", pady=(6, 0))
 
         def _on_seg_backend_changed(*_):
             bk = _BK_REVERSE.get(self._seg_backend_disp.get(), "microsam")

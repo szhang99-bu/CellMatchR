@@ -46,6 +46,18 @@ HALO_2D = (256, 256)
 
 
 # =============================================================================
+# SEGMENTATION BACKEND
+# =============================================================================
+# "microsam"  → tiled Micro-SAM (default, uses MODEL_TYPE below)
+# "cellpose"  → Cellpose-SAM (cellpose 4.x, the "cpsam" model)
+SEG_BACKEND = "microsam"
+
+# Cellpose-SAM parameters (only used when SEG_BACKEND == "cellpose").
+CELLPOSE_DIAMETER          = 0.0   # cell diameter in px; 0 = let Cellpose estimate
+CELLPOSE_FLOW_THRESHOLD    = 0.4   # higher = more permissive shapes
+CELLPOSE_CELLPROB_THRESHOLD = 0.0  # lower = more (smaller/dimmer) cells
+
+# =============================================================================
 # MICRO-SAM SETTINGS
 # =============================================================================
 
@@ -683,6 +695,7 @@ def segment_by_tiling(
     halo,
     ndim,
     debug_folder=None,
+    cellpose_model=None,
     **generate_kwargs
 ):
     if ndim != 2:
@@ -767,48 +780,62 @@ def segment_by_tiling(
             mode=PREPROCESS_MODE
         )
 
-        predictor.set_image(tile_data_rgb)
-
-        image_embeddings_dict = {
-            "features": predictor.get_image_embedding(),
-            "original_size": predictor.original_size,
-            "input_size": predictor.input_size
-        }
-
-        segmenter.initialize(
-            image=tile_data_rgb,
-            image_embeddings=image_embeddings_dict
-        )
-
-        segmentation_result = segmenter.generate(**generate_kwargs)
-
-        # micro-sam ≥1.1: InstanceSegmentationWithDecoder.generate() returns a
-        # numpy labeled array (output_mode='instance_segmentation' default).
-        # Older API / AMGBase returns List[Dict] with "segmentation" keys.
-        if isinstance(segmentation_result, np.ndarray):
-            labeled_tile = segmentation_result.astype(np.uint32)
-        elif isinstance(segmentation_result, list):
-            if not segmentation_result:
-                no_result_tiles += 1
-                rec["status"] = "no_sam_result"
-                tile_records.append(rec)
-                if (
-                    should_save_debug_images()
-                    and debug_folder is not None
-                    and debug_saved < MAX_DEBUG_TILES
-                    and tile_index % DEBUG_TILE_EVERY_N == 0
-                ):
-                    save_debug_pngs(debug_folder, tile_index, corner_coord,
-                                    tile_data, processed_uint8,
-                                    np.zeros(tile_data.shape, dtype=np.uint32), [])
-                    debug_saved += 1
-                print(f"    [NO SAM RESULT] tile {tile_index}: y={y0}:{y1}, x={x0}:{x1}")
-                continue
-            labeled_tile = np.zeros(tile_data_rgb.shape[:2], dtype=np.uint32)
-            for i, mask_dict in enumerate(segmentation_result, 1):
-                labeled_tile[mask_dict["segmentation"]] = i
+        if cellpose_model is not None:
+            # ── Cellpose-SAM backend ─────────────────────────────────────────
+            # Cellpose returns a labelled mask directly. Feed it the same
+            # preprocessed grayscale tile the SAM path uses.
+            _diam = CELLPOSE_DIAMETER if (CELLPOSE_DIAMETER and CELLPOSE_DIAMETER > 0) else None
+            _cp_out = cellpose_model.eval(
+                processed_uint8,
+                diameter=_diam,
+                flow_threshold=CELLPOSE_FLOW_THRESHOLD,
+                cellprob_threshold=CELLPOSE_CELLPROB_THRESHOLD,
+            )
+            labeled_tile = np.asarray(_cp_out[0]).astype(np.uint32)
         else:
-            raise ValueError(f"Unexpected segmentation result type: {type(segmentation_result)}")
+            # ── Micro-SAM backend ────────────────────────────────────────────
+            predictor.set_image(tile_data_rgb)
+
+            image_embeddings_dict = {
+                "features": predictor.get_image_embedding(),
+                "original_size": predictor.original_size,
+                "input_size": predictor.input_size
+            }
+
+            segmenter.initialize(
+                image=tile_data_rgb,
+                image_embeddings=image_embeddings_dict
+            )
+
+            segmentation_result = segmenter.generate(**generate_kwargs)
+
+            # micro-sam ≥1.1: InstanceSegmentationWithDecoder.generate() returns a
+            # numpy labeled array (output_mode='instance_segmentation' default).
+            # Older API / AMGBase returns List[Dict] with "segmentation" keys.
+            if isinstance(segmentation_result, np.ndarray):
+                labeled_tile = segmentation_result.astype(np.uint32)
+            elif isinstance(segmentation_result, list):
+                if not segmentation_result:
+                    no_result_tiles += 1
+                    rec["status"] = "no_sam_result"
+                    tile_records.append(rec)
+                    if (
+                        should_save_debug_images()
+                        and debug_folder is not None
+                        and debug_saved < MAX_DEBUG_TILES
+                        and tile_index % DEBUG_TILE_EVERY_N == 0
+                    ):
+                        save_debug_pngs(debug_folder, tile_index, corner_coord,
+                                        tile_data, processed_uint8,
+                                        np.zeros(tile_data.shape, dtype=np.uint32), [])
+                        debug_saved += 1
+                    print(f"    [NO SAM RESULT] tile {tile_index}: y={y0}:{y1}, x={x0}:{x1}")
+                    continue
+                labeled_tile = np.zeros(tile_data_rgb.shape[:2], dtype=np.uint32)
+                for i, mask_dict in enumerate(segmentation_result, 1):
+                    labeled_tile[mask_dict["segmentation"]] = i
+            else:
+                raise ValueError(f"Unexpected segmentation result type: {type(segmentation_result)}")
 
         if labeled_tile.max() == 0:
             no_result_tiles += 1
@@ -1400,7 +1427,7 @@ def main():
 
     print(f"Found {len(all_files)} file(s) to process.")
 
-    predictor, segmenter = None, None
+    predictor, segmenter, cellpose_model = None, None, None
 
     if not is_dry_run:
         if torch.cuda.is_available():
@@ -1411,15 +1438,31 @@ def main():
             device = "cpu"
         print(f"Using device: {device}")
 
-        # Patch cached decoder checkpoints if they were saved with old torch_em naming
-        # (torch_em 0.8+ renamed Upsampler.block → Upsampler.conv; published bioimage.io
-        # checkpoints pre-date this rename, so we fix the keys on first run).
-        _patch_decoder_checkpoints(MODEL_TYPE)
+        if SEG_BACKEND == "cellpose":
+            print("Segmentation backend: Cellpose-SAM (cellpose 4.x)")
+            try:
+                from cellpose import models as _cp_models
+            except ImportError:
+                print("[ERROR] The Cellpose-SAM backend requires the 'cellpose' package.\n"
+                      "        Install it with:  pip install \"cellpose==4.1.1\"")
+                sys.exit(1)
+            # Cellpose-SAM ships a single unified model ("cpsam"); first use
+            # downloads the weights (~1 GB) to ~/.cellpose.
+            cellpose_model = _cp_models.CellposeModel(gpu=(device != "cpu"))
+            print(f"  diameter={CELLPOSE_DIAMETER or 'auto'}  "
+                  f"flow_threshold={CELLPOSE_FLOW_THRESHOLD}  "
+                  f"cellprob_threshold={CELLPOSE_CELLPROB_THRESHOLD}")
+        else:
+            print(f"Segmentation backend: Micro-SAM (model {MODEL_TYPE})")
+            # Patch cached decoder checkpoints if they were saved with old torch_em naming
+            # (torch_em 0.8+ renamed Upsampler.block → Upsampler.conv; published bioimage.io
+            # checkpoints pre-date this rename, so we fix the keys on first run).
+            _patch_decoder_checkpoints(MODEL_TYPE)
 
-        predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
-            model_type=MODEL_TYPE,
-            device=device,
-        )
+            predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
+                model_type=MODEL_TYPE,
+                device=device,
+            )
 
     generate_kwargs = {
         "min_size": MIN_OBJECT_SIZE,
@@ -1475,12 +1518,13 @@ def main():
                     f"min={image_data.min()}, max={image_data.max()}"
                 )
 
+                _backend_tag = "cellpose" if SEG_BACKEND == "cellpose" else "microSAM"
                 debug_folder = os.path.join(
                     output_subfolder,
-                    f"DEBUG_microSAM_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048"
+                    f"DEBUG_{_backend_tag}_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048"
                 )
 
-                print("    Running custom tiled micro-SAM prediction.")
+                print(f"    Running custom tiled {_backend_tag} prediction.")
                 print("    Full-image prediction is disabled.")
                 print(f"    Debug folder: {debug_folder}")
 
@@ -1492,6 +1536,7 @@ def main():
                     HALO_2D,
                     NDIM,
                     debug_folder=debug_folder,
+                    cellpose_model=cellpose_model,
                     **generate_kwargs
                 )
 
@@ -1552,6 +1597,7 @@ def _apply_config(config_path: str) -> None:
     global TILE_SHAPE_2D, HALO_2D, FINAL_QC_DOWNSAMPLE
     global DRY_RUN, TEST_RUN, SKIP_SUBDIRS
     global PER_CHANNEL_FILTERS_ENABLED, PER_CHANNEL_FILTERS
+    global SEG_BACKEND, CELLPOSE_DIAMETER, CELLPOSE_FLOW_THRESHOLD, CELLPOSE_CELLPROB_THRESHOLD
 
     with open(config_path) as f:
         cfg = json.load(f)
@@ -1560,6 +1606,19 @@ def _apply_config(config_path: str) -> None:
         ROOT_INPUT_FOLDER = cfg["input_root_folder"]
     if cfg.get("output_root_folder"):
         MAIN_OUTPUT_FOLDER = cfg["output_root_folder"]
+
+    # Segmentation backend + Cellpose params
+    if str(cfg.get("seg_backend", "")).strip().lower() in ("microsam", "cellpose"):
+        SEG_BACKEND = str(cfg["seg_backend"]).strip().lower()
+    if cfg.get("seg_cellpose_diameter") is not None:
+        try: CELLPOSE_DIAMETER = float(cfg["seg_cellpose_diameter"])
+        except (ValueError, TypeError): pass
+    if cfg.get("seg_cellpose_flow_threshold") is not None:
+        try: CELLPOSE_FLOW_THRESHOLD = float(cfg["seg_cellpose_flow_threshold"])
+        except (ValueError, TypeError): pass
+    if cfg.get("seg_cellpose_cellprob_threshold") is not None:
+        try: CELLPOSE_CELLPROB_THRESHOLD = float(cfg["seg_cellpose_cellprob_threshold"])
+        except (ValueError, TypeError): pass
 
     raw_ch = cfg.get("seg_channels", "")
     if raw_ch:

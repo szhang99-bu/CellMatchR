@@ -22,6 +22,7 @@ dependencies = [
     "readlif==0.6.5",
     "nd2==0.11.3",
     "oiffile==2026.2.8",
+    "cellpose==4.1.1",
 ]
 
 # Heavy dependencies (GPU / napari) are not listed here because they require

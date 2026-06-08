@@ -19,7 +19,11 @@ DEFAULT_CONFIG: dict = {
 
     # --- Segmentation ---
     "seg_channels": "",
-    "seg_model_type": "vit_b_lm",
+    "seg_backend": "microsam",          # "microsam" | "cellpose" (Cellpose-SAM)
+    "seg_model_type": "vit_b_lm",       # Micro-SAM model (when backend == microsam)
+    "seg_cellpose_diameter": 0.0,            # 0 = auto-estimate
+    "seg_cellpose_flow_threshold": 0.4,
+    "seg_cellpose_cellprob_threshold": 0.0,
     "seg_preprocess_mode": "local_bg_subtract",
     "seg_min_object_size": 0,
     "seg_max_object_size": 0,

@@ -210,7 +210,7 @@ class CellMatchrLauncher:
         str_fields = [
             "project_name", "project_output_folder",
             "input_type", "input_root_folder",
-            "seg_channels", "seg_model_type", "seg_preprocess_mode",
+            "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
             "val_mask_pattern", "val_channel_names", "val_channel_colors",
             "ana_red_channel", "ana_pv_channel", "ana_iou_threshold",
             "ana_roi_cell_rule", "ana_roi_mask_folder", "ana_subfolder_name",
@@ -219,6 +219,8 @@ class CellMatchrLauncher:
             "seg_min_object_size", "seg_max_object_size",
             "seg_tile_h", "seg_tile_w", "seg_halo_h", "seg_halo_w",
             "seg_qc_downsample", "seg_max_ratio", "seg_raw_mean_min",
+            "seg_cellpose_diameter", "seg_cellpose_flow_threshold",
+            "seg_cellpose_cellprob_threshold",
         ]
         bool_fields = [
             "seg_test_run", "seg_dry_run", "seg_skip_subdirs",
@@ -1369,6 +1371,21 @@ class CellMatchrLauncher:
 
         # ── Channels field ───────────────────────────────────────────
         model_card = self._card(parent, "Segmentation Settings")
+
+        # ── Backend selector (Micro-SAM | Cellpose-SAM) ──────────────
+        _BK_DISPLAY = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM"}
+        _BK_REVERSE = {v: k for k, v in _BK_DISPLAY.items()}
+        _bk_frame = tk.Frame(model_card, bg=CARD)
+        _bk_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(_bk_frame, text="Segmentation backend:", bg=CARD, fg=FG,
+                 font=FONT, width=24, anchor="w").pack(side="left")
+        self._seg_backend_disp = tk.StringVar(
+            value=_BK_DISPLAY.get(self.config.get("seg_backend", "microsam"), "Micro-SAM"))
+        _cb_bk = ttk.Combobox(_bk_frame, textvariable=self._seg_backend_disp,
+                              values=list(_BK_DISPLAY.values()), state="readonly", width=18)
+        _cb_bk.pack(side="left", padx=8)
+        self._bind_combobox_scroll(_cb_bk)
+
         g = tk.Frame(model_card, bg=CARD)
         g.pack(fill="x")
         g.grid_columnconfigure(0, minsize=260)
@@ -1409,6 +1426,42 @@ class CellMatchrLauncher:
         )
         _cb_prep.grid(row=3, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_prep)
+
+        # ── Cellpose-SAM parameters (shown only when that backend is chosen) ──
+        self._cellpose_frame = tk.Frame(model_card, bg=CARD)
+        _cg = tk.Frame(self._cellpose_frame, bg=CARD)
+        _cg.pack(fill="x")
+        _cg.grid_columnconfigure(0, minsize=260)
+        _cg.grid_columnconfigure(1, weight=1)
+        for _r, (_lbl, _key, _hint) in enumerate([
+            ("Cell diameter (px, 0 = auto):", "seg_cellpose_diameter", "0 lets Cellpose estimate size"),
+            ("Flow threshold:", "seg_cellpose_flow_threshold", "higher = accept more irregular shapes"),
+            ("Cell-probability threshold:", "seg_cellpose_cellprob_threshold", "lower = detect more / dimmer cells"),
+        ]):
+            tk.Label(_cg, text=_lbl, bg=CARD, fg=FG, font=FONT).grid(row=_r, column=0, sticky="w", pady=3)
+            _row = tk.Frame(_cg, bg=CARD)
+            _row.grid(row=_r, column=1, sticky="w", pady=3, padx=8)
+            tk.Entry(_row, textvariable=self._vars[_key], bg=BG, fg=FG,
+                     insertbackground=FG, relief="flat", font=FONT, width=10).pack(side="left")
+            tk.Label(_row, text=f"  {_hint}", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(self._cellpose_frame,
+                 text="Cellpose-SAM uses one unified model. First run downloads ~1 GB of weights to ~/.cellpose. "
+                      "The preprocessing, tiling and object filters above still apply.",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=680, justify="left").pack(anchor="w", pady=(4, 0))
+
+        def _on_seg_backend_changed(*_):
+            bk = _BK_REVERSE.get(self._seg_backend_disp.get(), "microsam")
+            self._vars["seg_backend"].set(bk)
+            if bk == "cellpose":
+                self._cellpose_frame.pack(fill="x", pady=(6, 0))
+                try: _cb_model.configure(state="disabled")
+                except tk.TclError: pass
+            else:
+                self._cellpose_frame.pack_forget()
+                try: _cb_model.configure(state="readonly")
+                except tk.TclError: pass
+        self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
+        _on_seg_backend_changed()   # apply initial state
 
         filt_card = self._card(parent, "Object Filtering")
         tk.Label(
@@ -3381,7 +3434,10 @@ class CellMatchrLauncher:
             f"Output folder:   {proj}",
             f"Input root:      {cfg.get('input_root_folder') or '—'}",
             f"Channels:        {cfg.get('seg_channels', '?')}",
-            f"Model:           {cfg.get('seg_model_type', '?')}  /  {cfg.get('seg_preprocess_mode', '?')}",
+            (f"Backend:         Cellpose-SAM  (diameter "
+             f"{cfg.get('seg_cellpose_diameter') or 'auto'})  /  {cfg.get('seg_preprocess_mode', '?')}"
+             if str(cfg.get('seg_backend', 'microsam')).lower() == 'cellpose'
+             else f"Backend:         Micro-SAM  {cfg.get('seg_model_type', '?')}  /  {cfg.get('seg_preprocess_mode', '?')}"),
             f"Object size:     {cfg.get('seg_min_object_size')} – {cfg.get('seg_max_object_size')} px",
             f"Validation:      {'enabled' if cfg.get('val_enabled') else 'skipped'}",
             f"Analysis:        {'enabled  Ch' + str(cfg.get('ana_red_channel')) + ' ↔ Ch' + str(cfg.get('ana_pv_channel')) + '  IoU ≥ ' + str(cfg.get('ana_iou_threshold')) if cfg.get('ana_enabled') else 'skipped'}",

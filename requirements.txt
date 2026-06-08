@@ -10,6 +10,7 @@ czifile           # Zeiss CZI support
 readlif==0.6.5    # Leica LIF support — 0.6.5 needs ONLY Pillow (no numpy>=2 pin); do NOT use 0.6.6 with numpy<2
 nd2==0.11.3       # Nikon ND2 support — pure-python; deps already in env (numpy unpinned)
 oiffile==2026.2.8 # Olympus FluoView .oib/.oif support — deps: numpy + tifffile (already present)
+cellpose==4.1.1   # Cellpose-SAM segmentation backend (numpy>=1.20 OK; do NOT use a version needing numpy>=2)
 
 # VSI converter (Olympus) — requires napari / Qt
 # qtpy is an abstraction layer; PyQt5 is the backend used here

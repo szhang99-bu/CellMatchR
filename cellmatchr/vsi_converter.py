@@ -424,6 +424,20 @@ def write_multichannel_tiff(path: str, img_yxc: np.ndarray):
 # so the rest of the converter (overview, ROI drawing, full-res export) works
 # unchanged.
 
+def _resize_overview(arr: np.ndarray, oh: int, ow: int) -> np.ndarray:
+    """Resize a large (H,W,C) image to (oh,ow,C) for the navigation overview.
+
+    Uses nearest-neighbour index sampling — pure numpy, no OpenCV (which would
+    pull in a second Qt and crash the napari window), and memory-light (it never
+    casts the whole gigabyte-scale image to float). Quality is fine for an
+    overview; full-resolution ROI export uses an un-resized crop.
+    """
+    H, W = arr.shape[:2]
+    ys = np.linspace(0, H - 1, oh).round().astype(np.intp)
+    xs = np.linspace(0, W - 1, ow).round().astype(np.intp)
+    return arr[ys][:, xs]
+
+
 class _LifScene:
     """slideio-Scene-compatible wrapper over one readlif image (a stitched scene)."""
 
@@ -463,18 +477,22 @@ class _LifScene:
 
     def read_block(self, rect=None, size=None, **kwargs):
         """Mimic slideio Scene.read_block: optional rect=(x,y,w,h) crop and
-        optional size=(out_w,out_h) resize. Returns (H, W, C)."""
+        optional size=(out_w,out_h) resize. Returns (H, W, C).
+
+        NOTE: resize uses a pure-numpy area/nearest downsample on purpose —
+        cv2.resize would import OpenCV's Qt, which collides with the PyQt5/Qt
+        the napari window already loaded and crashes the app. The resize is only
+        used for the navigation overview; full-res export uses a plain crop.
+        """
         arr = self._full()
         if rect is not None:
             x, y, w, h = (int(v) for v in rect)
             arr = arr[y:y + h, x:x + w, :]
         if size is not None:
-            import cv2
             ow, oh = int(size[0]), int(size[1])
-            # resize per channel to support any channel count and preserve dtype
-            chans = [cv2.resize(arr[:, :, c], (ow, oh), interpolation=cv2.INTER_AREA)
-                     for c in range(arr.shape[2])]
-            arr = np.stack(chans, axis=-1)
+            H, W = arr.shape[:2]
+            if (oh, ow) != (H, W) and oh > 0 and ow > 0:
+                arr = _resize_overview(arr, oh, ow)
         return np.ascontiguousarray(arr)
 
 

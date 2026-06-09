@@ -416,6 +416,96 @@ def write_multichannel_tiff(path: str, img_yxc: np.ndarray):
     tiff.imwrite(path, img_cyx, imagej=True, compression=None)
 
 
+# ----------------------------
+# LEICA LIF BACKEND (slideio-compatible duck types)
+# ----------------------------
+# Leica writes slide-scanner data as .lif (same extension as confocal). We wrap
+# its merged/stitched image(s) in objects that quack like slideio's Slide/Scene
+# so the rest of the converter (overview, ROI drawing, full-res export) works
+# unchanged.
+
+class _LifScene:
+    """slideio-Scene-compatible wrapper over one readlif image (a stitched scene)."""
+
+    def __init__(self, lif_img):
+        self._img = lif_img
+        self._W = int(lif_img.dims.x)
+        self._H = int(lif_img.dims.y)
+        self._C = int(lif_img.channels)
+        self._nz = max(int(lif_img.nz), 1)
+        self.name = lif_img.name
+        self._cache = None  # full image (H, W, C), loaded once on first read
+
+    @property
+    def size(self):
+        return (self._W, self._H)
+
+    @property
+    def num_channels(self):
+        return self._C
+
+    def _full(self) -> np.ndarray:
+        if self._cache is None:
+            debug(f"[LIF] Loading full scene '{self.name}' ({self._W}x{self._H}, "
+                  f"{self._C}ch, {self._nz}z) into memory…")
+            chans = []
+            for c in range(self._C):
+                if self._nz == 1:
+                    a = np.asarray(self._img.get_frame(z=0, t=0, c=c))
+                else:
+                    a = np.max(np.stack(
+                        [np.asarray(self._img.get_frame(z=z, t=0, c=c))
+                         for z in range(self._nz)], axis=0), axis=0)
+                chans.append(a)
+            self._cache = np.stack(chans, axis=-1)  # (H, W, C)
+            debug(f"[LIF] Scene cached: shape={self._cache.shape} dtype={self._cache.dtype}")
+        return self._cache
+
+    def read_block(self, rect=None, size=None, **kwargs):
+        """Mimic slideio Scene.read_block: optional rect=(x,y,w,h) crop and
+        optional size=(out_w,out_h) resize. Returns (H, W, C)."""
+        arr = self._full()
+        if rect is not None:
+            x, y, w, h = (int(v) for v in rect)
+            arr = arr[y:y + h, x:x + w, :]
+        if size is not None:
+            import cv2
+            ow, oh = int(size[0]), int(size[1])
+            # resize per channel to support any channel count and preserve dtype
+            chans = [cv2.resize(arr[:, :, c], (ow, oh), interpolation=cv2.INTER_AREA)
+                     for c in range(arr.shape[2])]
+            arr = np.stack(chans, axis=-1)
+        return np.ascontiguousarray(arr)
+
+
+class _LifSlide:
+    """slideio-Slide-compatible wrapper over a Leica .lif container.
+
+    Scenes = the non-mosaic (m == 1) images: a slide-scanner file's stitched
+    image(s), or each confocal acquisition. Raw mosaic tiles (m > 1) are skipped
+    when a stitched image exists.
+    """
+    raw_metadata = ""   # VSI-only; empty for LIF
+
+    def __init__(self, path: str):
+        from readlif.reader import LifFile
+        lif = LifFile(path)
+        imgs = list(lif.get_iter_image())
+        singles = [im for im in imgs if int(im.dims.m) <= 1]
+        chosen = singles if singles else imgs
+        if not singles:
+            debug("[LIF] No stitched (m==1) image found — using images as-is "
+                  "(mosaic stitching not supported).")
+        self._scenes = [_LifScene(im) for im in chosen]
+
+    @property
+    def num_scenes(self):
+        return len(self._scenes)
+
+    def get_scene(self, i):
+        return self._scenes[i]
+
+
 def wait_for_viewer_close(viewer: napari.Viewer):
     """
     Block until the napari window is actually closed.
@@ -448,6 +538,7 @@ class VSINapariROIApp:
         ensure_dir(self.export_dir)
 
         self.slide = None
+        self.is_lif = self.vsi_path.lower().endswith(".lif")
         self.scene_id = START_SCENE_ID
         self.scene = None
         self.total_scenes = 0
@@ -505,24 +596,33 @@ class VSINapariROIApp:
 
     # ---------- Slide / scenes ----------
     def open_slide(self):
-        debug(f"Opening VSI with slideio: {self.vsi_path}")
-        self.slide = slideio.open_slide(self.vsi_path, "VSI")
-        debug("Opened VSI successfully.")
+        if self.is_lif:
+            debug(f"Opening LIF with readlif: {self.vsi_path}")
+            self.slide = _LifSlide(self.vsi_path)
+        else:
+            debug(f"Opening VSI with slideio: {self.vsi_path}")
+            self.slide = slideio.open_slide(self.vsi_path, "VSI")
+        debug("Opened slide successfully.")
         self.total_scenes = self.slide.num_scenes
         debug(f"Number of scenes: {self.total_scenes}")
         for i in range(self.total_scenes):
             s = self.slide.get_scene(i)
             debug(f"Scene {i}: size=({s.size[0]} x {s.size[1]}), channels={s.num_channels}")
 
-        # Extract slide-label thumbnail and stage coordinates (non-fatal)
-        _label_w, _label_h = _parse_label_image_size(self.slide.raw_metadata)
-        debug(f"Label image dimensions from metadata: {_label_w}×{_label_h}")
-        self._label_img = _extract_label_image_from_vsi(
-            self.vsi_path, label_wh=(_label_w, _label_h) if _label_w else None
-        )
-        debug(f"Label image: {'OK ' + str(self._label_img.shape) if self._label_img is not None else 'not found'}")
-        self._scene_coords = _parse_scene_physical_coords(self.slide)
-        debug(f"Scene coords parsed: {list(self._scene_coords.keys())}")
+        if self.is_lif:
+            # LIF has no slide-label photo or per-scene stage coordinates.
+            self._label_img = None
+            self._scene_coords = {}
+        else:
+            # Extract slide-label thumbnail and stage coordinates (non-fatal)
+            _label_w, _label_h = _parse_label_image_size(self.slide.raw_metadata)
+            debug(f"Label image dimensions from metadata: {_label_w}×{_label_h}")
+            self._label_img = _extract_label_image_from_vsi(
+                self.vsi_path, label_wh=(_label_w, _label_h) if _label_w else None
+            )
+            debug(f"Label image: {'OK ' + str(self._label_img.shape) if self._label_img is not None else 'not found'}")
+            self._scene_coords = _parse_scene_physical_coords(self.slide)
+            debug(f"Scene coords parsed: {list(self._scene_coords.keys())}")
 
     def load_scene(self, scene_id: int):
         if scene_id < 0 or scene_id >= self.total_scenes:
@@ -1477,7 +1577,7 @@ def choose_vsi_or_folder_dialog(parent=None):
     box = QMessageBox(parent)
     box.setWindowTitle("Select input")
     box.setText("What would you like to open?")
-    btn_file = box.addButton("Open a VSI file", QMessageBox.AcceptRole)
+    btn_file = box.addButton("Open a slide-scanner image (VSI / LIF)", QMessageBox.AcceptRole)
     btn_folder = box.addButton("Set working directory (folder)", QMessageBox.AcceptRole)
     btn_cancel = box.addButton("Cancel", QMessageBox.RejectRole)
     box.setDefaultButton(btn_file)
@@ -1513,21 +1613,21 @@ def pick_folder(start_dir: str) -> str:
 
 
 def pick_vsi_file(start_dir: str) -> str:
-    debug(f"Opening VSI picker at: {start_dir}")
+    debug(f"Opening slide-scanner image picker at: {start_dir}")
 
-    dlg = QFileDialog(None, "Select a VSI file", start_dir)
+    dlg = QFileDialog(None, "Select a slide-scanner image (VSI / LIF)", start_dir)
     dlg.setFileMode(QFileDialog.ExistingFile)
-    dlg.setNameFilter("VSI files (*.vsi)")
+    dlg.setNameFilter("Slide-scanner images (*.vsi *.lif);;Olympus VSI (*.vsi);;Leica LIF (*.lif)")
     dlg.setOption(QFileDialog.DontUseNativeDialog, True)  # <- IMPORTANT on mac
     dlg.setModal(True)
 
     if dlg.exec_():
         files = dlg.selectedFiles()
         if files:
-            debug(f"VSI selected: {files[0]}")
+            debug(f"Slide-scanner image selected: {files[0]}")
             return files[0]
 
-    debug("VSI picker cancelled.")
+    debug("Slide-scanner image picker cancelled.")
     return ""
 
 

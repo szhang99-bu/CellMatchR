@@ -36,9 +36,9 @@ or [Cellpose-SAM](https://github.com/MouseLand/cellpose) (selectable per run).
 │    • Open existing: select cellmatchr_project.json              │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 2  — Input & Paths                                        │
-│    • CZI/LIF/ND2/OIB-OIF/TIF → point to root input folder       │
-│    • VSI        →  launch VSI Converter (draws ROIs,            │
-│                    exports full-resolution TIFFs)               │
+│    • Direct read → CZI / LIF / ND2 / OIB-OIF / TIF              │
+│    • Slide scanner → Olympus VSI or Leica LIF: draw ROIs in     │
+│                    the converter, export full-res TIFFs         │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 3  — Segmentation                                         │
 │    • Tiled MicroSAM prediction on chosen channels               │

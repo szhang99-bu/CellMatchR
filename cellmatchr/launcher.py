@@ -1073,7 +1073,7 @@ class CellMatchrLauncher:
         type_card = self._card(parent, "Input Data Format")
         for val, lbl in [
             ("czi", "CZI / LIF / TIF  +  ND2 / OIB-OIF (beta)   (Zeiss / Leica / Nikon / Olympus — or import TIF directly)"),
-            ("vsi", "VSI file  (Olympus slide scanner — convert to TIF first via VSI Converter below)"),
+            ("vsi", "Slide scanner image processing  (Olympus VSI · Leica LIF — draw ROIs & export full-res TIFFs)"),
         ]:
             tk.Radiobutton(
                 type_card, text=lbl,
@@ -1102,10 +1102,11 @@ class CellMatchrLauncher:
         # ── VSI section (shown when input_type == "vsi") ─────────────
         self._vsi_section = tk.Frame(parent, bg=BG)
 
-        vsi_card = self._card(self._vsi_section, "VSI Converter  (Olympus only)")
+        vsi_card = self._card(self._vsi_section, "Slide Scanner Converter  (Olympus VSI · Leica LIF)")
         tk.Label(vsi_card,
-                 text="Output auto-saves to: Project folder / VSI_Converted_TIFF/",
-                 bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 6))
+                 text="Draw one ROI per region on the slide scan and export each as a "
+                      "full-resolution TIFF.\nOutput auto-saves to: Project folder / VSI_Converted_TIFF/",
+                 bg=CARD, fg=MUTED, font=FONT, justify="left").pack(anchor="w", pady=(0, 6))
 
         # Collapsible output override
         self._vsi_override_frame = tk.Frame(vsi_card, bg=CARD)
@@ -1123,7 +1124,7 @@ class CellMatchrLauncher:
 
         btn_row = tk.Frame(vsi_card, bg=CARD)
         btn_row.pack(anchor="w", pady=(2, 0))
-        tk.Button(btn_row, text="Launch VSI Converter →",
+        tk.Button(btn_row, text="Launch Slide Scanner Converter →",
                   command=self._launch_vsi,
                   bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat",
                   padx=14, pady=7).pack(side="left")

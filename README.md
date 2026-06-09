@@ -4,14 +4,26 @@
 
 Neuronal confocal image segmentation, manual validation, and colocalization analysis pipeline.
 
-Reads images directly from most major microscope brands — **Zeiss `.czi`**,
-**Leica `.lif`**, **Nikon `.nd2`**, **Olympus FluoView `.oib` / `.oif`**, and
-plain **`.tif` / `.tiff`** — plus **Olympus `.vsi`** slide-scanner files via the
-built-in VSI Converter.  
-Uses [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam) (Segment Anything for microscopy) for automatic cell segmentation.
+Reads images directly from most major microscope brands, plus **Olympus `.vsi`**
+slide-scanner files via the built-in VSI Converter.
+Segmentation runs with either [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam)
+or [Cellpose-SAM](https://github.com/MouseLand/cellpose) (selectable per run).
 
-> **Not supported:** Olympus `.oir` (newer FV3000 format). Open it in
-> [Fiji/ImageJ](https://imagej.net/software/fiji/) and export to `.tif` first.
+**Supported input formats**
+
+| Format | Brand | Status |
+|--------|-------|--------|
+| `.czi` | Zeiss | ✅ tested |
+| `.lif` | Leica (confocal **and** slide scanner) | ✅ tested |
+| `.tif` / `.tiff` | any | ✅ tested |
+| `.nd2` | Nikon | 🧪 **beta** — not yet validated on a real file; use with caution |
+| `.oib` / `.oif` | Olympus FluoView | 🧪 **beta** — not yet validated on a real file; use with caution |
+| `.vsi` | Olympus slide scanner | ✅ tested (via VSI Converter) |
+| `.oir` | Olympus FV3000 | ❌ not supported — convert to `.tif` in [Fiji/ImageJ](https://imagej.net/software/fiji/) first |
+
+> Leica writes both confocal and slide-scanner data as `.lif`. CellMatchR detects
+> the difference automatically: each confocal acquisition becomes its own sample,
+> while a slide-scanner file uses its stitched/merged image.
 
 ---
 
@@ -167,17 +179,18 @@ readers — **you do not need to rebuild the conda environment.**
 cd /path/to/CellMatchR
 git pull                      # (or re-download the ZIP and replace the folder)
 
-# 2. Add the new file-format readers into the existing env.
+# 2. Add the new file-format readers + Cellpose-SAM backend into the env.
 #    --no-deps is IMPORTANT: it adds only these packages and will NOT touch
 #    numpy or anything else already installed.
 conda activate cellmatchr
 pip install --no-deps "readlif==0.6.5" "nd2==0.11.3" "oiffile==2026.2.8"
+pip install "cellpose==4.1.1"     # Cellpose-SAM backend (deps already present; won't move numpy/torch)
 ```
 
 > ⚠️ Use the exact versions above. In particular **do not** let `readlif`
-> install 0.6.6 — that version requires `numpy>=2`, which would break the
-> segmentation stack (this env must stay on `numpy 1.26.x`). The `--no-deps`
-> flag prevents that.
+> install 0.6.6, and do not let `cellpose` pull a version needing `numpy>=2` —
+> that would break the segmentation stack (this env must stay on `numpy 1.26.x`).
+> The pinned versions above are all numpy-1.26-compatible.
 
 **About the macOS app:** `CellMatchR.app` ships with the code, so a `git pull`
 updates it automatically. If you got the code as a **ZIP** (which can drop the

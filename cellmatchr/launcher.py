@@ -1072,7 +1072,7 @@ class CellMatchrLauncher:
         # ── Input type radio ─────────────────────────────────────────
         type_card = self._card(parent, "Input Data Format")
         for val, lbl in [
-            ("czi", "CZI / LIF / ND2 / OIB-OIF / TIF files  (Zeiss / Leica / Nikon / Olympus confocal — or import TIF directly)"),
+            ("czi", "CZI / LIF / TIF  +  ND2 / OIB-OIF (beta)   (Zeiss / Leica / Nikon / Olympus — or import TIF directly)"),
             ("vsi", "VSI file  (Olympus slide scanner — convert to TIF first via VSI Converter below)"),
         ]:
             tk.Radiobutton(
@@ -1084,12 +1084,20 @@ class CellMatchrLauncher:
 
         tk.Label(
             type_card,
-            text="Supported directly: Zeiss .czi · Leica .lif · Nikon .nd2 · "
-                 "Olympus FluoView .oib / .oif · .tif / .tiff.\n"
-                 "Not currently supported: Olympus .oir (newer FV3000 format) — "
-                 "please use Fiji to convert the file to TIF first.",
+            text="Tested:  Zeiss .czi · Leica .lif (confocal & slide scanner) · .tif / .tiff",
             bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=700,
         ).pack(anchor="w", pady=(8, 0))
+        tk.Label(
+            type_card,
+            text="⚠  Beta (not yet validated on real files — use with caution):  "
+                 "Nikon .nd2 · Olympus FluoView .oib / .oif",
+            bg=CARD, fg=YELLOW, font=FONT, justify="left", wraplength=700,
+        ).pack(anchor="w", pady=(2, 0))
+        tk.Label(
+            type_card,
+            text="Not supported:  Olympus .oir (newer FV3000) — convert it to TIF in Fiji / ImageJ first.",
+            bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=700,
+        ).pack(anchor="w", pady=(2, 0))
 
         # ── VSI section (shown when input_type == "vsi") ─────────────
         self._vsi_section = tk.Frame(parent, bg=BG)

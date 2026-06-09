@@ -234,11 +234,22 @@ def preprocess_tile_for_sam(tile_data, mode="raw_percentile"):
 # TILE SELECTION
 # =============================================================================
 
-def tile_has_enough_signal(tile_data):
-    tile_max = float(tile_data.max())
-    bright_pixel_count = int(np.sum(tile_data > BRIGHT_PIXEL_THRESHOLD))
+def tile_has_enough_signal(tile_data, min_raw_max=None, bright_thresh=None):
+    """Whether a tile holds enough signal to be worth segmenting.
 
-    if tile_max < MIN_TILE_RAW_MAX:
+    The default thresholds are tuned for 16-bit slide-scanner data; for
+    lower-bit-depth images (e.g. 8-bit confocal, max 255) the caller passes
+    range-scaled thresholds so the tile isn't wrongly judged "empty".
+    """
+    if min_raw_max is None:
+        min_raw_max = MIN_TILE_RAW_MAX
+    if bright_thresh is None:
+        bright_thresh = BRIGHT_PIXEL_THRESHOLD
+
+    tile_max = float(tile_data.max())
+    bright_pixel_count = int(np.sum(tile_data > bright_thresh))
+
+    if tile_max < min_raw_max:
         return False
 
     if bright_pixel_count < MIN_TILE_BRIGHT_PIXEL_COUNT:
@@ -715,7 +726,28 @@ def segment_by_tiling(
         halo=halo
     )
 
+    # Empty-tile skipping is an optimisation for large, mostly-blank slide
+    # scans. For a single-tile image (e.g. a 1024×1024 63× confocal field)
+    # skipping the only tile would mean no prediction at all — so disable it.
+    do_skip_empty = SKIP_EMPTY_TILES and len(coords) > 1
+
+    # The default signal thresholds assume 16-bit data. Scale them to the
+    # image's actual intensity range so 8-bit (max 255) confocal tiles are not
+    # judged "empty". Detect an approximate bit-depth ceiling from the data.
+    _gmax = float(image.max()) if image.size else 0.0
+    if _gmax <= 255:
+        _full_range = 255.0
+    elif _gmax <= 4095:
+        _full_range = 4095.0
+    else:
+        _full_range = 65535.0
+    _sig_scale = _full_range / 65535.0
+    _min_raw_max  = MIN_TILE_RAW_MAX * _sig_scale
+    _bright_thresh = BRIGHT_PIXEL_THRESHOLD * _sig_scale
+
     print(f"    Preprocess mode: {PREPROCESS_MODE}")
+    print(f"    Tiles: {len(coords)} | skip-empty: {do_skip_empty} | "
+          f"data max≈{_gmax:.0f} (signal thresh scaled ×{_sig_scale:.3f})")
 
     if should_save_debug_images():
         print(f"    Debug folder: {debug_folder}")
@@ -765,7 +797,8 @@ def segment_by_tiling(
             "max_label_after_write": int(max_id),
         }
 
-        if SKIP_EMPTY_TILES and not tile_has_enough_signal(tile_data):
+        if do_skip_empty and not tile_has_enough_signal(
+                tile_data, min_raw_max=_min_raw_max, bright_thresh=_bright_thresh):
             skipped_empty_tiles += 1
             rec["status"] = "skipped_empty"
             tile_records.append(rec)
@@ -1105,11 +1138,55 @@ def _pick_main_lif_image(lif):
     return best
 
 
-def save_raw_split_tiffs(file_path, output_subfolder, base_name):
+def _sanitize_scene_name(name: str) -> str:
+    """Make a LIF scene name safe to use inside a folder/file name."""
+    import re as _re
+    name = (name or "").strip()
+    name = _re.sub(r'[\\/:\*\?"<>\|]+', "_", name)   # path-illegal chars
+    name = _re.sub(r"\s+", " ", name).strip()
+    return name
+
+
+def lif_scenes_to_process(path):
+    """Decide which image(s) inside a .lif should each become a sample.
+
+    Leica writes BOTH confocal and slide-scanner data as .lif:
+      • Confocal  → several standalone images (one per acquisition), m == 1.
+      • Slide scanner → un-stitched mosaic images (m > 1) plus a single
+        stitched/merged image (m == 1).
+
+    Rule: take every NON-mosaic (m == 1) image as its own sample — this keeps
+    all confocal acquisitions and the slide scanner's merged image, while
+    ignoring the redundant raw mosaic tiles.  If a file has only mosaic images
+    (no stitched version), fall back to all images and warn, since proper
+    mosaic stitching is not supported.
+
+    Returns a list of (scene_index, scene_name).
+    """
+    from readlif.reader import LifFile
+    lif = LifFile(path)
+    imgs = list(lif.get_iter_image())
+    singles = [(i, im) for i, im in enumerate(imgs) if int(im.dims.m) <= 1]
+    chosen = singles
+    if not chosen:
+        print("  [WARNING] LIF has only un-stitched mosaic images (no merged image). "
+              "Mosaic stitching is not supported — please export a merged/stitched "
+              "image in LAS X. Processing each mosaic's first tile only.")
+        chosen = list(enumerate(imgs))
+    if len(chosen) > 1:
+        print(f"  LIF contains {len(chosen)} images to process as separate samples: "
+              f"{[im.name for _, im in chosen]}")
+    return [(i, im.name) for i, im in chosen]
+
+
+def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None):
     """
     Split a multi-channel (and optionally multi-Z) microscopy file into
     one 2D TIFF per channel.  Z-stacks are collapsed via max intensity
     projection (MIP) before saving — CellMatchR does not do 3D analysis.
+
+    For .lif files, `lif_scene` selects which image (scene) inside the
+    container to read; if None, the largest-area image is used.
     """
     split_tiff_paths = {}
 
@@ -1123,7 +1200,10 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name):
             )
 
         lif = LifFile(file_path)
-        img = _pick_main_lif_image(lif)
+        if lif_scene is not None:
+            img = lif.get_image(int(lif_scene))
+        else:
+            img = _pick_main_lif_image(lif)
         if img is None:
             raise ValueError(f"No images found in LIF file: {file_path}")
 
@@ -1418,14 +1498,36 @@ def main():
 
     all_files = find_input_files(ROOT_INPUT_FOLDER)
 
-    if TEST_RUN and all_files:
-        all_files = all_files[:1]
-
     if not all_files:
         print("[ERROR] No input files found. Check that input_root_folder is set correctly.")
         sys.exit(1)
 
-    print(f"Found {len(all_files)} file(s) to process.")
+    # Expand each input file into one or more work items.  A Leica .lif can hold
+    # several scenes (separate confocal acquisitions, or a slide-scanner merged
+    # image) — each becomes its own sample with its own output folder.
+    work_items = []   # (file_path, lif_scene_index_or_None, sample_base_name)
+    for fp in all_files:
+        fb = os.path.splitext(os.path.basename(fp))[0]
+        if fp.lower().endswith(".lif"):
+            try:
+                scenes = lif_scenes_to_process(fp)
+            except Exception as exc:
+                print(f"[WARNING] Could not enumerate scenes in {fb}: {exc}")
+                scenes = [(None, None)]
+            if len(scenes) <= 1:
+                _idx = scenes[0][0] if scenes else None
+                work_items.append((fp, _idx, fb))
+            else:
+                for sidx, sname in scenes:
+                    safe = _sanitize_scene_name(sname)
+                    work_items.append((fp, sidx, f"{fb}__{safe}" if safe else fb))
+        else:
+            work_items.append((fp, None, fb))
+
+    if TEST_RUN and work_items:
+        work_items = work_items[:1]
+
+    print(f"Found {len(all_files)} file(s) → {len(work_items)} sample(s) to process.")
 
     predictor, segmenter, cellpose_model = None, None, None
 
@@ -1468,11 +1570,10 @@ def main():
         "min_size": MIN_OBJECT_SIZE,
     }
 
-    for file_path in all_files:
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-
+    for file_path, lif_scene, base_name in work_items:
         print(f"\n--- Planning for: {base_name} ---")
-        print(f"Input file: {file_path}")
+        print(f"Input file: {file_path}"
+              + (f"  [LIF scene {lif_scene}]" if lif_scene is not None else ""))
 
         output_subfolder = os.path.join(MAIN_OUTPUT_FOLDER, base_name)
 
@@ -1483,7 +1584,8 @@ def main():
             split_tiff_paths = save_raw_split_tiffs(
                 file_path,
                 output_subfolder,
-                base_name
+                base_name,
+                lif_scene=lif_scene,
             )
 
             if is_dry_run:

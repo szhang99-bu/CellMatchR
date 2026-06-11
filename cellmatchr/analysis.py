@@ -119,7 +119,13 @@ def get_project_folders(root):
 
 
 def normalize_name_for_matching(name):
-    name = os.path.splitext(os.path.basename(name))[0]
+    name = os.path.basename(name)
+    # Strip only KNOWN mask/image extensions. Do NOT use os.path.splitext:
+    # image names can contain dots (e.g. "F3.0.3_mouse1514_…"), and splitext
+    # would chop the name at that dot — collapsing distinct images to the same
+    # prefix and cross-matching their ROI files.
+    name = re.sub(r"\.(roi|tif|tiff|czi|lif|nd2|oib|oif|png)$", "", name,
+                  flags=re.IGNORECASE)
     name = re.sub(r"_predict_original_ch\d+.*$", "", name)
     suffixes = [
         "_mask_overview", "_overview", "_vertices_overview_yx",

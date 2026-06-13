@@ -1566,14 +1566,6 @@ class CellMatchrLauncher:
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
             wraplength=660, justify="left",
         ).pack(anchor="w", pady=2)
-        tk.Checkbutton(
-            flags_card,
-            text="Resume — skip files already segmented (use the SAME output folder "
-                 "to continue after a crash; channels already done are skipped)",
-            variable=self._vars["seg_resume"],
-            bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
-            wraplength=660, justify="left",
-        ).pack(anchor="w", pady=2)
 
         # ── Run button + full log ────────────────────────────────────
         run_card = self._card(parent, "Run Segmentation")
@@ -1587,8 +1579,24 @@ class CellMatchrLauncher:
             state="normal" if input_ok else "disabled",
         )
         self._seg_run_btn.pack(side="left")
+
+        self._seg_resume_btn = tk.Button(
+            btn_row, text="⟲  Continue a previous run",
+            command=lambda: self._run_segmentation_step(resume=True),
+            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+            padx=14, pady=10,
+            state="normal" if input_ok else "disabled",
+        )
+        self._seg_resume_btn.pack(side="left", padx=(8, 0))
+
         self._seg_status = tk.Label(btn_row, text="", bg=CARD, fg=MUTED, font=FONT)
         self._seg_status.pack(side="left", padx=12)
+        tk.Label(
+            run_card,
+            text="“Continue a previous run” re-uses the existing Segmentation output and "
+                 "skips files that are already done — use it to finish a batch that crashed.",
+            bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=680, justify="left",
+        ).pack(anchor="w", pady=(2, 0))
 
         self._seg_progress = ttk.Progressbar(run_card, mode="indeterminate", length=500)
         self._seg_progress.pack(anchor="w", pady=(8, 4))
@@ -2284,8 +2292,12 @@ class CellMatchrLauncher:
         self._vars["val_channel_names"].set(names)
         self._vars["val_channel_colors"].set(colors)
 
-    def _run_segmentation_step(self) -> None:
-        """Run segmentation from within the Segmentation step card."""
+    def _run_segmentation_step(self, resume: bool = False) -> None:
+        """Run segmentation from within the Segmentation step card.
+
+        resume=True ("Continue a previous run"): re-use the existing
+        Segmentation output and skip files already segmented.
+        """
         if self._is_running("Segmentation"):
             if hasattr(self, "_seg_status"):
                 self._seg_status.config(text="Segmentation is already running…", fg=ACCENT)
@@ -2301,13 +2313,28 @@ class CellMatchrLauncher:
             self._seg_status.config(text="⚠  Channels to predict is required (red ✱).", fg=RED)
             return
 
-        out = self._resolve_output_dir(SUBFOLDER["seg"])
-        if out is None:
-            return
+        if resume:
+            # Continue into the most recently used Segmentation output and skip
+            # files already done — no "replace/new" prompt.
+            proj = self.config.get("project_output_folder", "").strip()
+            variants = self._find_variants(SUBFOLDER["seg"])
+            if not proj or not variants:
+                self._seg_status.config(
+                    text="⚠  No previous Segmentation output found to continue.", fg=RED)
+                return
+            out = max((os.path.join(proj, v) for v in variants),
+                      key=lambda p: os.path.getmtime(p))
+        else:
+            out = self._resolve_output_dir(SUBFOLDER["seg"])
+            if out is None:
+                return
         self.config["output_root_folder"] = out
+        self.config["seg_resume"] = bool(resume)
         save_config(self.config)
         save_project_config(self.config)
 
+        if hasattr(self, "_seg_resume_btn"):
+            self._seg_resume_btn.config(state="disabled")
         self._seg_run_btn.config(state="disabled", text="Running…")
         self._seg_progress.start(12)
         self._seg_status.config(text="Starting…", fg=ACCENT)
@@ -2350,6 +2377,8 @@ class CellMatchrLauncher:
                     try:
                         self._seg_progress.stop()
                         self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
+                        if hasattr(self, "_seg_resume_btn"):
+                            self._seg_resume_btn.config(state="normal")
                         if ok:
                             self._seg_status.config(text="✔  Segmentation complete.", fg=GREEN)
                             _seg_log_line("\n✔  Segmentation complete.")
@@ -2365,6 +2394,8 @@ class CellMatchrLauncher:
                     try:
                         self._seg_progress.stop()
                         self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
+                        if hasattr(self, "_seg_resume_btn"):
+                            self._seg_resume_btn.config(state="normal")
                         self._seg_status.config(text=f"✗  {exc}", fg=RED)
                     except tk.TclError:
                         pass

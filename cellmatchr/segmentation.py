@@ -1493,6 +1493,38 @@ def _patch_decoder_checkpoints(model_type: str) -> None:
 
 
 # =============================================================================
+# RUN PROGRESS  (lets the GUI offer "Continue a previous run")
+# =============================================================================
+
+RUN_PROGRESS_FILENAME = "_run_progress.json"
+
+
+def _run_progress_path(out_dir: str) -> str:
+    return os.path.join(out_dir, RUN_PROGRESS_FILENAME)
+
+
+def _write_run_progress(out_dir, total, completed, finished, channels=None):
+    """Record how far this segmentation run has got, so the GUI can detect an
+    unfinished run and offer to continue it. Written/updated after every image."""
+    import json as _json
+    import datetime as _dt
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        data = {
+            "total": int(total),
+            "completed": sorted(completed),
+            "n_completed": len(completed),
+            "finished": bool(finished),
+            "channels": channels if channels is not None else [],
+            "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
+        }
+        with open(_run_progress_path(out_dir), "w") as f:
+            _json.dump(data, f, indent=2)
+    except Exception as exc:
+        print(f"  [WARNING] Could not write run progress: {exc}")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -1574,6 +1606,14 @@ def main():
         "min_size": MIN_OBJECT_SIZE,
     }
 
+    # Track run progress so the GUI can detect an unfinished run and offer to
+    # continue it. Persisted to <output>/_run_progress.json after every image.
+    _total_samples = len(work_items)
+    _completed = set()
+    if not is_dry_run:
+        _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                            finished=False, channels=CHANNELS_TO_PREDICT)
+
     for file_path, lif_scene, base_name in work_items:
         print(f"\n--- Planning for: {base_name} ---")
         print(f"Input file: {file_path}"
@@ -1591,6 +1631,9 @@ def main():
         if RESUME and not is_dry_run and CHANNELS_TO_PREDICT and all(
                 os.path.isfile(_predict_path(ch)) for ch in CHANNELS_TO_PREDICT):
             print(f"  [RESUME] '{base_name}' already segmented for all channels — skipping.")
+            _completed.add(base_name)
+            _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                                finished=False, channels=CHANNELS_TO_PREDICT)
             continue
 
         try:
@@ -1707,7 +1750,17 @@ def main():
             traceback.print_exc()
             continue
 
+        if not is_dry_run:
+            _completed.add(base_name)
+            _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                                finished=False, channels=CHANNELS_TO_PREDICT)
         print(f"--- Finished: {base_name} ---\n")
+
+    # Mark the run finished only if every planned sample completed.
+    if not is_dry_run:
+        _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                            finished=(len(_completed) >= _total_samples),
+                            channels=CHANNELS_TO_PREDICT)
 
 
 def _apply_config(config_path: str) -> None:

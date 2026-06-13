@@ -1767,10 +1767,6 @@ def main():
                 (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN) = _saved_filters
 
-                # Free this channel's image + result before the next channel.
-                del image_data, result
-                _free_memory()
-
         except Exception as e:
             print(f"  [ERROR] Failed: {e}")
             import traceback
@@ -1781,8 +1777,9 @@ def main():
             _completed.add(base_name)
             _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
                                 finished=False, channels=CHANNELS_TO_PREDICT)
-        # Free everything from this file before moving to the next one.
-        del split_tiff_paths
+        # Free torch/GPU cache before the next file, so memory doesn't
+        # accumulate across a batch (the cause of macOS killing the process
+        # with SIGKILL / exit -9 after many files).
         _free_memory()
         print(f"--- Finished: {base_name} ---\n")
 

@@ -766,12 +766,17 @@ def analyze_project_folder(project_folder):
     )
 
     # ── Summary row ─────────────────────────────────────────────────────────
+    # Area of the ROI itself, in pixels (number of pixels inside the ROI mask).
+    # None when no ROI mask was matched for this image.
+    roi_area_px = int(np.count_nonzero(roi_mask)) if roi_mask is not None else None
+
     summary = {
         "project_name":                                 project_name,
         "cell_of_interest_channel":                     COI_CHANNEL,
         "protein_marker_channel":                       PM_CHANNEL,
         "iou_threshold":                                IOU_THRESHOLD,
         "roi_cell_counting_rule":                       ROI_CELL_RULE,
+        "roi_area_pixels":                              roi_area_px,
         # All-image counts
         f"{coi_ch}_total_count":                        total_coi,
         f"{pm_ch}_total_count":                         total_pm,

@@ -1580,23 +1580,31 @@ class CellMatchrLauncher:
         )
         self._seg_run_btn.pack(side="left")
 
-        self._seg_resume_btn = tk.Button(
-            btn_row, text="⟲  Continue a previous run",
-            command=lambda: self._run_segmentation_step(resume=True),
-            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
-            padx=14, pady=10,
-            state="normal" if input_ok else "disabled",
-        )
-        self._seg_resume_btn.pack(side="left", padx=(8, 0))
+        # "Continue a previous run" appears ONLY when an unfinished run is
+        # detected for this project (progress recorded but not finished).
+        _prog = self._seg_run_progress()
+        if input_ok and _prog and not _prog.get("finished", True):
+            self._seg_resume_btn = tk.Button(
+                btn_row, text="⟲  Continue a previous run",
+                command=lambda: self._run_segmentation_step(resume=True),
+                bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                padx=14, pady=10,
+            )
+            self._seg_resume_btn.pack(side="left", padx=(8, 0))
 
         self._seg_status = tk.Label(btn_row, text="", bg=CARD, fg=MUTED, font=FONT)
         self._seg_status.pack(side="left", padx=12)
-        tk.Label(
-            run_card,
-            text="“Continue a previous run” re-uses the existing Segmentation output and "
-                 "skips files that are already done — use it to finish a batch that crashed.",
-            bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=680, justify="left",
-        ).pack(anchor="w", pady=(2, 0))
+
+        if _prog and not _prog.get("finished", True):
+            _n = int(_prog.get("n_completed", 0))
+            _tot = int(_prog.get("total", 0))
+            tk.Label(
+                run_card,
+                text=f"⚠  Previous run did not finish — {_n} of {_tot} file(s) segmented in "
+                     f"“{os.path.basename(_prog.get('folder',''))}”.  "
+                     "Click “Continue a previous run” to segment the rest (finished files are skipped).",
+                bg=CARD, fg=YELLOW, font=FONT, wraplength=700, justify="left",
+            ).pack(anchor="w", pady=(2, 0))
 
         self._seg_progress = ttk.Progressbar(run_card, mode="indeterminate", length=500)
         self._seg_progress.pack(anchor="w", pady=(8, 4))
@@ -1729,6 +1737,32 @@ class CellMatchrLauncher:
         except OSError:
             pass
         return n
+
+    def _seg_run_progress(self) -> "dict | None":
+        """Read the run-progress record from the most-recent Segmentation output.
+
+        Returns the parsed dict (with an added 'folder' key) or None. Segmentation
+        writes/updates <Segmentation*>/_run_progress.json after every image, so an
+        unfinished run is detectable here (finished == False)."""
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj or not os.path.isdir(proj):
+            return None
+        variants = self._find_variants(SUBFOLDER["seg"])
+        if not variants:
+            return None
+        try:
+            folder = max((os.path.join(proj, v) for v in variants),
+                         key=os.path.getmtime)
+            ppath = os.path.join(folder, "_run_progress.json")
+            if not os.path.isfile(ppath):
+                return None
+            import json as _json
+            with open(ppath) as f:
+                data = _json.load(f)
+            data["folder"] = folder
+            return data
+        except Exception:
+            return None
 
     def _find_input_variants(self) -> list:
         """[(display_name, images_folder)] for every converter output

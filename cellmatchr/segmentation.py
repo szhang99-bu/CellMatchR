@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 import torch
 from czifile import CziFile
 import numpy as np
@@ -13,6 +14,28 @@ import micro_sam.automatic_segmentation
 import pandas as pd
 from skimage.measure import regionprops_table
 from skimage.segmentation import find_boundaries
+
+
+def _free_memory():
+    """Release Python/torch memory between tiles, channels and files.
+
+    Without this the process steadily accumulates RAM (and Apple-GPU/MPS) memory
+    across a batch and macOS eventually kills it with SIGKILL (exit code -9).
+    """
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+    try:
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -770,6 +793,10 @@ def segment_by_tiling(
     for tile_index, corner_coord in enumerate(
         tqdm(coords, desc="    Tiling Progress", leave=False)
     ):
+        # Release the previous tile's torch/GPU memory so it doesn't accumulate
+        # across tiles (a common cause of macOS SIGKILL / exit -9 on big images).
+        _free_memory()
+
         y0, x0 = corner_coord
 
         y1 = min(y0 + tile_shape[0], image_shape[0])
@@ -1744,6 +1771,10 @@ def main():
                 (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN) = _saved_filters
 
+                # Free this channel's image + result before the next channel.
+                del image_data, result
+                _free_memory()
+
         except Exception as e:
             print(f"  [ERROR] Failed: {e}")
             import traceback
@@ -1754,6 +1785,9 @@ def main():
             _completed.add(base_name)
             _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
                                 finished=False, channels=CHANNELS_TO_PREDICT)
+        # Free everything from this file before moving to the next one.
+        del split_tiff_paths
+        _free_memory()
         print(f"--- Finished: {base_name} ---\n")
 
     # Mark the run finished only if every planned sample completed.

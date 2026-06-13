@@ -223,7 +223,7 @@ class CellMatchrLauncher:
             "seg_cellpose_cellprob_threshold",
         ]
         bool_fields = [
-            "seg_test_run", "seg_dry_run", "seg_skip_subdirs",
+            "seg_test_run", "seg_dry_run", "seg_skip_subdirs", "seg_resume",
             "val_enabled", "ana_enabled", "ana_coloc_enabled", "ana_save_qc",
             "apply_partial_validation",
         ]
@@ -1563,6 +1563,14 @@ class CellMatchrLauncher:
             text="Skip subfolders — only scan files directly in the input folder"
                  "  (if unchecked, also scans one level of subfolders)",
             variable=self._vars["seg_skip_subdirs"],
+            bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
+            wraplength=660, justify="left",
+        ).pack(anchor="w", pady=2)
+        tk.Checkbutton(
+            flags_card,
+            text="Resume — skip files already segmented (use the SAME output folder "
+                 "to continue after a crash; channels already done are skipped)",
+            variable=self._vars["seg_resume"],
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
             wraplength=660, justify="left",
         ).pack(anchor="w", pady=2)

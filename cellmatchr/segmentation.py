@@ -85,6 +85,10 @@ RAW_MEAN_MIN = 5000
 PER_CHANNEL_FILTERS_ENABLED = False
 PER_CHANNEL_FILTERS = {}   # {channel_int: {"min_size", "max_size", "max_ratio", "min_intensity"}}
 
+# Resume mode: skip samples/channels whose prediction TIFF already exists.
+# Lets a crashed batch continue without redoing finished files.
+RESUME = False
+
 # Skip basically empty tiles
 SKIP_EMPTY_TILES = True
 BRIGHT_PIXEL_THRESHOLD = 4000
@@ -1577,6 +1581,18 @@ def main():
 
         output_subfolder = os.path.join(MAIN_OUTPUT_FOLDER, base_name)
 
+        def _predict_path(ch):
+            return os.path.join(
+                output_subfolder,
+                f"{base_name}_predict_original_ch{ch}_{PREPROCESS_MODE}_tile2048.tif")
+
+        # Resume: if every requested channel for this sample is already
+        # segmented, skip it entirely (don't even re-read/re-split the file).
+        if RESUME and not is_dry_run and CHANNELS_TO_PREDICT and all(
+                os.path.isfile(_predict_path(ch)) for ch in CHANNELS_TO_PREDICT):
+            print(f"  [RESUME] '{base_name}' already segmented for all channels — skipping.")
+            continue
+
         try:
             if not is_dry_run:
                 os.makedirs(output_subfolder, exist_ok=True)
@@ -1594,6 +1610,10 @@ def main():
             for ch_to_predict in CHANNELS_TO_PREDICT:
                 if ch_to_predict not in split_tiff_paths:
                     print(f"  [SKIP] Channel {ch_to_predict} not found.")
+                    continue
+
+                if RESUME and os.path.isfile(_predict_path(ch_to_predict)):
+                    print(f"  [RESUME] Channel {ch_to_predict} already segmented — skipping.")
                     continue
 
                 # Apply per-channel filter overrides if configured
@@ -1762,6 +1782,8 @@ def _apply_config(config_path: str) -> None:
         TEST_RUN = bool(cfg["seg_test_run"])
     if cfg.get("seg_skip_subdirs") is not None:
         SKIP_SUBDIRS = bool(cfg["seg_skip_subdirs"])
+    if cfg.get("seg_resume") is not None:
+        globals()["RESUME"] = bool(cfg["seg_resume"])
 
     PER_CHANNEL_FILTERS_ENABLED = bool(cfg.get("seg_per_channel_filters_enabled", False))
     raw_pcf = cfg.get("seg_per_channel_filters", "{}")

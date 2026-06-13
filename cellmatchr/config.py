@@ -36,6 +36,7 @@ DEFAULT_CONFIG: dict = {
     "seg_qc_downsample": 4,
     "seg_test_run": False,
     "seg_dry_run": False,
+    "seg_resume": False,                # skip files already segmented (resume after a crash)
     "seg_skip_subdirs": False,
 
     # --- Validation ---

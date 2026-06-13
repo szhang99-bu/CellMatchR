@@ -793,10 +793,6 @@ def segment_by_tiling(
     for tile_index, corner_coord in enumerate(
         tqdm(coords, desc="    Tiling Progress", leave=False)
     ):
-        # Release the previous tile's torch/GPU memory so it doesn't accumulate
-        # across tiles (a common cause of macOS SIGKILL / exit -9 on big images).
-        _free_memory()
-
         y0, x0 = corner_coord
 
         y1 = min(y0 + tile_shape[0], image_shape[0])

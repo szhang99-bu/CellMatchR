@@ -1,92 +1,16 @@
 #!/bin/bash
-# ---------------------------------------------------------------------------
-# CellMatchR — macOS .app launcher (no Terminal window).
-#
-# Keep CellMatchR.app INSIDE the CellMatchR project folder (next to
-# run_cellmatchr.py).  To put it in the Dock or Applications, make an ALIAS
-# of it (right-click → Make Alias) — an alias remembers the original path, so
-# the app can still find the project files.  Do not MOVE the .app out of the
-# project folder.
-# ---------------------------------------------------------------------------
+# CellMatchR.app — thin launcher (see build_cellmatchr_app.sh for rationale).
+# Resolve the project root from our own bundle path using STRING math only —
+# no filesystem access, so the Tahoe Desktop restriction never applies to us.
+SELF="$0"                                  # .../CellMatchR.app/Contents/MacOS/CellMatchR
+ROOT="${SELF%/CellMatchR.app/*}"           # .../<project dir>
+CMD="$ROOT/scripts/launch_cellmatchr.command"
 
-# ── Locate the cellmatchr env's python across conda/anaconda layouts ─────────
-find_cellmatchr_python() {
-    local bases=()
-    # If conda is on PATH or CONDA_EXE is set, prefer its actual base.
-    if command -v conda >/dev/null 2>&1; then
-        local b; b="$(conda info --base 2>/dev/null)"
-        [ -n "$b" ] && bases+=("$b")
-    fi
-    [ -n "$CONDA_EXE" ] && bases+=("$(dirname "$(dirname "$CONDA_EXE")")")
-    # Common install locations (user- and system-wide; miniforge/miniconda/anaconda).
-    bases+=(
-        "$HOME/miniforge3" "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/mambaforge"
-        "$HOME/opt/anaconda3" "$HOME/opt/miniconda3"
-        "/opt/anaconda3" "/opt/miniconda3" "/opt/miniforge3" "/opt/mambaforge"
-        "/opt/homebrew/anaconda3" "/opt/homebrew/Caskroom/miniforge/base"
-        "/opt/conda" "/anaconda3" "/miniconda3" "/usr/local/anaconda3"
-    )
-    local base
-    for base in "${bases[@]}"; do
-        if [ -n "$base" ] && [ -x "$base/envs/cellmatchr/bin/python" ]; then
-            echo "$base/envs/cellmatchr/bin/python"
-            return 0
-        fi
-    done
-    return 1
-}
-
-# Contents/MacOS/CellMatchR  →  three levels up is the project root.
-APP_BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$APP_BIN_DIR/../../.." && pwd)"
-RUN_SCRIPT="$PROJECT_DIR/scripts/run_cellmatchr.py"
-
-# If the app was moved out of the project, the script next to it is gone.
-if [ ! -f "$RUN_SCRIPT" ]; then
-    /usr/bin/osascript -e 'display alert "CellMatchR" message "Could not find scripts/run_cellmatchr.py.\n\nKeep CellMatchR.app inside the CellMatchR project folder. To launch it from the Dock or Applications, use an ALIAS of the app rather than moving it."' >/dev/null 2>&1
-    exit 1
-fi
-cd "$PROJECT_DIR"
-
-# ── Find the cellmatchr env Python ───────────────────────────────────────────
-PYTHON_BIN="$(find_cellmatchr_python)"
-
-if [ -z "$PYTHON_BIN" ]; then
-    /usr/bin/osascript -e 'display alert "CellMatchR" message "Could not find the '\''cellmatchr'\'' conda environment.\n\nMake sure it exists (conda env list should show '\''cellmatchr'\''), or create it with:\n    conda env create -f environment.yml"' >/dev/null 2>&1
-    exit 1
-fi
-
-# Derive the conda base from the env python:  <base>/envs/cellmatchr/bin/python
-ENV_DIR="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"     # <base>/envs/cellmatchr
-CONDA_BASE="$(cd "$ENV_DIR/../.." && pwd)"               # <base>
-
-# Log next to the project so it's easy to find (overwritten each launch).
-LOG="$PROJECT_DIR/CellMatchR_last_run.log"
-
-# Launch the GUI.  IMPORTANT: when started from Finder the process has a minimal
-# environment, and running the env's python bare can fail to locate Tcl/Tk (so
-# the window silently never appears).  Activating the env replicates the Terminal
-# environment exactly, which is why the .command works.  Fall back to bare python
-# if conda.sh isn't present.  All output goes to a log, and any non-zero exit
-# raises a visible alert instead of vanishing.
-{
-    echo "===== CellMatchR launch: $(date) ====="
-    echo "PYTHON_BIN=$PYTHON_BIN"
-    echo "CONDA_BASE=$CONDA_BASE"
-    if [ -f "$CONDA_BASE/etc/profile.d/conda.sh" ]; then
-        # shellcheck disable=SC1090
-        source "$CONDA_BASE/etc/profile.d/conda.sh"
-        conda activate cellmatchr && echo "activated env: cellmatchr"
-        python "$RUN_SCRIPT"
-    else
-        echo "conda.sh not found under $CONDA_BASE — running env python directly"
-        "$PYTHON_BIN" "$RUN_SCRIPT"
-    fi
-} >"$LOG" 2>&1
-STATUS=$?
-
-if [ "$STATUS" -ne 0 ]; then
-    LAST="$(tail -n 25 "$LOG" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | sed 's/["\\]/ /g')"
-    /usr/bin/osascript -e "display alert \"CellMatchR failed to start\" message \"Exit code $STATUS. ${LAST}   (full log: $LOG)\"" >/dev/null 2>&1
-    exit "$STATUS"
-fi
+# Hand off to Terminal, which IS allowed to read the Desktop. Terminal runs the
+# .command (and the Python GUI it starts) with its own file-access permission.
+osascript >/dev/null 2>&1 <<OSA
+tell application "Terminal"
+    activate
+    do script "'$CMD'"
+end tell
+OSA

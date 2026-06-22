@@ -4,12 +4,12 @@ channels:
   - defaults
 dependencies:
   # ── Core Python ────────────────────────────────────────────────────────────
-  # Pin to 3.11 — matches the verified working CellTinder environment.
+  # Pin to 3.11 — matches the verified working CellMatchR environment.
   # Python 3.12 pulls newer numpy (2.x) which breaks many dependencies.
   - python=3.11
 
   # ── Deep learning ──────────────────────────────────────────────────────────
-  # Exact versions from the working CellTinder env (GPU: replace with the
+  # Exact versions from the working CellMatchR env (GPU: replace with the
   # matching CUDA wheel from https://pytorch.org/get-started/locally/)
   - pytorch=2.10.0
   - torchvision=0.25.0
@@ -17,43 +17,43 @@ dependencies:
   # ── Microscopy segmentation ────────────────────────────────────────────────
   # micro_sam 1.7.0 has built-in compatibility for both old ('block') and
   # new ('conv') decoder checkpoint key formats, so all published bioimage.io
-  # checkpoints load cleanly.  Exact version confirmed working in CellTinder.
+  # checkpoints load cleanly.  Exact version confirmed working in CellMatchR.
   - micro_sam=1.7.0
-  - torch_em=0.8.1              # exact match to CellTinder working env
+  - torch_em=0.8.1              # exact match to CellMatchR working env
   - bioimageio.core=0.9.5       # micro_sam model loading; 0.10.x has breaking API changes
-  - bioimageio.spec=0.5.6.0     # exact CellTinder version
+  - bioimageio.spec=0.5.6.0     # exact CellMatchR version
   - python-elf=0.7.3            # torch_em segmentation backend; 0.8.x has major backend change
-  - huggingface_hub=1.3.7       # model download; CellTinder version (1.16.x is a huge jump)
-  - onnxruntime=1.22.2          # micro_sam inference; exact CellTinder version
-  - timm=1.0.24                 # micro_sam model architecture; exact CellTinder version
-  - numba=0.63.1                # used by elf/torch_em; exact CellTinder version
-  - dask=2026.1.2               # imaging stack; exact CellTinder version
+  - huggingface_hub=1.3.7       # model download; CellMatchR version (1.16.x is a huge jump)
+  - onnxruntime=1.22.2          # micro_sam inference; exact CellMatchR version
+  - timm=1.0.24                 # micro_sam model architecture; exact CellMatchR version
+  - numba=0.63.1                # used by elf/torch_em; exact CellMatchR version
+  - dask=2026.1.2               # imaging stack; exact CellMatchR version
   - superqt=0.7.7               # napari widget toolkit; 0.8.0 has breaking changes
 
   # ── Image I/O ──────────────────────────────────────────────────────────────
-  - tifffile=2026.1.28          # exact CellTinder version; newer removes stripnull used by czifile
-  - aicsimageio=4.10.0          # exact match to CellTinder working env
+  - tifffile=2026.1.28          # exact CellMatchR version; newer removes stripnull used by czifile
+  - aicsimageio=4.10.0          # exact match to CellMatchR working env
   - aicspylibczi=3.3.1          # Zeiss CZI support
-  - czifile=2019.7.2.1          # exact CellTinder version; newer breaks with imagecodecs
+  - czifile=2019.7.2.1          # exact CellMatchR version; newer breaks with imagecodecs
   - imagecodecs=2026.1.14       # newer versions break czifile (jxr_decode removed)
-  - pillow=12.1.0               # exact CellTinder version
+  - pillow=12.1.0               # exact CellMatchR version
 
   # ── Numerical / scientific ─────────────────────────────────────────────────
   # CRITICAL: numpy MUST stay below 2.0.  numpy 2.x is not backward-compatible
   # and breaks micro_sam, torch_em, and several imaging packages.
-  # Pin to 1.26.4 — exact version from CellTinder working env.
+  # Pin to 1.26.4 — exact version from CellMatchR working env.
   - numpy=1.26.4
-  - scipy=1.17.0                # exact CellTinder version
+  - scipy=1.17.0                # exact CellMatchR version
   - scikit-image>=0.20
-  - scikit-learn=1.8.0          # exact CellTinder version
+  - scikit-learn=1.8.0          # exact CellMatchR version
   - pandas>=2.0
 
   # ── Visualisation ──────────────────────────────────────────────────────────
   - matplotlib>=3.7
-  - napari=0.6.6                # exact match to CellTinder working env
+  - napari=0.6.6                # exact match to CellMatchR working env
   - pyqt>=5.15                  # Qt backend for napari / validator
-  - qtpy=2.4.3                  # exact CellTinder version
-  - opencv=4.12.0               # cv2 used by segmentation.py; exact CellTinder version
+  - qtpy=2.4.3                  # exact CellMatchR version
+  - opencv=4.12.0               # cv2 used by segmentation.py; exact CellMatchR version
 
   # ── Pipeline utilities ─────────────────────────────────────────────────────
   - tqdm>=4.60
@@ -62,7 +62,7 @@ dependencies:
   # ── pip-only packages ──────────────────────────────────────────────────────
   - pip
   - pip:
-      - roifile==2026.1.29     # exact CellTinder version; read Fiji/ImageJ .roi files
+      - roifile==2026.1.29     # exact CellMatchR version; read Fiji/ImageJ .roi files
       - slideio                # VSI (Olympus) file reader for the VSI Converter
       - readlif==0.6.5         # Leica LIF reader — 0.6.5 depends ONLY on Pillow (0.6.6 pins numpy>=2 and would break the numpy 1.26 stack)
       - nd2==0.11.3            # Nikon ND2 reader (pure-python; all deps already in this env, numpy unpinned)

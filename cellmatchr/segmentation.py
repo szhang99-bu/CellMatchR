@@ -1174,36 +1174,84 @@ def _sanitize_scene_name(name: str) -> str:
     return name
 
 
+def _classify_lif_image_for_direct_read(img) -> str:
+    """Classify one readlif LifImage as "confocal" or "slide_scanner".
+
+    Duplicated (intentionally, not imported) from cellmatchr/lif_classify.py
+    so this file — the one place CZI/LIF/TIF segmentation actually runs —
+    keeps zero cellmatchr.* imports and can never break because of an
+    unrelated module. Keep the two copies in sync if the logic changes.
+
+    Leica writes both confocal and slide-scanner data as .lif, so the file
+    extension alone can't distinguish them. Two signals, both confirmed
+    against real files:
+      - dims.m > 1     -> a raw, un-stitched tile-scan mosaic tile (slide
+                          scans are acquired as tiles; confocal never is).
+      - settings == {} -> a synthesized/stitched image (e.g. the "... Merged"
+                          image LAS X writes after a tile scan). LAS X only
+                          records the full scanner-hardware settings dict
+                          (ScanMode, Zoom, ObjectiveName, Pinhole, StagePosX/Y,
+                          ...) for a direct acquisition, never a derived one —
+                          so this also catches the slide scanner's merged
+                          image, which has dims.m == 1 just like a confocal
+                          scene.
+    Anything that fails both checks, or whose metadata can't be read,
+    defaults to "confocal" so unusual-but-valid confocal files are never
+    newly excluded by a metadata read hiccup.
+    """
+    try:
+        if int(img.dims.m) > 1:
+            return "slide_scanner"
+    except Exception:
+        pass
+    try:
+        settings = img.settings
+        if isinstance(settings, dict) and len(settings) == 0:
+            return "slide_scanner"
+    except Exception:
+        pass
+    return "confocal"
+
+
 def lif_scenes_to_process(path):
-    """Decide which image(s) inside a .lif should each become a sample.
+    """Decide which image(s) inside a .lif should each become a confocal
+    sample for DIRECT-READ segmentation.
 
-    Leica writes BOTH confocal and slide-scanner data as .lif:
-      • Confocal  → several standalone images (one per acquisition), m == 1.
-      • Slide scanner → un-stitched mosaic images (m > 1) plus a single
-        stitched/merged image (m == 1).
+    Leica writes BOTH confocal and slide-scanner data as .lif. Slide-scanner
+    images (raw mosaic tiles, and the single stitched "Merged" image) are
+    classified out here and skipped — they belong in the Slide Scanner
+    Converter pipeline (Step 2 -> Slide scanner), which crops full-resolution
+    ROIs before segmentation instead of running MicroSAM on a whole slide.
 
-    Rule: take every NON-mosaic (m == 1) image as its own sample — this keeps
-    all confocal acquisitions and the slide scanner's merged image, while
-    ignoring the redundant raw mosaic tiles.  If a file has only mosaic images
-    (no stitched version), fall back to all images and warn, since proper
-    mosaic stitching is not supported.
-
-    Returns a list of (scene_index, scene_name).
+    Returns a list of (scene_index, scene_name) for confocal scenes only —
+    an empty list means this file has no confocal data at all.
     """
     from readlif.reader import LifFile
     lif = LifFile(path)
     imgs = list(lif.get_iter_image())
-    singles = [(i, im) for i, im in enumerate(imgs) if int(im.dims.m) <= 1]
-    chosen = singles
-    if not chosen:
-        print("  [WARNING] LIF has only un-stitched mosaic images (no merged image). "
-              "Mosaic stitching is not supported — please export a merged/stitched "
-              "image in LAS X. Processing each mosaic's first tile only.")
-        chosen = list(enumerate(imgs))
-    if len(chosen) > 1:
-        print(f"  LIF contains {len(chosen)} images to process as separate samples: "
-              f"{[im.name for _, im in chosen]}")
-    return [(i, im.name) for i, im in chosen]
+
+    confocal = [(i, im) for i, im in enumerate(imgs)
+                if _classify_lif_image_for_direct_read(im) == "confocal"]
+    slide_scanner_names = [im.name for im in imgs
+                            if _classify_lif_image_for_direct_read(im) == "slide_scanner"]
+
+    if not confocal:
+        print(f"  [SKIP] '{os.path.basename(path)}' looks like slide-scanner data "
+              f"(no confocal scan-settings found in any of its {len(imgs)} image(s)). "
+              "Process it with the Slide Scanner Converter (Step 2 -> Slide scanner) "
+              "instead of Confocal direct read.")
+        return []
+
+    if slide_scanner_names:
+        print(f"  [INFO] '{os.path.basename(path)}' also contains "
+              f"{len(slide_scanner_names)} slide-scanner image(s) {slide_scanner_names} "
+              "— skipped here; use the Slide Scanner Converter for those.")
+
+    if len(confocal) > 1:
+        print(f"  LIF contains {len(confocal)} confocal image(s) to process as "
+              f"separate samples: {[im.name for _, im in confocal]}")
+
+    return [(i, im.name) for i, im in confocal]
 
 
 def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None):
@@ -1573,9 +1621,15 @@ def main():
             except Exception as exc:
                 print(f"[WARNING] Could not enumerate scenes in {fb}: {exc}")
                 scenes = [(None, None)]
-            if len(scenes) <= 1:
-                _idx = scenes[0][0] if scenes else None
-                work_items.append((fp, _idx, fb))
+            if not scenes:
+                # lif_scenes_to_process() already printed why (e.g. this file
+                # is slide-scanner data with no confocal scenes) — do NOT fall
+                # back to "guess the main image", that would silently pick the
+                # slide scanner's whole-slide merged image and segment it
+                # directly instead of skipping it.
+                continue
+            if len(scenes) == 1:
+                work_items.append((fp, scenes[0][0], fb))
             else:
                 for sidx, sname in scenes:
                     safe = _sanitize_scene_name(sname)

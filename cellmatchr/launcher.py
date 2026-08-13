@@ -688,6 +688,80 @@ class CellMatchrLauncher:
             bg=CARD, fg=MUTED, relief="flat", font=FONT, padx=6,
         ).pack(side="left", padx=4)
 
+    def _format_status_row(self, parent, ext: str, brand: str, status: str,
+                            note: str | None = None) -> None:
+        """One row in the Step 2 'Supported File Types' list, e.g.
+        '✔  .czi   Zeiss   tested'. status is 'tested' or 'beta'."""
+        icon, color = {"tested": ("✔", GREEN), "beta": ("🧪", YELLOW)}.get(status, ("?", MUTED))
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(anchor="w", fill="x", pady=1)
+        tk.Label(row, text=icon, bg=CARD, fg=color, font=FONT_BOLD, width=2).pack(side="left")
+        tk.Label(row, text=ext, bg=CARD, fg=FG, font=FONT_MONO, width=13, anchor="w").pack(side="left")
+        tk.Label(row, text=brand, bg=CARD, fg=FG, font=FONT, anchor="w", width=20).pack(side="left")
+        tk.Label(row, text=("tested" if status == "tested" else "beta — not yet validated on real files"),
+                 bg=CARD, fg=color, font=FONT, anchor="w").pack(side="left")
+        if note:
+            tk.Label(parent, text=f"      {note}", bg=CARD, fg=MUTED, font=(FONT[0], 8),
+                     justify="left", wraplength=650).pack(anchor="w", pady=(0, 4))
+
+    def _refresh_input_file_preview(self) -> None:
+        """List files found in the confocal input folder, flagging any .lif
+        that will be skipped because it's actually slide-scanner data (Leica
+        writes both to the same extension — see cellmatchr/lif_classify.py)."""
+        frame = getattr(self, "_input_preview_frame", None)
+        if frame is None:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+            for w in frame.winfo_children():
+                w.destroy()
+
+            folder = self._vars["input_root_folder"].get().strip()
+            if not folder or not os.path.isdir(folder):
+                return
+
+            files = sorted(
+                f for f in os.listdir(folder)
+                if f.lower().endswith(self._INPUT_EXTS)
+                and os.path.isfile(os.path.join(folder, f))
+            )
+            if not files:
+                return
+
+            ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(2, 8))
+            tk.Label(frame, text=f"Files found in this folder ({len(files)}):",
+                     bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 4))
+
+            from .lif_classify import classify_lif_file
+
+            max_shown = 40
+            for name in files[:max_shown]:
+                full = os.path.join(folder, name)
+                if name.lower().endswith(".lif"):
+                    try:
+                        ftype = classify_lif_file(full).get("file_type", "unknown")
+                    except Exception:
+                        ftype = "unknown"
+                    if ftype == "slide_scanner":
+                        text, color = f"⊘  {name}   —  slide-scanner LIF, will be skipped here (use Slide scanner mode)", MUTED
+                    elif ftype == "mixed":
+                        text, color = f"⚠  {name}   —  has both confocal and slide-scanner images; only the confocal ones are used here", YELLOW
+                    elif ftype == "confocal":
+                        text, color = f"✔  {name}   —  confocal LIF", FG
+                    else:
+                        text, color = f"?  {name}   —  could not read LIF metadata", MUTED
+                else:
+                    text, color = f"✔  {name}", FG
+                tk.Label(frame, text=text, bg=CARD, fg=color, font=FONT_MONO,
+                         anchor="w", justify="left", wraplength=680).pack(anchor="w")
+
+            if len(files) > max_shown:
+                tk.Label(frame, text=f"…and {len(files) - max_shown} more",
+                         bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(2, 0))
+        except (tk.TclError, AttributeError):
+            pass
+
     def _project_has_outputs(self) -> bool:
         """True if the current project folder already contains segmentation,
         validation, or analysis output folders (i.e. work that would be
@@ -1071,33 +1145,47 @@ class CellMatchrLauncher:
 
         # ── Input type radio ─────────────────────────────────────────
         type_card = self._card(parent, "Input Data Format")
+        tk.Label(
+            type_card, text="How was this data acquired?",
+            bg=CARD, fg=FG, font=FONT_BOLD,
+        ).pack(anchor="w", pady=(0, 6))
         for val, lbl in [
-            ("czi", "CZI / LIF / TIF  +  ND2 / OIB-OIF (beta)   (Zeiss / Leica / Nikon / Olympus — or import TIF directly)"),
-            ("vsi", "Slide scanner image processing  (Olympus VSI · Leica LIF — draw ROIs & export full-res TIFFs)"),
+            ("czi", "1.  Confocal   —  read files directly, one sample per acquisition"),
+            ("vsi", "2.  Slide scanner   —  draw ROIs on a large scan, export full-res TIFFs"),
         ]:
             tk.Radiobutton(
                 type_card, text=lbl,
                 variable=self._vars["input_type"], value=val,
                 bg=CARD, fg=FG, selectcolor=CARD,
-                activebackground=CARD, font=FONT,
+                activebackground=CARD, font=FONT_BOLD,
             ).pack(anchor="w", pady=2)
 
+        # ── Supported file types, shown per mode ─────────────────────
+        fmt_card = self._card(parent, "Supported File Types")
+
+        self._fmt_confocal_frame = tk.Frame(fmt_card, bg=CARD)
+        for ext, brand, status, note in [
+            (".czi",      "Zeiss",             "tested", None),
+            (".lif",      "Leica (confocal)",  "tested",
+             "a slide-scanner .lif placed in this folder is detected automatically and skipped — see the file list below"),
+            (".tif / .tiff", "any",            "tested", None),
+            (".nd2",      "Nikon",             "beta",   None),
+            (".oib / .oif", "Olympus FluoView", "beta",  None),
+        ]:
+            self._format_status_row(self._fmt_confocal_frame, ext, brand, status, note)
         tk.Label(
-            type_card,
-            text="Tested:  Zeiss .czi · Leica .lif (confocal & slide scanner) · .tif / .tiff",
-            bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=700,
-        ).pack(anchor="w", pady=(8, 0))
-        tk.Label(
-            type_card,
-            text="⚠  Beta (not yet validated on real files — use with caution):  "
-                 "Nikon .nd2 · Olympus FluoView .oib / .oif",
-            bg=CARD, fg=YELLOW, font=FONT, justify="left", wraplength=700,
-        ).pack(anchor="w", pady=(2, 0))
-        tk.Label(
-            type_card,
+            self._fmt_confocal_frame,
             text="Not supported:  Olympus .oir (newer FV3000) — convert it to TIF in Fiji / ImageJ first.",
             bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=700,
-        ).pack(anchor="w", pady=(2, 0))
+        ).pack(anchor="w", pady=(6, 0))
+
+        self._fmt_slide_frame = tk.Frame(fmt_card, bg=CARD)
+        for ext, brand, status, note in [
+            (".vsi", "Olympus slide scanner", "tested", None),
+            (".lif", "Leica (slide scanner)", "tested",
+             "a confocal .lif placed in this folder is detected automatically and skipped"),
+        ]:
+            self._format_status_row(self._fmt_slide_frame, ext, brand, status, note)
 
         # ── VSI section (shown when input_type == "vsi") ─────────────
         self._vsi_section = tk.Frame(parent, bg=BG)
@@ -1190,9 +1278,17 @@ class CellMatchrLauncher:
         self._czi_confirm_lbl = tk.Label(confirm_row, text="", bg=CARD, fg=GREEN, font=FONT)
         self._czi_confirm_lbl.pack(side="left", padx=8)
 
+        # Live preview: lists files in the folder, flags any .lif that will
+        # be skipped because it's actually slide-scanner data (or the
+        # reverse, in the Slide scanner mode's own picker).
+        self._input_preview_frame = tk.Frame(czi_card, bg=CARD)
+        self._input_preview_frame.pack(fill="x", pady=(4, 0))
+
         # ── Wire radio toggle ─────────────────────────────────────────
         self._vars["input_type"].trace_add("write", lambda *_: self._on_input_type_changed())
+        self._vars["input_root_folder"].trace_add("write", lambda *_: self._refresh_input_file_preview())
         self._on_input_type_changed()
+        self._refresh_input_file_preview()
 
     def _vsi_auto_text(self) -> str:
         folder = self.config.get("input_root_folder", "").strip()
@@ -1207,9 +1303,14 @@ class CellMatchrLauncher:
             if t == "vsi":
                 self._czi_section.pack_forget()
                 self._vsi_section.pack(fill="x")
+                self._fmt_confocal_frame.pack_forget()
+                self._fmt_slide_frame.pack(fill="x")
             else:
                 self._vsi_section.pack_forget()
                 self._czi_section.pack(fill="x")
+                self._fmt_slide_frame.pack_forget()
+                self._fmt_confocal_frame.pack(fill="x")
+                self._refresh_input_file_preview()
         except (tk.TclError, AttributeError):
             pass
 
@@ -1222,6 +1323,7 @@ class CellMatchrLauncher:
         save_config(self.config)
         save_project_config(self.config)
         self._czi_confirm_lbl.config(text=f"✔  Set: {os.path.basename(folder)}", fg=GREEN)
+        self._refresh_input_file_preview()
 
     # ==================================================================
     # STEP 3 — Segmentation

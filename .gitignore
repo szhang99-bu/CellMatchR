@@ -40,7 +40,7 @@ DEBUG_*/
 # Editor temporaries
 *~
 
-# Claude Code session data (local only)
+# Local dev-tool session data (not part of the project)
 .claude/
 
 # CellMatchR validator last-used folder (local path, do not commit)

@@ -1728,6 +1728,33 @@ def main():
 
         debug(f"Chosen VSI: {vsi_path}")
 
+        # Leica writes both confocal and slide-scanner data as .lif. Warn
+        # (non-blocking) if this particular file looks like pure confocal
+        # data -- it belongs in Confocal direct-read (Step 2), not here.
+        # Advisory only: any classification failure is swallowed and the
+        # file opens exactly as before. VSI files are never affected.
+        if vsi_path.lower().endswith(".lif"):
+            try:
+                from cellmatchr.lif_classify import classify_lif_file
+                if classify_lif_file(vsi_path).get("file_type") == "confocal":
+                    box = QMessageBox()
+                    box.setIcon(QMessageBox.Warning)
+                    box.setWindowTitle("This looks like confocal data")
+                    box.setText(
+                        f"'{os.path.basename(vsi_path)}' has no slide-scan / tile-scan "
+                        "images — it looks like confocal data, not a slide scan.\n\n"
+                        "Continue opening it here anyway, or cancel and use "
+                        "Confocal mode (Step 2) instead?"
+                    )
+                    box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
+                    box.setDefaultButton(QMessageBox.Cancel)
+                    if box.exec_() != QMessageBox.Yes:
+                        debug("User cancelled after confocal-file warning. Returning to picker.")
+                        QTimer.singleShot(0, pick_next)
+                        return
+            except Exception:
+                debug("LIF classification check failed (non-fatal) — opening file as usual.")
+
         try:
             app = VSINapariROIApp(vsi_path=vsi_path, output_dir=output_dir)
             app.run_one_file()

@@ -1737,6 +1737,14 @@ def main():
         # file opens exactly as before. VSI files are never affected.
         if vsi_path.lower().endswith(".lif"):
             try:
+                # This script runs as a standalone subprocess (its own
+                # sys.path[0] is cellmatchr/, not the project root), so
+                # the cellmatchr package isn't importable unless we add
+                # the project root ourselves first -- same fix
+                # scripts/run_cellmatchr.py uses for the same reason.
+                _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if _root not in sys.path:
+                    sys.path.insert(0, _root)
                 from cellmatchr.lif_classify import classify_lif_file
                 if classify_lif_file(vsi_path).get("file_type") == "confocal":
                     box = QMessageBox()

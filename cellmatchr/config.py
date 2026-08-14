@@ -16,6 +16,7 @@ DEFAULT_CONFIG: dict = {
     # --- Input ---
     "input_type": "czi",           # "czi" (CZI/LIF/ND2/OIB-OIF/TIF direct) | "vsi"
     "input_root_folder": "",       # where raw CZI/LIF/ND2/OIB-OIF/TIF files live
+    "vsi_output_dir": "",          # Slide Scanner Converter output folder (vsi_converter.py)
 
     # --- Segmentation ---
     "seg_channels": "",
@@ -38,12 +39,16 @@ DEFAULT_CONFIG: dict = {
     "seg_dry_run": False,
     "seg_resume": False,                # skip files already segmented (resume after a crash)
     "seg_skip_subdirs": False,
+    "seg_per_channel_filters_enabled": False,
+    "seg_per_channel_filters": "{}",    # JSON: {channel_int: {"min_size","max_size","max_ratio","min_intensity"}}
+    "seg_input_subfolder": "",          # launcher-internal: which converter output Steps 3/4/5 currently point at
 
     # --- Validation ---
     "val_enabled": False,
     "val_mask_pattern": "*_predict_original_ch2*.tif",
     "val_channel_names": "",   # comma-separated channel display names, e.g. "DAPI,GAD67,AAV Cre,NeuN"
     "val_channel_colors": "",  # comma-separated colors: Blue,Green,Red,Purple,Cyan,Yellow
+    "val_main_folder": "",     # segmentation output folder the validator window was pointed at
 
     # --- Analysis ---
     "ana_enabled": True,
@@ -55,6 +60,12 @@ DEFAULT_CONFIG: dict = {
     "ana_roi_mask_folder": "",
     "ana_subfolder_name": "analysis_results",
     "ana_save_qc": True,
+    "ana_microsam_output_root": "",   # segmentation output folder analysis.py reads from
+    "apply_partial_validation": False,  # filter ARTIFACT ROIs even for channels not fully reviewed
+
+    # --- Shared runtime path (written by the launcher just before each
+    #     Segmentation/Validation/Analysis subprocess run) ---
+    "output_root_folder": "",
 }
 
 

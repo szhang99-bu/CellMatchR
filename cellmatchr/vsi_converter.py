@@ -25,7 +25,9 @@ from qtpy.QtGui import QImage, QPixmap
 # ----------------------------
 # USER SETTINGS
 # ----------------------------
-OUTPUT_DIR_DEFAULT = "/Volumes/tusm_bygravelab01$/Confocal data archive/Matt/Temp for delete"
+OUTPUT_DIR_DEFAULT = os.path.expanduser("~/CellMatchR_VSI_Output")  # used only if the
+# launcher's config is missing (e.g. running this script standalone); the
+# launcher itself always supplies vsi_output_dir before spawning this app.
 
 OVERVIEW_WIDTH = 2500          # overview width (navigation only)
 START_SCENE_ID = 0             # start slice (0-index internally)

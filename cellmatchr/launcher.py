@@ -1395,6 +1395,11 @@ class CellMatchrLauncher:
                 nm = self._seg_src_var.get()
                 p = _path_by_name.get(nm, "")
                 self.config["input_root_folder"] = p
+                # Also update the bound StringVar -- input_root_folder is one
+                # of self._vars, and _sync_vars_to_config() (called on every
+                # step change and before every "Run") would otherwise
+                # silently overwrite self.config with this var's stale value.
+                self._vars["input_root_folder"].set(p)
                 self._seg_src_cur_lbl.config(text=f"Using:  {nm}")
                 has = self._folder_image_count(p) > 0
                 self._seg_input_display.config(text=p if p else "—", fg=FG if has else MUTED)

@@ -1606,6 +1606,30 @@ class CellMatchrLauncher:
                  "open an example image and measure a typical cell to choose appropriate bounds.",
             bg=CARD, fg=MUTED, font=FONT, justify="left",
         ).pack(anchor="w", pady=(0, 8))
+
+        wizard_row = tk.Frame(filt_card, bg=CARD)
+        wizard_row.pack(anchor="w", fill="x", pady=(0, 10))
+        tk.Label(
+            wizard_row,
+            text="Not sure what numbers to use? Segments the first sample unfiltered, "
+                 "then lets you pick example objects by eye instead:",
+            bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=650,
+        ).pack(anchor="w")
+        _wiz_btn_row = tk.Frame(wizard_row, bg=CARD)
+        _wiz_btn_row.pack(anchor="w", pady=(4, 0))
+        self._wizard_btn = tk.Button(
+            _wiz_btn_row, text="🧙  Parameter Wizard",
+            command=self._launch_parameter_wizard,
+            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+            padx=12, pady=6,
+            state="normal" if input_ok else "disabled",
+        )
+        self._wizard_btn.pack(side="left")
+        self._wizard_status = tk.Label(_wiz_btn_row, text="", bg=CARD, fg=FG, font=FONT)
+        self._wizard_status.pack(side="left", padx=10)
+        self._wizard_progress = ttk.Progressbar(wizard_row, mode="indeterminate", length=400)
+        self._wizard_progress.pack(anchor="w", pady=(6, 0))
+
         filt_grid = tk.Frame(filt_card, bg=CARD)
         filt_grid.pack(fill="x")
         filt_grid.grid_columnconfigure(0, minsize=240)
@@ -2541,6 +2565,118 @@ class CellMatchrLauncher:
                     except tk.TclError:
                         pass
                 self.root.after(0, _err)
+
+        threading.Thread(target=_thread, daemon=True).start()
+
+    def _launch_parameter_wizard(self) -> None:
+        """Launch the Parameter Wizard: runs unfiltered segmentation on the
+        first sample only (parameter_wizard_compute.py, headless), then
+        opens a napari window per channel (parameter_wizard.py) so the user
+        can pick example objects by eye instead of guessing filter numbers.
+
+        These are two SEPARATE subprocesses run back-to-back, not one --
+        combining the segmentation stack (torch/cv2/micro_sam) with a live
+        napari window in a single process crashes the interpreter on macOS
+        here, so the heavy computation and the GUI never share a process.
+        """
+        if self._is_running("Parameter Wizard"):
+            self._wizard_status.config(text="Parameter Wizard is already running…", fg=ACCENT)
+            return
+        self._sync_vars_to_config()
+        folder = self.config.get("input_root_folder", "").strip()
+        channels = self.config.get("seg_channels", "").strip()
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj:
+            self._wizard_status.config(text="⚠  No project folder set. Go to Step 1.", fg=RED)
+            return
+        if not folder:
+            self._wizard_status.config(text="⚠  No input folder set. Go to Step 2.", fg=RED)
+            return
+        if not channels:
+            self._wizard_status.config(text="⚠  Channels to predict is required (red ✱).", fg=RED)
+            return
+
+        save_config(self.config)
+        save_project_config(self.config)
+
+        out_dir = os.path.join(proj, "ParameterWizard_preview")
+        manifest_path = os.path.join(out_dir, "parameter_wizard_manifest.json")
+
+        self._wizard_btn.config(state="disabled", text="Running…")
+        self._wizard_status.config(
+            text="Initial prediction in progress — this can take a while "
+                 "(first use of a model also downloads it, one time only)…",
+            fg=ACCENT)
+        self._wizard_progress.start(12)
+
+        def _log_line(line: str) -> None:
+            try:
+                if hasattr(self, "_seg_log") and self._seg_log.winfo_exists():
+                    self._seg_log.config(state="normal")
+                    self._seg_log.insert("end", line + "\n")
+                    self._seg_log.see("end")
+                    self._seg_log.config(state="disabled")
+                if line.strip() and hasattr(self, "_wizard_status") and self._wizard_status.winfo_exists():
+                    self._wizard_status.config(text=line.strip()[:120], fg=FG)
+            except tk.TclError:
+                pass
+
+        def _restore(final_text: str, color: str) -> None:
+            try:
+                self._wizard_progress.stop()
+                self._wizard_btn.config(state="normal", text="🧙  Parameter Wizard")
+                self._wizard_status.config(text=final_text, fg=color)
+            except tk.TclError:
+                pass
+
+        def _run_and_stream(cmd: list) -> int:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            self._track_proc(proc, "Parameter Wizard")
+            for line in proc.stdout:
+                self.root.after(0, _log_line, line.rstrip())
+            proc.wait()
+            return proc.returncode
+
+        def _thread():
+            try:
+                self.root.after(0, _log_line, f"\n{'─'*60}")
+                self.root.after(0, _log_line, "▶  Parameter Wizard — Stage 1: unfiltered segmentation")
+                self.root.after(0, _log_line, f"{'─'*60}")
+                rc = _run_and_stream([
+                    sys.executable, self._script("parameter_wizard_compute.py"),
+                    "--config", CONFIG_PATH, "--out-dir", out_dir,
+                ])
+                if rc != 0:
+                    self.root.after(0, _log_line, f"\n✗  Stage 1 failed (exit {rc}).")
+                    self.root.after(0, _restore, f"✗  Segmentation failed (exit {rc}).", RED)
+                    return
+
+                self.root.after(0, _log_line, f"\n{'─'*60}")
+                self.root.after(0, _log_line, "▶  Parameter Wizard — Stage 2: pick objects (napari)")
+                self.root.after(0, _log_line, f"{'─'*60}")
+                self.root.after(0, lambda: self._wizard_status.config(
+                    text="Opening napari — pick your objects there…", fg=ACCENT))
+                rc = _run_and_stream([
+                    sys.executable, self._script("parameter_wizard.py"),
+                    "--config", CONFIG_PATH, "--manifest", manifest_path,
+                ])
+
+                def _done():
+                    if rc == 0:
+                        self.config = load_config()
+                        self._per_ch_filt_enabled.set(True)
+                        self._toggle_per_ch_filters()
+                        _restore("✔  Filter values updated below.", GREEN)
+                        _log_line("\n✔  Parameter Wizard finished — filter values updated.")
+                    else:
+                        _restore(f"✗  Failed (exit {rc}).", RED)
+                        _log_line(f"\n✗  Parameter Wizard failed (exit code {rc}).")
+                self.root.after(0, _done)
+            except Exception as exc:
+                self.root.after(0, _restore, f"✗  {exc}", RED)
 
         threading.Thread(target=_thread, daemon=True).start()
 

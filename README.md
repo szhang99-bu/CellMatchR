@@ -192,41 +192,67 @@ pip install "cellpose==4.1.1"     # Cellpose-SAM backend (deps already present; 
 > that would break the segmentation stack (this env must stay on `numpy 1.26.x`).
 > The pinned versions above are all numpy-1.26-compatible.
 
-**About the macOS app:** `CellMatchR.app` ships with the code, so a `git pull`
-updates it automatically. If you got the code as a **ZIP** (which can drop the
-executable bit), re-arm the launcher once after unzipping:
+**About the macOS apps:** `CellMatchR.app` (macOS 26 and earlier) and
+`CellMatchR (macOS 27+).app` ship with the code, so a `git pull` updates them
+automatically. If you got the code as a **ZIP** (which can drop the executable
+bit), re-arm the launchers once after unzipping:
 
 ```bash
-chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR"
+chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR" "CellMatchR (macOS 27+).app/Contents/MacOS/applet"
 ```
 
 ---
 
 ## Launching CellMatchR
 
+> ⚠️ **On macOS 27 (Golden Gate) or later, launch with `CellMatchR (macOS 27+).app`.**
+> It exists so CellMatchR can launch on macOS 27+; the original `CellMatchR.app`
+> no longer can (it fails with `Operation not permitted`). On macOS 26 (Tahoe)
+> or earlier, keep using `CellMatchR.app`.
+
 ### Option A — double-click the app (macOS, recommended)
 
-Double-click **`CellMatchR.app`** in Finder. It opens the CellMatchR window
-**with no Terminal window**, finds your conda installation, and runs the wizard.
+Pick the app that matches your macOS version. Both are in the project folder:
 
-**First launch (one time):** macOS Gatekeeper blocks unsigned apps, so the first
-time **right-click the app → Open → Open** to approve it. After that, a normal
-double-click works.
+| Your macOS | Double-click |
+|------------|--------------|
+| **macOS 27 (Golden Gate) or later** | **`CellMatchR (macOS 27+).app`** |
+| macOS 26 (Tahoe) or earlier | `CellMatchR.app` |
+
+Either app opens a Terminal window (which shows the live log), finds your conda
+installation, and runs the wizard.
+
+> **Why two apps?** macOS 27 stopped letting an app borrow Terminal's permission
+> to read the Desktop, which `CellMatchR.app` relies on. On macOS 27 it opens a
+> Terminal window that fails with `Operation not permitted`.
+> `CellMatchR (macOS 27+).app` is built differently to work with that change,
+> and it won't open on older macOS. Rebuild it with
+> `bash scripts/build_cellmatchr_app_macos27.sh`.
+
+**First launch (one time):**
+
+- macOS Gatekeeper blocks unsigned apps, so the first time **right-click the
+  app → Open → Open** to approve it. After that, a normal double-click works.
+- **macOS 27+ only:** macOS may ask to allow **"CellMatchR (macOS 27+)"** to
+  access files in your **Desktop** folder. Click **Allow**.
 
 **Important — keep the app in the project folder:**
 
-- `CellMatchR.app` must stay **inside the CellMatchR folder** (at the project
-  root); it locates the code relative to its own position.
+- The app must stay **inside the CellMatchR folder** (at the project root); it
+  locates the code relative to its own position.
 - To launch it from the **Dock or Applications**, do **not** move it — instead
   make an **alias** (right-click → **Make Alias**) and put the *alias* there, or
   drag the app to the Dock while holding **⌥⌘** (which creates a Dock alias).
   An alias remembers the original location, so the app still finds the code.
-- If the app is ever moved out of the folder, it shows an alert explaining this
-  instead of failing silently.
+- If `CellMatchR (macOS 27+).app` is moved out of the folder, it shows an alert
+  explaining this instead of failing silently.
 
-> Got the code as a ZIP? Run `chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR"`
-> once (see *Updating an existing install* above) — ZIP downloads can strip the
-> executable bit.
+> Got the code as a ZIP? ZIP downloads can strip the executable bit, so run
+> this once in the project folder (see *Updating an existing install* above):
+>
+> ```bash
+> chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR" "CellMatchR (macOS 27+).app/Contents/MacOS/applet"
+> ```
 
 ### Option B — double-click the `.command` (macOS, shows a Terminal/log window)
 
@@ -292,7 +318,8 @@ automatically on the next launch.
 
 ```
 CellMatchr/
-├── CellMatchR.app/                # macOS double-click launcher (no Terminal)
+├── CellMatchR.app/                # macOS launcher — macOS 26 (Tahoe) and earlier
+├── CellMatchR (macOS 27+).app/    # macOS launcher — macOS 27 (Golden Gate) and later
 ├── CellMatchr_Logo.png            # application logo
 ├── README.md
 ├── environment.yml                # conda environment (flexible versions)
@@ -300,7 +327,9 @@ CellMatchr/
 ├── requirements.txt
 ├── scripts/
 │   ├── run_cellmatchr.py          # CLI entry point  (python scripts/run_cellmatchr.py)
-│   └── launch_cellmatchr.command  # macOS launcher with a Terminal/log window
+│   ├── launch_cellmatchr.command  # macOS launcher with a Terminal/log window
+│   ├── build_cellmatchr_app.sh            # rebuilds CellMatchR.app (macOS ≤ 26)
+│   └── build_cellmatchr_app_macos27.sh    # rebuilds CellMatchR (macOS 27+).app
 └── cellmatchr/
     ├── __init__.py
     ├── config.py                  # config load/save (~/.cellmatchr/config.json)

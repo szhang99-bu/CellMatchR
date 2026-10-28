@@ -41,18 +41,23 @@ or [Cellpose-SAM](https://github.com/MouseLand/cellpose) (selectable per run).
 │                    the converter, export full-res TIFFs         │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 3  — Segmentation                                         │
-│    • Tiled MicroSAM prediction on chosen channels               │
-│    • Configurable model, preprocessing, size / shape filters    │
+│    • Tiled Micro-SAM or Cellpose-SAM on chosen channels         │
+│    • Tune object filters with the Parameter Wizard if needed    │
+│    • Configure preprocessing, filters, and resume behavior      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 4  — Validation  (optional)                               │
-│    • Name and colour each channel                               │
-│    • Manual YES / NO / MAYBE / ARTIFACT review per cell ROI     │
-│    • Results saved as TSV; ✔ shown only when all ROIs are done  │
+│    • Review masks and add missed cells in the ROI editor        │
+│    • Name/colour channels and review each detected cell         │
+│    • Per-channel TSV and completion marker for each sample      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 5  — Analysis  (optional)                                 │
 │    • IoU-based colocalization between two channels              │
-│    • Per-ROI cell counts + colocalization percentages           │
-│    • QC PNG overlays; combined summary saved to Analysis        │
+│    • Per-sample CSV tables and QC TIFF overlays                 │
+│    • Combined Excel summary saved to Analysis                   │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 6  — Run Pipeline                                         │
+│    • Run pending segmentation and analysis steps together       │
+│    • Validation remains an interactive step                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -134,10 +139,10 @@ ls environment.yml              # should list the file
 > prompted to accept the Anaconda Terms of Service the first time — accept it,
 > or run `conda config --add channels conda-forge`.
 
-Then build the environment from the provided `environment.yml`, which specifies
-all required packages with flexible version constraints (works on macOS arm64
-and Linux x86-64). This downloads a lot of packages, so it can take **10–20+
-minutes**:
+Then build the environment from `environment.yml`. It pins Python and the
+versions of several key packages used in the working environment, while some
+other packages have version ranges. This downloads a lot of packages, so it
+can take **10–20+ minutes**:
 
 ```bash
 conda env create -f environment.yml
@@ -291,26 +296,43 @@ automatically on the next launch.
 
 ## Project output structure
 
+The exact folder name may gain a suffix when you choose to keep an existing
+run instead of replacing it. Optional folders and files appear only after
+the corresponding step is run.
+
 ```
 <project_output_folder>/
-├── cellmatchr_project.json          # saved project settings
-├── VSI_Converted_TIFF/              # (VSI only) exported full-res TIFFs
-├── Segmentation/                    # MicroSAM prediction masks + QC images
+├── cellmatchr_project.json             # saved project settings
+├── VSI_Converted_TIFF/                 # converted slide-scanner ROIs, if used
+├── ParameterWizard_preview/            # first-sample preview, if used
+├── Segmentation/
+│   ├── _run_progress.json              # segmentation progress/resume state
 │   └── <sample_name>/
-│       ├── *_predict_original_*.tif
-│       ├── *_split_ch*.tif
-│       └── ROI Validation Results/
-│           ├── roi_verification_results.tsv
-│           └── _validation_complete   (written when all ROIs are reviewed)
-└── Analysis/                        # colocalization results
-    ├── combined_analysis_summary.csv
-    ├── combined_analysis_summary.xlsx
-    └── <sample_name>/
-        └── analysis_results/
-            ├── *_summary.csv
-            ├── *_cell_of_interest_object_table.csv
-            └── *_QC_overlay.tif
+│       ├── *_split_chN.tif              # raw channel images
+│       ├── *_predict_original_chN_*.tif # predicted masks
+│       ├── *_QC_overlay_chN_*.png       # segmentation QC
+│       ├── ROI Validation Results/
+│       │   ├── roi_verification_results_chN.tsv
+│       │   └── _validation_complete_chN # when that channel is fully reviewed
+│       └── analysis_results/           # analysis writes beside each sample
+│           ├── <sample_name>_summary.csv
+│           ├── <sample_name>_channel_N_object_table.csv
+│           └── <sample_name>_QC_overlay.tif
+└── Analysis/
+    ├── combined_analysis_summary.xlsx # combined analysis output
+    ├── analysis_run_summary.json       # analyzed/skipped/error counts
+    └── analysis_errors.log             # per-sample skip and error details
 ```
+
+Analysis applies validation-based artifact filtering automatically only when
+the chosen channel has been fully reviewed across all samples. Step 5 offers
+an option to apply partial validation when you explicitly want that behavior.
+
+If a sample is missing a required analysis channel, it is listed in the
+combined Excel sheet as `skipped_missing_channel` with blank measurement cells.
+Other per-sample errors are listed as `error`; analysis continues with the
+remaining samples. The final log line reports how many samples were analyzed,
+skipped, or had errors, and points to `analysis_errors.log`.
 
 ---
 
@@ -322,7 +344,7 @@ CellMatchr/
 ├── CellMatchR (macOS 27+).app/    # macOS launcher — macOS 27 (Golden Gate) and later
 ├── CellMatchr_Logo.png            # application logo
 ├── README.md
-├── environment.yml                # conda environment (flexible versions)
+├── environment.yml                # conda environment (key versions pinned)
 ├── pyproject.toml
 ├── requirements.txt
 ├── scripts/
@@ -334,8 +356,12 @@ CellMatchr/
     ├── __init__.py
     ├── config.py                  # config load/save (~/.cellmatchr/config.json)
     ├── launcher.py                # tkinter step-by-step wizard
-    ├── vsi_converter.py           # VSI → TIF converter (napari / Qt)
-    ├── segmentation.py            # MicroSAM tiled segmentation
+    ├── vsi_converter.py           # VSI/LIF slide-scanner ROI converter
+    ├── lif_classify.py            # Leica LIF acquisition classification
+    ├── segmentation.py            # Micro-SAM / Cellpose-SAM tiled segmentation
+    ├── parameter_wizard_compute.py # preview segmentation for filter tuning
+    ├── parameter_wizard.py        # interactive filter tuning
+    ├── roi_editor.py              # add missed cells to segmentation masks
     ├── validator.py               # manual ROI validation UI
     └── analysis.py                # IoU colocalization analysis
 ```

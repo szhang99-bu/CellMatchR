@@ -3,6 +3,7 @@ CellMatchr Launcher — step-by-step wizard UI.
 """
 
 import glob
+import json
 import os
 import sys
 import subprocess
@@ -3591,6 +3592,32 @@ class CellMatchrLauncher:
                 tk.Label(row_frame, text=f"[{tag_text}]  ", bg=CARD, fg=tag_col,
                          font=FONT, justify="left").pack(side="left")
 
+    @staticmethod
+    def _analysis_run_status(output_dir: str) -> tuple[str, str]:
+        """Show sample counts from this run while keeping older outputs readable."""
+        summary_path = os.path.join(output_dir, "analysis_run_summary.json")
+        try:
+            with open(summary_path) as f:
+                summary = json.load(f)
+            analyzed = int(summary["analyzed"])
+            skipped = int(summary["skipped_missing_channel"])
+            errors = int(summary["errors"])
+            output_error = bool(summary.get("output_error"))
+        except (OSError, ValueError, KeyError, TypeError):
+            return "Analysis complete.", GREEN
+
+        status = (
+            f"Complete — {analyzed} analyzed, "
+            f"{skipped} skipped (missing channel), "
+            f"{errors} {'error' if errors == 1 else 'errors'}."
+        )
+        if output_error:
+            status += " Excel output warning; see report in log."
+        elif skipped or errors:
+            status += " See report in log."
+        color = YELLOW if skipped or errors or output_error else GREEN
+        return status, color
+
     def _run_analysis_step(self) -> None:
         """Run analysis from the Analysis step card."""
         if self._is_running("Analysis"):
@@ -3682,9 +3709,9 @@ class CellMatchrLauncher:
                         if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
                             self._ana_progress.stop()
                         if ok:
+                            status, color = self._analysis_run_status(out)
                             if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
-                                self._ana_status.config(text="✔  Analysis complete.", fg=GREEN)
-                            _ana_log_line("\n✔  Analysis complete.")
+                                self._ana_status.config(text=status, fg=color)
                         else:
                             if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
                                 self._ana_status.config(
@@ -4105,8 +4132,8 @@ class CellMatchrLauncher:
                 proc2.wait()
 
                 if proc2.returncode == 0:
-                    self.root.after(0, self._log, "\n✓  Analysis complete.")
-                    self.root.after(0, self._set_run_status, "All steps complete!", GREEN)
+                    status, color = self._analysis_run_status(ana_out)
+                    self.root.after(0, self._set_run_status, status, color)
                 else:
                     self.root.after(0, self._log, "\n✗  Analysis failed.")
                     self.root.after(0, self._set_run_status, "Pipeline failed (analysis).", RED)

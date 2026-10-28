@@ -1,6 +1,8 @@
 import os
 import re
 import glob
+import json
+import traceback
 import numpy as np
 import pandas as pd
 import tifffile
@@ -89,11 +91,7 @@ def robust_uint8(image, p_low=0.5, p_high=99.8):
 
 
 def find_one_file(folder, pattern, required=True):
-    paths = sorted(glob.glob(os.path.join(folder, pattern)))
-    filtered = [p for p in paths
-                if not any(excl in os.path.basename(p)
-                           for excl in EXCLUDE_FROM_LABEL_SEARCH)]
-    paths = filtered
+    paths = _matching_files(folder, pattern)
     if len(paths) == 0:
         if required:
             raise FileNotFoundError(f"No file found for pattern: {pattern} in {folder}")
@@ -104,6 +102,64 @@ def find_one_file(folder, pattern, required=True):
             print(f"    {os.path.basename(p)}")
         print(f"  Using: {os.path.basename(paths[-1])}")
     return paths[-1]
+
+
+def _matching_files(folder, pattern):
+    """Find the same usable files that find_one_file accepts."""
+    return [
+        p for p in sorted(glob.glob(os.path.join(folder, pattern)))
+        if not any(excl in os.path.basename(p)
+                   for excl in EXCLUDE_FROM_LABEL_SEARCH)
+    ]
+
+
+def _missing_channel_inputs(project_folder):
+    """Return {channel: [missing input descriptions]} for analysis inputs."""
+    missing = {}
+    for channel in sorted({COI_CHANNEL, PM_CHANNEL}):
+        absent = []
+        if not _matching_files(project_folder, PRED_TIFF_PATTERN.format(ch=channel)):
+            absent.append("prediction mask")
+        if not _matching_files(project_folder, SPLIT_TIFF_PATTERN.format(ch=channel)):
+            absent.append("raw channel image")
+        if absent:
+            missing[channel] = absent
+    return missing
+
+
+def _incomplete_summary_row(project_name, status, missing_channels="", error=""):
+    """Keep the established Excel metric columns even if every sample is skipped."""
+    coi_ch = f"channel_{COI_CHANNEL}"
+    pm_ch = f"channel_{PM_CHANNEL}"
+    row = {
+        "project_name": project_name,
+        "cell_of_interest_channel": COI_CHANNEL,
+        "protein_marker_channel": PM_CHANNEL,
+        "iou_threshold": IOU_THRESHOLD,
+        "roi_cell_counting_rule": ROI_CELL_RULE,
+        "roi_area_pixels": None,
+    }
+    for suffix in (
+        "total_count", "average_area_pixels", "average_intensity",
+        "roi_count", "roi_average_area_pixels", "roi_average_intensity",
+        "colocalized_whole_image", "colocalized_in_roi",
+        "percent_colocalized_whole_image", "percent_colocalized_in_roi",
+    ):
+        row[f"{coi_ch}_{suffix}"] = None
+        row[f"{pm_ch}_{suffix}"] = None
+    row[f"{coi_ch}_label_file"] = ""
+    row[f"{pm_ch}_label_file"] = ""
+    row["roi_mask_file"] = ""
+    for ch in {coi_ch, pm_ch}:
+        row[f"{ch}_validation_status"] = None
+        row[f"{ch}_artifacts_removed"] = None
+        for decision in ("yes", "no", "maybe"):
+            row[f"{ch}_validation_{decision}_whole_image"] = None
+            row[f"{ch}_validation_{decision}_in_roi"] = None
+    row["analysis_status"] = status
+    row["missing_channels"] = missing_channels
+    row["error"] = error
+    return row
 
 
 def get_project_folders(root):
@@ -904,13 +960,81 @@ def analyze_project_folder(project_folder):
 # MAIN
 # =============================================================================
 
+def _write_run_report(out_dir, total, analyzed, skipped, failures,
+                      workbook_written, output_error, output_error_traceback):
+    """Write a readable log and a small status file for the launcher."""
+    report_path = os.path.abspath(os.path.join(out_dir, "analysis_errors.log"))
+    summary_path = os.path.join(out_dir, "analysis_run_summary.json")
+    with open(report_path, "w") as report:
+        report.write(f"Segmentation input: {MICROSAM_OUTPUT_ROOT}\n")
+        report.write(f"Analysis output: {out_dir}\n")
+        report.write(
+            f"Samples: {total} total, {analyzed} analyzed, "
+            f"{len(skipped)} skipped (missing channel), "
+            f"{len(failures)} {'error' if len(failures) == 1 else 'errors'}\n\n"
+        )
+        if not skipped and not failures and not output_error:
+            report.write("No skipped samples or errors.\n")
+        for item in skipped:
+            report.write(
+                f"[SKIPPED_MISSING_CHANNEL] {item['sample']}\n"
+                f"  Folder: {item['path']}\n"
+                f"  Missing: {item['reason']}\n\n"
+            )
+        for item in failures:
+            report.write(
+                f"[ERROR] {item['sample']}\n"
+                f"  Folder: {item['path']}\n"
+                f"  {item['type']}: {item['message']}\n"
+                f"{item['traceback']}\n"
+            )
+        if output_error:
+            report.write(f"[OUTPUT ERROR] {output_error}\n")
+            report.write(f"{output_error_traceback}\n")
+
+    data = {
+        "status": "complete_with_warnings"
+                  if skipped or failures or output_error else "complete",
+        "total_samples": total,
+        "analyzed": analyzed,
+        "skipped_missing_channel": len(skipped),
+        "errors": len(failures),
+        "skipped_samples": skipped,
+        "error_samples": [
+            {"sample": item["sample"], "path": item["path"],
+             "type": item["type"], "message": item["message"]}
+            for item in failures
+        ],
+        "workbook_written": workbook_written,
+        "output_error": output_error,
+        "report_path": report_path,
+    }
+    with open(summary_path, "w") as f:
+        json.dump(data, f, indent=2)
+    return report_path
+
+
 def main():
     project_folders = get_project_folders(MICROSAM_OUTPUT_ROOT)
     if not project_folders:
-        print(f"[ERROR] No project folders found in: {MICROSAM_OUTPUT_ROOT}")
+        message = f"No project folders found in: {MICROSAM_OUTPUT_ROOT}"
+        print(f"[ERROR] {message}")
+        out_dir = ANALYSIS_OUTPUT_ROOT or MICROSAM_OUTPUT_ROOT
+        os.makedirs(out_dir, exist_ok=True)
+        report_path = _write_run_report(
+            out_dir, 0, 0, [], [], False, message, "",
+        )
+        print(
+            f"\nComplete — 0 analyzed, 0 skipped (missing channel), "
+            f"0 errors; report: {report_path}"
+        )
         return
 
     print(f"Found {len(project_folders)} project folder(s).")
+
+    missing_inputs = {
+        pf: _missing_channel_inputs(pf) for pf in project_folders
+    }
 
     # A channel is auto-filtered only when EVERY image in the run is validated
     # for it; otherwise filtering is skipped (unless APPLY_PARTIAL_VALIDATION).
@@ -931,14 +1055,44 @@ def main():
                   "(enable partial validation to override).")
 
     all_summaries = []
+    skipped = []
+    failures = []
+    analyzed = 0
 
     for project_folder in tqdm(project_folders, desc="Analyzing projects"):
+        project_name = os.path.basename(project_folder)
+        missing = missing_inputs[project_folder]
+        if missing:
+            channels = ", ".join(f"ch{ch}" for ch in missing)
+            reason = "; ".join(
+                f"ch{ch}: {', '.join(parts)}" for ch, parts in missing.items()
+            )
+            print(f"\n[SKIP] {project_name}: missing required channel input — {reason}")
+            skipped.append({
+                "sample": project_name, "path": project_folder,
+                "missing_channels": channels, "reason": reason,
+            })
+            all_summaries.append(pd.DataFrame([_incomplete_summary_row(
+                project_name, "skipped_missing_channel", channels, reason
+            )]))
+            continue
         try:
-            all_summaries.append(analyze_project_folder(project_folder))
+            summary_df = analyze_project_folder(project_folder)
+            summary_df["analysis_status"] = "analyzed"
+            summary_df["missing_channels"] = ""
+            summary_df["error"] = ""
+            all_summaries.append(summary_df)
+            analyzed += 1
         except Exception as exc:
-            project_name = os.path.basename(project_folder)
             print(f"\n[ERROR] Failed project: {project_name}\n{exc}")
-            all_summaries.append(pd.DataFrame([{"project_name": project_name, "error": str(exc)}]))
+            failures.append({
+                "sample": project_name, "path": project_folder,
+                "type": type(exc).__name__, "message": str(exc),
+                "traceback": traceback.format_exc(),
+            })
+            all_summaries.append(pd.DataFrame([_incomplete_summary_row(
+                project_name, "error", error=f"{type(exc).__name__}: {exc}"
+            )]))
 
     combined = pd.concat(all_summaries, ignore_index=True)
 
@@ -947,6 +1101,9 @@ def main():
     out_dir = ANALYSIS_OUTPUT_ROOT or MICROSAM_OUTPUT_ROOT
     os.makedirs(out_dir, exist_ok=True)
 
+    workbook_written = False
+    output_error = ""
+    output_error_traceback = ""
     try:
         excel_path = os.path.join(out_dir, "combined_analysis_summary.xlsx")
         with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
@@ -966,12 +1123,28 @@ def main():
                 for row_idx in range(2, ws.max_row + 1):
                     ws[f"{letter}{row_idx}"].number_format = "0.00%"
         print(f"\nExcel summary: {excel_path}")
-    except ImportError:
-        print("[WARNING] openpyxl not installed — Excel output skipped. Run: pip install openpyxl")
+        workbook_written = True
+    except ImportError as exc:
+        output_error = f"Excel output skipped: {exc}. Install openpyxl."
+        output_error_traceback = traceback.format_exc()
+        print(f"[WARNING] {output_error}")
     except Exception as exc:
-        print(f"[WARNING] Could not save Excel: {exc}")
+        output_error = f"Could not save Excel: {type(exc).__name__}: {exc}"
+        output_error_traceback = traceback.format_exc()
+        print(f"[WARNING] {output_error}")
 
-    print("\nDONE.")
+    report_path = _write_run_report(
+        out_dir, len(project_folders), analyzed, skipped, failures,
+        workbook_written, output_error, output_error_traceback,
+    )
+    print(
+        f"\nComplete — {analyzed} analyzed, "
+        f"{len(skipped)} skipped (missing channel), "
+        f"{len(failures)} {'error' if len(failures) == 1 else 'errors'}; "
+        f"report: {report_path}"
+    )
+    if output_error:
+        print(f"[WARNING] {output_error}")
 
 
 def _apply_config(config_path: str) -> None:

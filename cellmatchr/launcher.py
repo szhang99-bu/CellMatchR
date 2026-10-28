@@ -66,6 +66,65 @@ SUBFOLDER = {
 }
 
 
+def _scanned_input_files(folder: str, extensions: tuple[str, ...],
+                         skip_subdirs: bool = False) -> list[str]:
+    """List the files segmentation scans: root and, optionally, one level down."""
+    if not folder or not os.path.isdir(folder):
+        return []
+    paths = []
+    for entry in sorted(os.listdir(folder)):
+        full = os.path.join(folder, entry)
+        if os.path.isfile(full) and entry.lower().endswith(extensions):
+            paths.append(full)
+        elif os.path.isdir(full) and not skip_subdirs:
+            for name in sorted(os.listdir(full)):
+                child = os.path.join(full, name)
+                if os.path.isfile(child) and name.lower().endswith(extensions):
+                    paths.append(child)
+    return paths
+
+
+def _first_confocal_preview_input(folder: str, extensions: tuple[str, ...],
+                                  skip_subdirs: bool = False
+                                  ) -> tuple[str, int | None] | None:
+    """Pick a direct-read input and its confocal LIF scene, if applicable."""
+    from .lif_classify import classify_lif_file
+
+    for path in _scanned_input_files(folder, extensions, skip_subdirs):
+        if path.lower().endswith(".lif"):
+            try:
+                result = classify_lif_file(path)
+            except Exception:
+                continue
+            scene = next((index for index, _name, kind in result["scenes"]
+                          if kind == "confocal"), None)
+            if scene is not None:
+                return path, scene
+            continue
+        return path, None
+    return None
+
+
+def _has_converter_roi_masks(folder: str) -> bool:
+    """Check mask names without treating project-path characters as globs."""
+    try:
+        with os.scandir(folder) as files:
+            return any(item.is_file() and item.name.endswith(
+                "_mask_overview.tif") for item in files)
+    except OSError:
+        return False
+
+
+def _has_analysis_roi_masks(folder: str) -> bool:
+    """Accept the .tif and .roi files that analysis can read from a custom folder."""
+    try:
+        with os.scandir(folder) as files:
+            return any(item.is_file() and item.name.endswith(
+                (".tif", ".roi")) for item in files)
+    except OSError:
+        return False
+
+
 def _segmentation_run_details(project_folder: str, run_name: str) -> str:
     """Summarize optional run metadata without excluding older projects."""
     progress_path = os.path.join(project_folder, run_name, "_run_progress.json")
@@ -236,6 +295,64 @@ class _SegmentationRunDialog(tk.Toplevel):
 
     def _accept(self) -> None:
         self.result = self._choice.get()
+        self.destroy()
+
+
+class _ExistingSegmentationChoiceDialog(tk.Toplevel):
+    """Choose what Run Pipeline should do when masks already exist."""
+
+    def __init__(self, parent: tk.Tk, input_folder: str,
+                 analysis_enabled: bool) -> None:
+        super().__init__(parent)
+        self.result = None
+        self.transient(parent)
+        self.grab_set()
+        self.configure(bg=BG)
+        self.title("Segmentation already exists")
+        self.resizable(False, False)
+
+        tk.Label(self, text="Segmentation masks already exist in this project.",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(
+            anchor="w", padx=24, pady=(20, 8))
+        tk.Label(self, text=f"Current input: {input_folder or 'not selected'}",
+                 bg=BG, fg=MUTED, font=FONT, wraplength=480,
+                 justify="left").pack(anchor="w", padx=24, pady=(0, 12))
+
+        tk.Button(
+            self, text="Segment current input as a new run",
+            command=lambda: self._choose("new"), bg=ACCENT, fg="#1e1e2e",
+            font=FONT_BOLD, relief="flat", padx=14, pady=9,
+        ).pack(fill="x", padx=24, pady=4)
+        tk.Label(self, text="Keeps existing masks and saves this input separately.",
+                 bg=BG, fg=MUTED, font=FONT).pack(
+            anchor="w", padx=24, pady=(0, 10))
+
+        tk.Button(
+            self, text="Analyze an existing segmentation run",
+            command=lambda: self._choose("existing"),
+            state="normal" if analysis_enabled else "disabled",
+            bg=CARD, fg=FG, font=FONT_BOLD, relief="flat", padx=14, pady=9,
+        ).pack(fill="x", padx=24, pady=4)
+        if not analysis_enabled:
+            tk.Label(self, text="Enable Analysis in Step 5 to use this option.",
+                     bg=BG, fg=MUTED, font=FONT).pack(
+                anchor="w", padx=24, pady=(0, 8))
+
+        cancel = tk.Button(self, text="Cancel", command=self.destroy,
+                           bg=BG, fg=FG, font=FONT, relief="flat",
+                           padx=14, pady=7)
+        cancel.pack(pady=(8, 20))
+        cancel.focus_set()
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.update_idletasks()
+        self.geometry(
+            f"+{parent.winfo_x() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)}"
+            f"+{parent.winfo_y() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)}"
+        )
+        self.wait_window(self)
+
+    def _choose(self, choice: str) -> None:
+        self.result = choice
         self.destroy()
 
 
@@ -812,38 +929,37 @@ class CellMatchrLauncher:
             if not folder or not os.path.isdir(folder):
                 return
 
-            files = sorted(
-                f for f in os.listdir(folder)
-                if f.lower().endswith(self._INPUT_EXTS)
-                and os.path.isfile(os.path.join(folder, f))
-            )
+            skip_subdirs = bool(self._vars["seg_skip_subdirs"].get())
+            files = _scanned_input_files(
+                folder, self._INPUT_EXTS, skip_subdirs)
             if not files:
                 return
 
             ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=(2, 8))
-            tk.Label(frame, text=f"Files found in this folder ({len(files)}):",
+            scope = "this folder" if skip_subdirs else "this folder and one level down"
+            tk.Label(frame, text=f"Files found in {scope} ({len(files)}):",
                      bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 4))
 
             from .lif_classify import classify_lif_file
 
             max_shown = 40
-            for name in files[:max_shown]:
-                full = os.path.join(folder, name)
-                if name.lower().endswith(".lif"):
+            for full in files[:max_shown]:
+                display_name = os.path.relpath(full, folder)
+                if full.lower().endswith(".lif"):
                     try:
                         ftype = classify_lif_file(full).get("file_type", "unknown")
                     except Exception:
                         ftype = "unknown"
                     if ftype == "slide_scanner":
-                        text, color = f"⊘  {name}   —  slide-scanner LIF, will be skipped here (use Slide scanner mode)", MUTED
+                        text, color = f"⊘  {display_name}   —  slide-scanner LIF, skipped here; use Slide scanner mode", MUTED
                     elif ftype == "mixed":
-                        text, color = f"⚠  {name}   —  has both confocal and slide-scanner images; only the confocal ones are used here", YELLOW
+                        text, color = f"⚠  {display_name}   —  mixed LIF; only confocal images are used here", YELLOW
                     elif ftype == "confocal":
-                        text, color = f"✔  {name}   —  confocal LIF", FG
+                        text, color = f"✔  {display_name}   —  confocal LIF", FG
                     else:
-                        text, color = f"?  {name}   —  could not read LIF metadata", MUTED
+                        text, color = f"?  {display_name}   —  could not read LIF metadata; preview unavailable", MUTED
                 else:
-                    text, color = f"✔  {name}", FG
+                    text, color = f"✔  {display_name}", FG
                 tk.Label(frame, text=text, bg=CARD, fg=color, font=FONT_MONO,
                          anchor="w", justify="left", wraplength=680).pack(anchor="w")
 
@@ -980,7 +1096,8 @@ class CellMatchrLauncher:
             number += 1
         return suffix
 
-    def _resolve_segmentation_output_dir(self) -> str | None:
+    def _resolve_segmentation_output_dir(self, auto_new: bool = False
+                                         ) -> str | None:
         """Create a separate new run whenever an existing run has content."""
         proj = self.config.get("project_output_folder", "").strip()
         if not proj:
@@ -991,6 +1108,8 @@ class CellMatchrLauncher:
             return base
         if os.path.isdir(base) and not os.path.islink(base) and not os.listdir(base):
             return base
+        if auto_new:
+            return f"{base}_{self._suggest_segmentation_suffix()}"
         dialog = _ConflictDialog(
             self.root, base, self._suggest_segmentation_suffix(),
             allow_replace=False,
@@ -1050,6 +1169,163 @@ class CellMatchrLauncher:
         else:
             raise ValueError(f"Unknown segmentation run: {segmentation_run}")
         return os.path.join(proj, name)
+
+    def _segmentation_source(self, segmentation_run: str) -> tuple[str, str]:
+        """Return the selected run's input kind and converter variant, if known."""
+        proj = self.config.get("project_output_folder", "").strip()
+        progress = os.path.join(proj, segmentation_run, "_run_progress.json")
+        try:
+            with open(progress) as source:
+                inputs = json.load(source).get("input_sources")
+            if not isinstance(inputs, dict) or "converter_run" not in inputs:
+                return "unknown", ""
+            variant = inputs["converter_run"]
+            if variant == "":
+                return "direct", ""
+            if (isinstance(variant, str)
+                    and (variant == SUBFOLDER["vsi"]
+                         or variant.startswith(SUBFOLDER["vsi"] + "_"))
+                    and os.path.basename(variant) == variant):
+                return "converted", variant
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return "unknown", ""
+
+    def _converter_roi_paths(self) -> set[str]:
+        proj = self.config.get("project_output_folder", "").strip()
+        outputs = [os.path.join(proj, name)
+                   for name in self._find_variants(SUBFOLDER["vsi"])]
+        outputs.append(os.path.join(proj, SUBFOLDER["vsi"]))
+        saved = str(self.config.get("vsi_output_dir") or "").strip()
+        if saved:
+            outputs.append(saved)
+        return {os.path.normpath(os.path.join(
+            output, "DONOTDELETE-MASK_FOR_VSI")) for output in outputs}
+
+    def _set_roi_mask_folder(self, folder: str) -> None:
+        self.config["ana_roi_mask_folder"] = folder
+        if "ana_roi_mask_folder" in self._vars:
+            self._vars["ana_roi_mask_folder"].set(folder)
+
+    def _pair_roi_masks_with_run(self, segmentation_run: str,
+                                 confirm_unknown: bool = False) -> bool:
+        """Choose ROI masks from the analyzed run, never a different input."""
+        kind, converter_run = self._segmentation_source(segmentation_run)
+        current = str(self.config.get("ana_roi_mask_folder") or "").strip()
+        is_auto = bool(current and os.path.normpath(current)
+                       in self._converter_roi_paths())
+        if kind == "direct":
+            if is_auto:
+                self._set_roi_mask_folder("")
+            return True
+        if kind == "converted":
+            proj = self.config.get("project_output_folder", "").strip()
+            matched = os.path.join(proj, converter_run,
+                                   "DONOTDELETE-MASK_FOR_VSI")
+            if (current and not is_auto
+                    and os.path.normpath(current) != os.path.normpath(matched)
+                    and confirm_unknown):
+                choice = messagebox.askyesnocancel(
+                    "ROI folder differs from this run",
+                    f"The selected run '{segmentation_run}' came from "
+                    f"{converter_run}. Its matching ROI masks are in:\n"
+                    f"{matched}\n\n"
+                    f"The current custom folder is:\n{current}\n\n"
+                    "Yes: use the custom folder. No: use the matching folder. "
+                    "Cancel: stop analysis.",
+                    parent=self.root, default=messagebox.CANCEL,
+                    icon="warning",
+                )
+                if choice is None:
+                    return False
+                if choice is False:
+                    current = ""
+                elif not _has_analysis_roi_masks(current):
+                    if not messagebox.askyesno(
+                            "ROI masks are missing",
+                            f"No .tif or .roi masks were found in the custom "
+                            f"folder:\n{current}\n\n"
+                            "Continue with whole-image analysis? Yes clears "
+                            "the ROI folder; No cancels so you can choose "
+                            "the correct masks in Step 5.",
+                            parent=self.root, default=messagebox.NO,
+                            icon="warning"):
+                        return False
+                    self._set_roi_mask_folder("")
+                    return True
+            if not current or is_auto:
+                if confirm_unknown and not _has_converter_roi_masks(matched):
+                    if not messagebox.askyesno(
+                            "ROI masks are missing",
+                            f"The selected run '{segmentation_run}' came from "
+                            f"{converter_run}, but no ROI masks were found in:\n"
+                            f"{matched}\n\n"
+                            "Continue with whole-image analysis? Yes continues "
+                            "without ROI-specific counts. No cancels so you "
+                            "can restore or select the masks in Step 5.",
+                            parent=self.root, default=messagebox.NO,
+                            icon="warning"):
+                        return False
+                    self._set_roi_mask_folder("")
+                    return True
+                self._set_roi_mask_folder(matched)
+            return True
+        if not current:
+            variants = self._find_variants(SUBFOLDER["vsi"])
+            if self.config.get("input_type") == "vsi" and len(variants) == 1:
+                current = os.path.join(
+                    self.config.get("project_output_folder", "").strip(),
+                    variants[0], "DONOTDELETE-MASK_FOR_VSI")
+                self._set_roi_mask_folder(current)
+                is_auto = True
+            elif confirm_unknown and variants:
+                return messagebox.askyesno(
+                    "No ROI masks selected",
+                    f"The older run '{segmentation_run}' does not record "
+                    "whether it came from a slide scanner. No ROI mask "
+                    "folder is selected.\n\n"
+                    "Continue with whole-image analysis? Yes continues "
+                    "without ROI-specific counts. No cancels so you can "
+                    "choose the correct masks in Step 5.",
+                    parent=self.root, default=messagebox.NO, icon="warning",
+                )
+        if confirm_unknown and is_auto:
+            if not _has_converter_roi_masks(current):
+                if not messagebox.askyesno(
+                        "ROI masks are missing",
+                        f"No ROI masks were found for the older run "
+                        f"'{segmentation_run}' in:\n{current}\n\n"
+                        "Continue with whole-image analysis? Yes continues "
+                        "without ROI-specific counts. No cancels so you can "
+                        "choose or restore the masks in Step 5.",
+                        parent=self.root, default=messagebox.NO,
+                        icon="warning"):
+                    return False
+                self._set_roi_mask_folder("")
+                return True
+            return messagebox.askyesno(
+                "Confirm ROI masks for this run",
+                f"The older segmentation run '{segmentation_run}' does not "
+                "record which converter output made it.\n\n"
+                f"Use ROI masks from:\n{current}\n\n"
+                "Yes continues with this folder. No cancels so you can "
+                "choose the correct folder in Step 5.",
+                parent=self.root, default=messagebox.NO, icon="warning",
+            )
+        return True
+
+    def _roi_help_for_run(self, segmentation_run: str) -> str:
+        if not segmentation_run:
+            return "Choose a segmentation run first; ROI masks are optional."
+        kind, converter_run = self._segmentation_source(segmentation_run)
+        if kind == "converted":
+            return (f"This run came from {converter_run}. Its ROI masks are "
+                    "selected automatically. Check the folder below before analysis.")
+        if kind == "direct":
+            return ("Direct-read run: ROI masks are optional. Leave this blank "
+                    "for whole-image analysis, or choose matching .tif/.roi files.")
+        return ("Earlier run: its source was not recorded. Check that the ROI "
+                "mask folder below matches this run before analysis.")
 
     def _analysis_generated_files(self, segmentation_run: str,
                                   output_dir: str) -> list[str]:
@@ -1743,6 +2019,7 @@ class CellMatchrLauncher:
         # ── Wire radio toggle ─────────────────────────────────────────
         self._vars["input_type"].trace_add("write", lambda *_: self._on_input_type_changed())
         self._vars["input_root_folder"].trace_add("write", lambda *_: self._refresh_input_file_preview())
+        self._vars["seg_skip_subdirs"].trace_add("write", lambda *_: self._refresh_input_file_preview())
         self._on_input_type_changed()
         self._refresh_input_file_preview()
 
@@ -1856,6 +2133,7 @@ class CellMatchrLauncher:
                 # step change and before every "Run") would otherwise
                 # silently overwrite self.config with this var's stale value.
                 self._vars["input_root_folder"].set(p)
+                self._align_converter_roi_folder(p)
                 self._seg_src_cur_lbl.config(text=f"Using:  {nm}")
                 has = self._folder_image_count(p) > 0
                 self._seg_input_display.config(text=p if p else "—", fg=FG if has else MUTED)
@@ -2369,6 +2647,73 @@ class CellMatchrLauncher:
             out.append((name, exp if os.path.isdir(exp) else base))
         return out
 
+    def _input_converter_variant(self, images_folder: str) -> str | None:
+        """Identify in-project exports, excluding links to outside folders."""
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj or not images_folder:
+            return None
+        for name, path in self._find_input_variants():
+            if os.path.normpath(path) != os.path.normpath(images_folder):
+                continue
+            try:
+                relative = os.path.relpath(
+                    os.path.realpath(images_folder), os.path.realpath(proj))
+            except ValueError:  # Different drives on Windows.
+                continue
+            parts = relative.split(os.sep)
+            if parts[0] == name and (len(parts) == 1 or parts[1:] == ["exports"]):
+                return name
+        return None
+
+    def _align_converter_roi_folder(self, images_folder: str,
+                                    previous_output: str | None = None) -> None:
+        """Keep automatic ROI masks paired with the chosen converter output.
+
+        A manually selected mask folder outside converter outputs remains a
+        manual choice. This also works after a project has moved, because the
+        destination is rebuilt from the current project directory.
+        """
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj or not images_folder:
+            return
+        selected = self._input_converter_variant(images_folder)
+        if selected is None:
+            return
+        prior_output = (self.config.get("vsi_output_dir", "").strip()
+                        if previous_output is None else previous_output)
+        current = str(self.config.get("ana_roi_mask_folder") or "").strip()
+        auto_paths = self._converter_roi_paths()
+        if prior_output:
+            auto_paths.add(os.path.normpath(os.path.join(
+                prior_output, "DONOTDELETE-MASK_FOR_VSI")))
+        new_output = os.path.join(proj, selected)
+        self.config["vsi_output_dir"] = new_output
+        if current and os.path.normpath(current) not in auto_paths:
+            return
+        new_masks = os.path.join(new_output, "DONOTDELETE-MASK_FOR_VSI")
+        self.config["ana_roi_mask_folder"] = new_masks
+        if "ana_roi_mask_folder" in self._vars:
+            self._vars["ana_roi_mask_folder"].set(new_masks)
+
+    def _clear_converter_roi_folder_for_direct_input(self) -> None:
+        """Avoid applying an automatic slide ROI mask to direct-read images."""
+        if self.config.get("input_type") == "vsi":
+            return
+        current = str(self.config.get("ana_roi_mask_folder") or "").strip()
+        if not current:
+            return
+        if os.path.normpath(current) in self._converter_roi_paths():
+            self.config["ana_roi_mask_folder"] = ""
+            if "ana_roi_mask_folder" in self._vars:
+                self._vars["ana_roi_mask_folder"].set("")
+
+    def _sync_roi_mask_to_input(self) -> None:
+        if self.config.get("input_type") == "vsi":
+            self._align_converter_roi_folder(
+                self.config.get("input_root_folder", "").strip())
+        else:
+            self._clear_converter_roi_folder_for_direct_input()
+
     def _resolve_existing_input_folder(self) -> str:
         """Return a folder that actually contains input images.
 
@@ -2408,24 +2753,17 @@ class CellMatchrLauncher:
                 best, best_n = c, n
         return best
 
-    def _find_first_image(self) -> str | None:
+    def _find_first_image(self) -> tuple[str, int | None] | None:
         folder = self._resolve_existing_input_folder()
         # Self-heal: if we relocated to a valid folder, remember it so the
         # segmentation run uses the same images.
         cfg = self.config.get("input_root_folder", "").strip()
         if folder and folder != cfg and self._folder_image_count(folder) > 0:
             self.config["input_root_folder"] = folder
-        if not folder or not os.path.isdir(folder):
-            return None
-        for item in sorted(os.listdir(folder)):
-            sub = os.path.join(folder, item)
-            if os.path.isdir(sub):
-                for fname in sorted(os.listdir(sub)):
-                    if fname.lower().endswith(self._INPUT_EXTS):
-                        return os.path.join(sub, fname)
-            elif item.lower().endswith(self._INPUT_EXTS):
-                return sub
-        return None
+        return _first_confocal_preview_input(
+            folder, self._INPUT_EXTS,
+            bool(self._vars["seg_skip_subdirs"].get()),
+        )
 
     def _load_channel_previews(self, callback=None) -> None:
         """Run in daemon thread. Posts result back to main thread via callback."""
@@ -2433,17 +2771,24 @@ class CellMatchrLauncher:
             callback = self._set_channel_previews
         if not _PIL:
             return
-        path = self._find_first_image()
-        if not path:
+        preview_input = self._find_first_image()
+        if not preview_input:
             looked = self.config.get("input_root_folder", "").strip()
             if not looked:
                 msg = "No input folder set — go to Step 2."
             elif not os.path.isdir(looked):
                 msg = f"Input folder not found:  {looked}"
+            elif _scanned_input_files(
+                    looked, self._INPUT_EXTS,
+                    bool(self._vars["seg_skip_subdirs"].get())):
+                msg = ("No readable confocal input available for preview. "
+                       "Check the file list in Step 2; slide-scanner LIF "
+                       "files belong in Slide scanner mode.")
             else:
                 msg = f"No images found in:  {looked}"
             self.root.after(0, callback, [], msg)
             return
+        path, lif_scene = preview_input
         try:
             import numpy as np
             fname = os.path.basename(path)
@@ -2516,14 +2861,7 @@ class CellMatchrLauncher:
                 from readlif.reader import LifFile
                 print("[Preview] Reading Leica LIF via readlif…")
                 _lif = LifFile(path)
-                # Pick the image with the largest XY area (the real acquisition).
-                _img, _best = None, -1
-                for _im in _lif.get_iter_image():
-                    _a = int(_im.dims.x) * int(_im.dims.y)
-                    if _a > _best:
-                        _img, _best = _im, _a
-                if _img is None:
-                    raise ValueError("No images found in LIF file")
+                _img = _lif.get_image(lif_scene)
                 _nc = int(_img.channels)
                 _nz = max(int(_img.nz), 1)
                 print(f"[Preview] LIF '{_img.name}': {_nc} channel(s), {_nz} Z")
@@ -3591,6 +3929,9 @@ class CellMatchrLauncher:
         self._ana_input_var = tk.StringVar(value=_a_default_seg)
         if _a_default_seg:
             self.config["seg_input_subfolder"] = _a_default_seg
+            self._pair_roi_masks_with_run(_a_default_seg)
+        else:
+            self._sync_roi_mask_to_input()
 
         toggle_card = self._card(parent, "Enable")
         tk.Checkbutton(
@@ -3633,6 +3974,9 @@ class CellMatchrLauncher:
                     self._ana_input_var.get()))
                 # Share the choice with the Validation step.
                 self.config["seg_input_subfolder"] = self._ana_input_var.get()
+                self._pair_roi_masks_with_run(self._ana_input_var.get())
+                self._ana_roi_help_lbl.config(
+                    text=self._roi_help_for_run(self._ana_input_var.get()))
             self._ana_input_var.trace_add("write", _ana_src_changed)
         elif not _a_seg_variants:
             tk.Label(toggle_card,
@@ -3640,78 +3984,21 @@ class CellMatchrLauncher:
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
 
         # ── ROI mask folder ───────────────────────────────────────────
-        if self.config.get("input_type") == "vsi":
-            # VSI: auto-detect mask folder from VSI Converter output
-            if not self.config.get("ana_roi_mask_folder", "").strip():
-                proj = self.config.get("project_output_folder", "").strip()
-                if proj:
-                    default_roi = os.path.join(
-                        proj, "VSI_Converted_TIFF", "DONOTDELETE-MASK_FOR_VSI"
-                    )
-                    self._vars["ana_roi_mask_folder"].set(default_roi)
-                    self.config["ana_roi_mask_folder"] = default_roi
-
-            roi_card = self._card(parent, "ROI Mask Folder  (VSI pipeline)")
-            tk.Label(
-                roi_card,
-                text="Auto-detected from VSI Converter output. "
-                     "Contains *_mask_overview.tif files.",
-                bg=CARD, fg=MUTED, font=FONT,
-            ).pack(anchor="w", pady=(0, 4))
-            tk.Label(roi_card, textvariable=self._vars["ana_roi_mask_folder"],
-                     bg=CARD, fg=FG, font=FONT_MONO, wraplength=700).pack(anchor="w", pady=(0, 4))
-            self._ana_roi_override_frame = tk.Frame(roi_card, bg=CARD)
-            self._path_row(self._ana_roi_override_frame,
-                           "Change ROI mask folder:", "ana_roi_mask_folder")
-            ovr_lbl = tk.Label(
-                roi_card, text="(Optional) Change ROI mask folder",
-                bg=CARD, fg=MUTED, font=(FONT[0], FONT[1], "underline"), cursor="hand2",
-            )
-            ovr_lbl.pack(anchor="w")
-            ovr_lbl.bind("<Button-1>", lambda _: (
-                self._ana_roi_override_frame.pack_forget()
-                if self._ana_roi_override_frame.winfo_ismapped()
-                else self._ana_roi_override_frame.pack(fill="x", pady=(4, 0))
-            ))
-        else:
-            # Direct-read formats: manual ROI mask folder (optional, hidden by default)
-            roi_card = self._card(parent, "ROI Mask Folder  (optional, TIF/CZI/LIF/ND2/OIB)")
-            tk.Label(
-                roi_card,
-                text="Optional: provide a folder of ROI mask files to restrict "
-                     "cell counts and colocalization to a region of interest.\n\n"
-                     "Supported formats:\n"
-                     "  • .roi  — Fiji/ImageJ ROI file (polygon drawn at full image resolution)\n"
-                     "  • .tif  — binary mask TIF (same pixel dimensions as the original image)\n\n"
-                     "Naming rule: each file must contain the full original image filename "
-                     "somewhere in its name so CellMatchR can match them.\n"
-                     "Example:  original = 'MouseA_slice3.tif'  →  "
-                     "mask = 'MouseA_slice3_roi.roi'  or  'MouseA_slice3_mask.tif'",
-                bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",
-            ).pack(anchor="w", pady=(0, 6))
-            self._ana_roi_manual_frame = tk.Frame(roi_card, bg=CARD)
-            self._path_row(self._ana_roi_manual_frame,
-                           "ROI mask folder:", "ana_roi_mask_folder")
-            current_roi = self._vars["ana_roi_mask_folder"].get().strip()
-            show_lbl = tk.Label(
-                roi_card,
-                text="▶  Set ROI mask folder" if not current_roi else "▼  ROI mask folder set (click to change)",
-                bg=CARD, fg=MUTED, font=(FONT[0], FONT[1], "underline"), cursor="hand2",
-            )
-            show_lbl.pack(anchor="w")
-
-            def _toggle_roi_manual(lbl=show_lbl):
-                if self._ana_roi_manual_frame.winfo_ismapped():
-                    self._ana_roi_manual_frame.pack_forget()
-                    lbl.config(text="▶  Set ROI mask folder")
-                else:
-                    self._ana_roi_manual_frame.pack(fill="x", pady=(4, 0))
-                    lbl.config(text="▼  ROI mask folder set (click to change)")
-
-            show_lbl.bind("<Button-1>", lambda _: _toggle_roi_manual())
-            # Auto-expand if a folder is already configured
-            if current_roi:
-                self._ana_roi_manual_frame.pack(fill="x", pady=(4, 0))
+        roi_card = self._card(parent, "ROI Mask Folder")
+        self._ana_roi_help_lbl = tk.Label(
+            roi_card, text=self._roi_help_for_run(_a_default_seg),
+            bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",
+        )
+        self._ana_roi_help_lbl.pack(anchor="w", pady=(0, 6))
+        self._path_row(roi_card, "ROI mask folder (optional):",
+                       "ana_roi_mask_folder")
+        tk.Label(
+            roi_card,
+            text="For direct-read images, use matching full-size .tif or Fiji .roi "
+                 "files. For converted slide scans, use the masks saved by "
+                 "that converter run. Leave blank for whole-image analysis.",
+            bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",
+        ).pack(anchor="w", pady=(4, 0))
 
         # ── Validation status panel ──────────────────────────────────
         val_status_card = self._card(parent, "Validation Status")
@@ -4143,6 +4430,8 @@ class CellMatchrLauncher:
             if hasattr(self, "_ana_status"):
                 self._ana_status.config(text="Choose a segmentation run first.", fg=YELLOW)
             return
+        if not self._pair_roi_masks_with_run(seg_sub, confirm_unknown=True):
+            return
         ana_input = os.path.join(proj, seg_sub)
 
         if not os.path.isdir(ana_input):
@@ -4478,6 +4767,7 @@ class CellMatchrLauncher:
                 return
             if dlg.result != "replace":
                 vsi_out = os.path.join(proj, f"{SUBFOLDER['vsi']}_{dlg.result}")
+        previous_vsi_output = self.config.get("vsi_output_dir", "").strip()
         self.config["vsi_output_dir"] = vsi_out
         save_config(self.config)
 
@@ -4511,6 +4801,8 @@ class CellMatchrLauncher:
                     exports = os.path.join(vsi_out, "exports")
                     self.config["input_root_folder"] = exports
                     self._vars["input_root_folder"].set(exports)
+                    self._align_converter_roi_folder(
+                        exports, previous_output=previous_vsi_output)
                     save_config(self.config)
                     save_project_config(self.config)
                     try:
@@ -4589,6 +4881,9 @@ class CellMatchrLauncher:
         if seg_sub is None:
             self._log("Analysis cancelled — choose a segmentation run first.")
             return
+        if not self._pair_roi_masks_with_run(seg_sub, confirm_unknown=True):
+            self._log("Analysis canceled; choose the correct ROI mask folder in Step 5.")
+            return
         ana_input = os.path.join(proj, seg_sub)
         if not os.path.isdir(ana_input):
             self._log(f"Segmentation output not found: {seg_sub}")
@@ -4650,17 +4945,63 @@ class CellMatchrLauncher:
 
         self._sync_vars_to_config()
         seg_done = self._step_is_done("seg")
-        run_seg = not seg_done
         run_ana = bool(self.config.get("ana_enabled"))
-
-        if not run_seg and not run_ana:
-            self._log("\n✔  All steps already complete — nothing to run.")
-            self._set_run_status("All steps already complete.", GREEN)
-            return
+        if seg_done:
+            choice = _ExistingSegmentationChoiceDialog(
+                self.root,
+                self.config.get("input_root_folder", "").strip(),
+                run_ana,
+            ).result
+            if choice is None:
+                self._log("Run Pipeline canceled; existing results were kept.")
+                return
+            run_seg = choice == "new"
+        else:
+            run_seg = True
 
         seg_out = None
         if run_seg:
-            seg_out = self._resolve_segmentation_output_dir()
+            self._sync_roi_mask_to_input()
+            roi_folder = str(self.config.get("ana_roi_mask_folder") or "").strip()
+            source_variant = None
+            expected_masks = ""
+            if run_ana and self.config.get("input_type") == "vsi":
+                input_folder = self.config.get("input_root_folder", "").strip()
+                source_variant = self._input_converter_variant(input_folder)
+                expected_masks = (os.path.join(
+                    proj, source_variant, "DONOTDELETE-MASK_FOR_VSI")
+                    if source_variant else "")
+                if (not expected_masks or os.path.normpath(roi_folder)
+                        != os.path.normpath(expected_masks)):
+                    if not messagebox.askyesno(
+                            "Confirm ROI masks for this input",
+                            f"Scanner input:\n{input_folder}\n\n"
+                            f"ROI mask folder:\n{roi_folder or 'None (whole image)'}\n\n"
+                            "These folders could not be paired automatically. "
+                            "Use this ROI selection for the new run? "
+                            "Yes continues; No cancels so you can set the "
+                            "correct folder in Step 5.",
+                            parent=self.root, default=messagebox.NO,
+                            icon="warning"):
+                        return
+            has_masks = (_has_converter_roi_masks(roi_folder)
+                         if source_variant and expected_masks
+                         and os.path.normpath(roi_folder)
+                         == os.path.normpath(expected_masks)
+                         else _has_analysis_roi_masks(roi_folder)) if roi_folder else False
+            if (run_ana and self.config.get("input_type") == "vsi"
+                    and roi_folder and not has_masks):
+                if not messagebox.askyesno(
+                        "ROI masks are missing",
+                        f"No ROI masks were found in:\n{roi_folder}\n\n"
+                        "Continue with whole-image analysis after segmentation? "
+                        "Yes continues without ROI-specific counts. "
+                        "No cancels so you can export or select the masks.",
+                        parent=self.root, default=messagebox.NO,
+                        icon="warning"):
+                    return
+                self._set_roi_mask_folder("")
+            seg_out = self._resolve_segmentation_output_dir(auto_new=seg_done)
             if seg_out is None:
                 return
             seg_sub_for_ana = os.path.basename(seg_out)
@@ -4671,6 +5012,10 @@ class CellMatchrLauncher:
             seg_sub_for_ana = self._choose_analysis_run(ask_if_multiple=True)
             if seg_sub_for_ana is None:
                 self._log("Analysis cancelled — choose a segmentation run first.")
+                return
+            if not self._pair_roi_masks_with_run(
+                    seg_sub_for_ana, confirm_unknown=True):
+                self._log("Analysis canceled; choose the correct ROI mask folder in Step 5.")
                 return
         else:
             seg_sub_for_ana = None

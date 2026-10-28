@@ -44,6 +44,7 @@ def _free_memory():
 
 ROOT_INPUT_FOLDER = "/run/user/1000/gvfs/smb-share:server=rstore.it.tufts.edu,share=tusm_bygravelab01$/Confocal data archive/Matt/20260413 RO ENS Trim 2Male"
 MAIN_OUTPUT_FOLDER = "/run/user/1000/gvfs/smb-share:server=rstore.it.tufts.edu,share=tusm_bygravelab01$/Confocal data archive/Matt/Micro_SAM/ENS_Trim_BG_Deletion_2"
+INPUT_TYPE = "czi"  # input routing metadata only; image processing is unchanged
 
 DRY_RUN = False
 TEST_RUN = False
@@ -1254,6 +1255,72 @@ def lif_scenes_to_process(path):
     return [(i, im.name) for i, im in confocal]
 
 
+def _plan_work_items(input_files, input_root, return_collisions=False):
+    """Assign one safe sample folder to each direct-read acquisition.
+
+    Keep the historical sample name when it is unique. If two input files (or
+    two scenes) would use the same name, add a stable source/scene suffix so a
+    later sample cannot replace the first sample's masks and split TIFFs.
+    """
+    from collections import Counter
+    from hashlib import sha256
+
+    proposed = []
+    for file_path in input_files:
+        base = os.path.splitext(os.path.basename(file_path))[0]
+        if file_path.lower().endswith(".lif"):
+            try:
+                scenes = lif_scenes_to_process(file_path)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not inspect Leica LIF scenes in '{file_path}': {exc}. "
+                    "Segmentation has not started. Check the file and try again; "
+                    "a slide scan must be opened in Slide scanner mode."
+                ) from exc
+            if not scenes:
+                # This is a slide-scanner LIF, handled by the ROI converter.
+                continue
+            if len(scenes) == 1:
+                proposed.append((file_path, scenes[0][0], base))
+            else:
+                for scene_index, scene_name in scenes:
+                    safe = _sanitize_scene_name(scene_name)
+                    proposed.append((
+                        file_path, scene_index,
+                        f"{base}__{safe}" if safe else base,
+                    ))
+        else:
+            proposed.append((file_path, None, base))
+
+    counts = Counter(name.casefold() for _, _, name in proposed)
+    # Reserve all unique legacy names before creating suffixed names.
+    used = {name.casefold() for _, _, name in proposed
+            if counts[name.casefold()] == 1}
+    planned = []
+    for file_path, scene_index, name in proposed:
+        if counts[name.casefold()] == 1:
+            planned.append((file_path, scene_index, name))
+            continue
+        relative = os.path.relpath(file_path, input_root).replace(os.sep, "/")
+        source_id = sha256(relative.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+        suffix = f"__source_{source_id}"
+        if scene_index is not None:
+            suffix += f"_scene{int(scene_index) + 1}"
+        candidate_base = f"{name}{suffix}"
+        candidate = candidate_base
+        number = 2
+        while candidate.casefold() in used:
+            candidate = f"{candidate_base}_{number}"
+            number += 1
+        used.add(candidate.casefold())
+        planned.append((file_path, scene_index, candidate))
+        print(f"  [NAME] Duplicate sample name '{name}': "
+              f"'{relative}' will be saved as '{candidate}'.")
+    if return_collisions:
+        return planned, any(count > 1 for count in counts.values())
+    return planned
+
+
 def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None):
     """
     Split a multi-channel (and optionally multi-Z) microscopy file into
@@ -1608,6 +1675,88 @@ def _check_resume_identity(out_dir: str) -> None:
         )
 
 
+def _input_source_record(input_root: str, input_files, work_items,
+                         project_root: str | None = None,
+                         input_type: str = "czi") -> dict:
+    """Record file/scene identity without hashing multi-gigabyte images."""
+    def relative(path):
+        return os.path.relpath(path, input_root).replace(os.sep, "/")
+
+    # An external converter export cannot be paired to an in-project ROI
+    # folder automatically, so retain 'unknown' rather than call it direct.
+    converter_run = None if input_type == "vsi" else ""
+    if project_root:
+        # Resolve symlinks before pairing an export with this project's ROI
+        # masks. An exports link pointing elsewhere is an unknown source.
+        try:
+            relative_root = os.path.relpath(
+                os.path.realpath(input_root), os.path.realpath(project_root))
+        except ValueError:  # Different drives on Windows.
+            relative_root = ".."
+        parts = relative_root.replace(os.sep, "/").split("/")
+        if ((parts[0] == "VSI_Converted_TIFF"
+             or parts[0].startswith("VSI_Converted_TIFF_"))
+                and (len(parts) == 1 or parts[1:] == ["exports"])):
+            converter_run = parts[0]
+
+    # Direct-read segmentation skips slide-scanner LIFs. Changes to those
+    # unrelated files must not prevent continuing a confocal run.
+    used_files = {path for path, _scene, _name in work_items}
+    return {
+        "converter_run": converter_run,
+        "files": sorted(
+            ({"path": relative(path), "size_bytes": os.stat(path).st_size}
+             for path in input_files if path in used_files),
+            key=lambda entry: entry["path"],
+        ),
+        "samples": sorted(
+            ({"path": relative(path), "scene_index": scene,
+              "sample_name": name}
+             for path, scene, name in work_items),
+            key=lambda entry: (entry["path"],
+                               -1 if entry["scene_index"] is None
+                               else entry["scene_index"]),
+        ),
+    }
+
+
+def _check_resume_sources(out_dir: str, sources: dict,
+                          has_name_collisions: bool = False) -> None:
+    """A continued run must use the same inputs and assigned sample names."""
+    if not RESUME:
+        return
+    progress_path = _run_progress_path(out_dir)
+    if not os.path.isfile(progress_path):
+        if has_name_collisions:
+            raise ValueError(
+                "This older run has no input-source record, and current input "
+                "files would share a sample name. Start a new run to keep "
+                "their masks separate."
+            )
+        print("[WARNING] This earlier run has no input-source record. Continue "
+              "only with its original input files; otherwise start a new run.")
+        return
+    import json as _json
+    with open(progress_path) as source:
+        previous = _json.load(source)
+    recorded = previous.get("input_sources")
+    if recorded is None:
+        if has_name_collisions:
+            raise ValueError(
+                "This older run has no input-source record, and current input "
+                "files would share a sample name. Start a new run to keep "
+                "their masks separate."
+            )
+        print("[WARNING] This earlier run has no input-source record. Continue "
+              "only with its original input files; otherwise start a new run.")
+    elif recorded != sources:
+        raise ValueError(
+            "The input files or Leica scenes differ from the previous run. "
+            "Return to the original input folder, or start a new segmentation "
+            "run so existing masks stay associated with their source images."
+        )
+
+
 def _check_new_run_output(out_dir: str) -> None:
     """Keep a new run from overwriting masks and their validation in place."""
     if RESUME or not os.path.isdir(out_dir):
@@ -1627,7 +1776,8 @@ def _check_new_run_output(out_dir: str) -> None:
                         )
 
 
-def _write_run_progress(out_dir, total, completed, finished, channels=None):
+def _write_run_progress(out_dir, total, completed, finished, channels=None,
+                        input_sources=None):
     """Record how far this segmentation run has got, so the GUI can detect an
     unfinished run and offer to continue it. Written/updated after every image."""
     import json as _json
@@ -1641,6 +1791,7 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None):
             "finished": bool(finished),
             "channels": channels if channels is not None else [],
             "run_identity": _run_identity(),
+            "input_sources": input_sources,
             "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
         with open(_run_progress_path(out_dir), "w") as f:
@@ -1667,33 +1818,23 @@ def main():
         print("[ERROR] No input files found. Check that input_root_folder is set correctly.")
         sys.exit(1)
 
-    # Expand each input file into one or more work items.  A Leica .lif can hold
-    # several scenes (separate confocal acquisitions, or a slide-scanner merged
-    # image) — each becomes its own sample with its own output folder.
-    work_items = []   # (file_path, lif_scene_index_or_None, sample_base_name)
-    for fp in all_files:
-        fb = os.path.splitext(os.path.basename(fp))[0]
-        if fp.lower().endswith(".lif"):
-            try:
-                scenes = lif_scenes_to_process(fp)
-            except Exception as exc:
-                print(f"[WARNING] Could not enumerate scenes in {fb}: {exc}")
-                scenes = [(None, None)]
-            if not scenes:
-                # lif_scenes_to_process() already printed why (e.g. this file
-                # is slide-scanner data with no confocal scenes) — do NOT fall
-                # back to "guess the main image", that would silently pick the
-                # slide scanner's whole-slide merged image and segment it
-                # directly instead of skipping it.
-                continue
-            if len(scenes) == 1:
-                work_items.append((fp, scenes[0][0], fb))
-            else:
-                for sidx, sname in scenes:
-                    safe = _sanitize_scene_name(sname)
-                    work_items.append((fp, sidx, f"{fb}__{safe}" if safe else fb))
-        else:
-            work_items.append((fp, None, fb))
+    # Expand LIF scenes and resolve duplicate sample names before any model or
+    # output file is created. Pixel reading and processing remain unchanged.
+    work_items, has_name_collisions = _plan_work_items(
+        all_files, ROOT_INPUT_FOLDER, return_collisions=True)
+
+    if not work_items:
+        print("[ERROR] No confocal samples to segment. Slide-scanner LIF files "
+              "belong in Step 2 -> Slide scanner; check the selected input folder.")
+        sys.exit(1)
+
+    input_sources = _input_source_record(
+        ROOT_INPUT_FOLDER, all_files, work_items,
+        project_root=os.path.dirname(os.path.abspath(MAIN_OUTPUT_FOLDER)),
+        input_type=INPUT_TYPE)
+    if not is_dry_run:
+        _check_resume_sources(MAIN_OUTPUT_FOLDER, input_sources,
+                              has_name_collisions=has_name_collisions)
 
     if TEST_RUN and work_items:
         work_items = work_items[:1]
@@ -1747,7 +1888,8 @@ def main():
     _completed = set()
     if not is_dry_run:
         _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                            finished=False, channels=CHANNELS_TO_PREDICT)
+                            finished=False, channels=CHANNELS_TO_PREDICT,
+                            input_sources=input_sources)
 
     for file_path, lif_scene, base_name in work_items:
         print(f"\n--- Planning for: {base_name} ---")
@@ -1768,7 +1910,8 @@ def main():
             print(f"  [RESUME] '{base_name}' already segmented for all channels — skipping.")
             _completed.add(base_name)
             _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                                finished=False, channels=CHANNELS_TO_PREDICT)
+                                finished=False, channels=CHANNELS_TO_PREDICT,
+                                input_sources=input_sources)
             continue
 
         try:
@@ -1888,7 +2031,8 @@ def main():
         if not is_dry_run:
             _completed.add(base_name)
             _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                                finished=False, channels=CHANNELS_TO_PREDICT)
+                                finished=False, channels=CHANNELS_TO_PREDICT,
+                                input_sources=input_sources)
         # Free torch/GPU cache before the next file, so memory doesn't
         # accumulate across a batch (the cause of macOS killing the process
         # with SIGKILL / exit -9 after many files).
@@ -1899,13 +2043,15 @@ def main():
     if not is_dry_run:
         _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
                             finished=(len(_completed) >= _total_samples),
-                            channels=CHANNELS_TO_PREDICT)
+                            channels=CHANNELS_TO_PREDICT,
+                            input_sources=input_sources)
 
 
 def _apply_config(config_path: str) -> None:
     """Override module-level settings from a CellMatchr config file."""
     import json
     global ROOT_INPUT_FOLDER, MAIN_OUTPUT_FOLDER, CHANNELS_TO_PREDICT
+    global INPUT_TYPE
     global MODEL_TYPE, PREPROCESS_MODE
     global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN
     global TILE_SHAPE_2D, HALO_2D, FINAL_QC_DOWNSAMPLE
@@ -1915,6 +2061,9 @@ def _apply_config(config_path: str) -> None:
 
     with open(config_path) as f:
         cfg = json.load(f)
+
+    if cfg.get("input_type") in ("czi", "vsi"):
+        INPUT_TYPE = cfg["input_type"]
 
     if cfg.get("input_root_folder"):
         ROOT_INPUT_FOLDER = cfg["input_root_folder"]

@@ -14,6 +14,17 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.colors import LinearSegmentedColormap
 from glob import glob
 
+if __package__:
+    from .validation_state import (
+        begin_review, finalize_if_ready, get_change_state,
+        get_review_decision, save_review_decision,
+    )
+else:
+    from validation_state import (
+        begin_review, finalize_if_ready, get_change_state,
+        get_review_decision, save_review_decision,
+    )
+
 # Set Matplotlib to use the TkAgg backend
 matplotlib.use('TkAgg')
 
@@ -176,6 +187,14 @@ def get_predicted_channels(project_folder):
 
 def get_channel_validation_status(project_folder, channel):
     """Return 'complete', 'partial', or 'none' for the given channel."""
+    change_state = get_change_state(project_folder, channel,
+                                    verify_hash=False)
+    if change_state["status"] == "pending":
+        return "needs_review"
+    if change_state["status"] == "unknown":
+        if change_state["reason"].startswith("Validation was edited"):
+            return "review_updated"
+        return "mask_changed"
     val_dir = os.path.join(project_folder, VALIDATION_FOLDER_NAME)
     if os.path.exists(os.path.join(val_dir, get_completion_marker(channel))):
         return "complete"
@@ -331,6 +350,7 @@ class RoiVerifierApp:
         self.channel_images = {}
         self.filtered_mask = None
         self.current_roi_index = 0
+        self.focused_review = False
         
         # Paths
         self.project_path = project_path
@@ -751,6 +771,23 @@ class RoiVerifierApp:
 
     def finish_session(self):
         """Called when all ROIs are done."""
+        if self.focused_review:
+            state = finalize_if_ready(
+                self.project_path, self.val_channel, self.filtered_mask_path
+            )
+            if state["status"] != "current":
+                messagebox.showwarning(
+                    "Review unfinished",
+                    "Some changed cells still need validation. Reopen this sample "
+                    "to finish the review.",
+                )
+                return
+            messagebox.showinfo("Complete", "Changed cells verified.")
+            if self.on_close_callback:
+                self.on_close_callback()
+            else:
+                self.root.destroy()
+            return
         try:
             val_dir = os.path.join(self.project_path, VALIDATION_FOLDER_NAME)
             os.makedirs(val_dir, exist_ok=True)
@@ -777,6 +814,31 @@ class RoiVerifierApp:
             print("Calculating ROI properties...")
             props_df = pd.DataFrame(regionprops_table(self.filtered_mask, properties=('label', 'bbox')))
             if props_df.empty: raise ValueError("No ROIs found.")
+            change_state = get_change_state(
+                self.project_path, self.val_channel, self.filtered_mask_path
+            )
+            if change_state["status"] == "unknown":
+                change_state = begin_review(
+                    self.project_path, self.val_channel, self.filtered_mask_path
+                )
+                # begin_review may replace the TIFF atomically to protect old
+                # readers, so use its current on-disk representation.
+                self.filtered_mask = tifffile.imread(self.filtered_mask_path)
+                props_df = pd.DataFrame(regionprops_table(
+                    self.filtered_mask, properties=('label', 'bbox')))
+            if change_state["status"] == "pending" and not change_state["pending_ids"]:
+                change_state = finalize_if_ready(
+                    self.project_path, self.val_channel, self.filtered_mask_path
+                )
+            self.focused_review = change_state["status"] == "pending"
+            if self.focused_review:
+                pending = set(change_state["pending_ids"])
+                props_df = props_df[props_df["label"].isin(pending)]
+                if len(props_df) != len(pending):
+                    raise ValueError(
+                        "Changed cell IDs no longer match this mask. "
+                        "Reopen the validation window."
+                    )
             self.props = props_df.to_dict('records')
             self.total_rois = len(self.props)
             
@@ -804,7 +866,7 @@ class RoiVerifierApp:
 
             if not os.path.exists(self.output_file_path):
                 with open(self.output_file_path, 'w') as f: f.write("ROI_ID\tDecision\tNote\n")
-            else:
+            elif not self.focused_review:
                 try:
                     df_results = pd.read_csv(self.output_file_path, sep='\t')
                     self.current_roi_index = len(df_results)
@@ -957,6 +1019,18 @@ class RoiVerifierApp:
             return
         roi_id = self.props[self.current_roi_index]['label']
         notes = self.notes_text.get("1.0", tk.END).strip().replace("\n", " ").replace("\t", " ")
+        if self.focused_review:
+            try:
+                save_review_decision(
+                    self.project_path, self.val_channel,
+                    self.filtered_mask_path, roi_id, decision, notes,
+                )
+            except Exception as exc:
+                messagebox.showerror("Could not save decision", str(exc))
+                return
+            self.current_roi_index += 1
+            self.update_roi_display(recalc_roi=True)
+            return
         try:
             with open(self.output_file_path, 'a') as f: f.write(f"{roi_id}\t{decision}\t{notes}\n")
         except Exception as e: messagebox.showerror("Error", str(e)); return
@@ -966,6 +1040,17 @@ class RoiVerifierApp:
     def go_back(self, event=None):
         if self.current_roi_index > 0:
             self.current_roi_index -= 1
+            if self.focused_review:
+                target_label = self.props[self.current_roi_index]['label']
+                row = get_review_decision(
+                    self.project_path, self.val_channel, target_label
+                )
+                if row:
+                    self.make_decision(row["Decision"])
+                    self.notes_text.delete("1.0", tk.END)
+                    self.notes_text.insert("1.0", row["Note"])
+                self.update_roi_display(recalc_roi=False)
+                return
             
             try:
                 df = pd.read_csv(self.output_file_path, sep='\t')
@@ -1064,8 +1149,16 @@ class ProjectChooser:
                 status_parts = []
                 for ch in predicted_chs:
                     s = get_channel_validation_status(p, ch)
-                    icon = "✓" if s == "complete" else ("⟳" if s == "partial" else "✗")
-                    status_parts.append(f"ch{ch}:{icon}")
+                    if s == "needs_review":
+                        n = len(get_change_state(p, ch, verify_hash=False)["pending_ids"])
+                        status_parts.append(f"ch{ch}: Review {n} changed")
+                    elif s == "review_updated":
+                        status_parts.append(f"ch{ch}: Review file updated")
+                    elif s == "mask_changed":
+                        status_parts.append(f"ch{ch}: Mask changed")
+                    else:
+                        icon = "✓" if s == "complete" else ("⟳" if s == "partial" else "✗")
+                        status_parts.append(f"ch{ch}:{icon}")
                 status_str = "  ".join(status_parts)
 
                 self.projects.append({"path": p, "channels": predicted_chs})
@@ -1119,6 +1212,14 @@ class ProjectChooser:
             status = get_channel_validation_status(project_path, ch)
             if status == "complete":
                 icon, fg = "✓  Complete", "green"
+            elif status == "needs_review":
+                n = len(get_change_state(project_path, ch,
+                                         verify_hash=False)["pending_ids"])
+                icon, fg = f"Review {n} changed cells", "orange"
+            elif status == "review_updated":
+                icon, fg = "Review file updated; open to import", "orange"
+            elif status == "mask_changed":
+                icon, fg = "Mask changed; review needed", "orange"
             elif status == "partial":
                 icon, fg = "⟳  In Progress", "orange"
             else:

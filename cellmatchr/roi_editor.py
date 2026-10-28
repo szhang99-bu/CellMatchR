@@ -34,6 +34,11 @@ import numpy as np
 import tifffile
 from skimage.measure import label as connected_components
 
+if __package__:
+    from .validation_state import save_edited_mask
+else:
+    from validation_state import save_edited_mask
+
 # ── Display resolution cap ───────────────────────────────────────────────────
 # Large TIFFs freeze napari on the first brush stroke because it must upload
 # the entire array as a GPU texture.  We downsample the *display* layers to
@@ -675,8 +680,8 @@ class RoiEditorApp:
             btn.setChecked(lv == label)
 
     def _save_and_next(self) -> None:
-        self._save_current()
-        if not self.test_mode:
+        saved = self._save_current()
+        if not self.test_mode and saved:
             self._advance()
 
     def _skip(self) -> None:
@@ -687,7 +692,8 @@ class RoiEditorApp:
         if self.idx > 0:
             # Auto-save any unsaved brush work before leaving this sample
             if not self.test_mode:
-                self._auto_save_current()
+                if not self._auto_save_current():
+                    return
             self.idx -= 1
             self._load_sample(self.idx)
             self._set_status("")
@@ -704,15 +710,15 @@ class RoiEditorApp:
             self._set_status("✓  All images reviewed!", colour="#a6e3a1")
             self._set_action_buttons_enabled(False)
 
-    def _auto_save_current(self) -> None:
+    def _auto_save_current(self) -> bool:
         """
         Silently save any additions the user painted but didn't explicitly save.
         Called before navigating away (Previous).  No-op in test mode.
         """
         if self.test_mode or self._add_lyr is None:
-            return
+            return True
         if self._add_lyr.data.max() == 0:
-            return   # nothing painted
+            return True   # nothing painted
         s = self.samples[self.idx]
         additions = _upsample_additions(
             self._add_lyr.data, self._scale, self._orig_h, self._orig_w
@@ -720,10 +726,18 @@ class RoiEditorApp:
         existing = tifffile.imread(s["mask"]).astype(np.int32)
         new_mask, n_added, new_ids = _merge_additions(existing, additions)
         if n_added > 0:
-            tifffile.imwrite(s["mask"], new_mask.astype(np.uint32), compression="lzw")
+            try:
+                state = save_edited_mask(s["mask"], self.channel, existing, new_mask)
+            except Exception as exc:
+                print(f"[roi_editor] ERROR: could not auto-save mask: {exc}")
+                self._set_status(f"Could not save mask: {exc}", colour="#f38ba8")
+                return False
             self._record_added_rois(s, new_mask, new_ids)
             print(f"[roi_editor] Auto-saved {n_added} ROI(s) for '{s['name']}'")
-            self._set_status(f"✓  Auto-saved {n_added} ROI(s).", colour="#a6e3a1")
+            pending = len(state["pending_ids"])
+            note = f" {pending} cell(s) need validation." if pending else ""
+            self._set_status(f"✓  Auto-saved {n_added} ROI(s).{note}", colour="#a6e3a1")
+        return True
 
     def _set_action_buttons_enabled(self, enabled: bool) -> None:
         """Enable or disable the save, skip, and colour-picker buttons."""
@@ -775,11 +789,11 @@ class RoiEditorApp:
         except Exception as exc:
             print(f"[roi_editor] WARNING: could not record added ROI ids: {exc}")
 
-    def _save_current(self) -> None:
+    def _save_current(self) -> bool:
         additions_display = self._add_lyr.data
         if additions_display.max() == 0:
             self._set_status("Nothing drawn — skipped.", colour="#aaaaaa")
-            return
+            return True
 
         s = self.samples[self.idx]
 
@@ -797,21 +811,30 @@ class RoiEditorApp:
                 "Painted pixels overlapped existing ROIs only — nothing added.",
                 colour="#fab387",
             )
-            return
+            return True
 
         if self.test_mode:
             self._test_save(s, existing, new_mask, new_ids, n_added)
         else:
+            try:
+                self._normal_save(s, existing, new_mask, n_added)
+            except Exception as exc:
+                print(f"[roi_editor] ERROR: could not save mask: {exc}")
+                self._set_status(f"Could not save mask: {exc}", colour="#f38ba8")
+                return False
             self._record_added_rois(s, new_mask, new_ids)
-            self._normal_save(s, new_mask, n_added)
+        return True
 
-    def _normal_save(self, s: dict, new_mask: np.ndarray, n_added: int) -> None:
+    def _normal_save(self, s: dict, existing: np.ndarray,
+                     new_mask: np.ndarray, n_added: int) -> None:
         """Write directly to the original mask TIF. No PNG, no debug files."""
-        tifffile.imwrite(s["mask"], new_mask.astype(np.uint32), compression="lzw")
+        state = save_edited_mask(s["mask"], self.channel, existing, new_mask)
         # Refresh display layers at display resolution
         self._mask_lyr.data = _downsample(new_mask, self._scale)
         self._add_lyr.data  = np.zeros_like(self._mask_lyr.data, dtype=np.int32)
-        self._set_status(f"✓  {n_added} new ROI(s) saved.", colour="#a6e3a1")
+        pending = len(state["pending_ids"])
+        note = f" {pending} cell(s) need validation." if pending else ""
+        self._set_status(f"✓  {n_added} new ROI(s) saved.{note}", colour="#a6e3a1")
 
     def _test_save(self, s: dict, existing: np.ndarray,
                    new_mask: np.ndarray, new_ids: set[int], n_added: int) -> None:

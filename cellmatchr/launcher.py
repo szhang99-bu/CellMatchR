@@ -5,9 +5,12 @@ CellMatchr Launcher — step-by-step wizard UI.
 import glob
 import json
 import os
+import re
 import sys
 import subprocess
 import threading
+from datetime import datetime
+from uuid import uuid4
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox
 
@@ -63,6 +66,27 @@ SUBFOLDER = {
 }
 
 
+def _segmentation_run_details(project_folder: str, run_name: str) -> str:
+    """Summarize optional run metadata without excluding older projects."""
+    progress_path = os.path.join(project_folder, run_name, "_run_progress.json")
+    try:
+        with open(progress_path) as source:
+            identity = json.load(source).get("run_identity")
+        if not isinstance(identity, dict):
+            raise ValueError("run identity unavailable")
+        backend = str(identity["backend"]).strip().lower()
+        method = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM"}.get(
+            backend, backend)
+        model = str(identity["model"])
+        preprocess = str(identity["preprocess"])
+        channels = ", ".join(str(channel)
+                              for channel in identity["channels"])
+        return (f"{method}  ·  model {model}  ·  {preprocess}  ·  "
+                f"channels {channels or 'unspecified'}")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return "Earlier run — method details unavailable"
+
+
 # ---------------------------------------------------------------------------
 # Conflict dialog — shown when an output folder already exists
 # ---------------------------------------------------------------------------
@@ -70,48 +94,59 @@ SUBFOLDER = {
 class _ConflictDialog(tk.Toplevel):
     """Ask user: replace existing folder, or save with a custom suffix."""
 
-    def __init__(self, parent: tk.Tk, folder_path: str) -> None:
+    def __init__(self, parent: tk.Tk, folder_path: str,
+                 suggested_suffix: str = "",
+                 allow_replace: bool = True) -> None:
         super().__init__(parent)
         self.result = None          # None=cancel | "replace" | "<suffix string>"
+        self._folder_path = folder_path
         self.transient(parent)
         self.grab_set()
         self.configure(bg=BG)
-        self.title("Output already exists")
+        self.title("Output already exists" if allow_replace else
+                   "Save new segmentation run")
         self.resizable(False, False)
 
         folder_name = os.path.basename(folder_path)
 
         tk.Label(self, text=f"'{folder_name}' already exists.",
                  bg=BG, fg=FG, font=FONT_BOLD).pack(pady=(20, 4), padx=24)
-        tk.Label(self, text="Choose what to do:",
+        tk.Label(self, text=("Choose what to do:" if allow_replace else
+                             "The existing masks and validation will be kept."),
                  bg=BG, fg=MUTED, font=FONT).pack(pady=(0, 14), padx=24)
 
-        tk.Button(
-            self, text="Replace  (overwrite existing output)",
-            command=self._replace,
-            bg=RED, fg="white", font=FONT_BOLD, relief="flat",
-            padx=14, pady=8,
-        ).pack(fill="x", padx=24, pady=4)
+        if allow_replace:
+            tk.Button(
+                self, text="Replace  (overwrite existing output)",
+                command=self._replace,
+                bg=RED, fg="white", font=FONT_BOLD, relief="flat",
+                padx=14, pady=8,
+            ).pack(fill="x", padx=24, pady=4)
 
-        sep = tk.Frame(self, bg=MUTED, height=1)
-        sep.pack(fill="x", padx=24, pady=10)
+            sep = tk.Frame(self, bg=MUTED, height=1)
+            sep.pack(fill="x", padx=24, pady=10)
 
-        tk.Label(self, text="— or save as a new folder —",
-                 bg=BG, fg=MUTED, font=FONT).pack(pady=(0, 6))
+            tk.Label(self, text="— or save as a new folder —",
+                     bg=BG, fg=MUTED, font=FONT).pack(pady=(0, 6))
+        else:
+            tk.Label(self, text="New folder name:",
+                     bg=BG, fg=FG, font=FONT).pack(pady=(0, 6))
 
         row = tk.Frame(self, bg=BG)
         row.pack(padx=24, pady=4)
         tk.Label(row, text=f"{folder_name}_", bg=BG, fg=MUTED, font=FONT).pack(side="left")
-        self._suffix_var = tk.StringVar()
+        self._suffix_var = tk.StringVar(value=suggested_suffix)
         self._entry = tk.Entry(row, textvariable=self._suffix_var,
                                bg=CARD, fg=FG, insertbackground=FG,
-                               relief="flat", font=FONT, width=16)
+                               relief="flat", font=FONT,
+                               width=34 if not allow_replace else 16)
         self._entry.pack(side="left", padx=4)
         self._entry.focus_set()
         self._entry.bind("<Return>", lambda _: self._new_suffix())
 
         tk.Button(
-            self, text="Save with suffix",
+            self, text=("Save with suffix" if allow_replace else
+                        "Save as new run"),
             command=self._new_suffix,
             bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat",
             padx=14, pady=8,
@@ -131,7 +166,10 @@ class _ConflictDialog(tk.Toplevel):
 
     def _new_suffix(self):
         s = self._suffix_var.get().strip()
-        if not s:
+        if not s or s in (".", "..") or "/" in s or "\\" in s:
+            self._entry.config(bg="#5a1e2e")
+            return
+        if os.path.exists(f"{self._folder_path}_{s}"):
             self._entry.config(bg="#5a1e2e")
             return
         self.result = s
@@ -147,6 +185,58 @@ class _ConflictDialog(tk.Toplevel):
         px, py = parent.winfo_x(), parent.winfo_y()
         w, h   = self.winfo_width(), self.winfo_height()
         self.geometry(f"+{px + pw//2 - w//2}+{py + ph//2 - h//2}")
+
+
+class _SegmentationRunDialog(tk.Toplevel):
+    """Let the user choose the precise run before analysis starts."""
+
+    def __init__(self, parent: tk.Tk, choices: list[str], initial: str,
+                 project_folder: str) -> None:
+        super().__init__(parent)
+        self.result = None
+        self.transient(parent)
+        self.grab_set()
+        self.configure(bg=BG)
+        self.title("Choose segmentation run")
+        self.resizable(False, False)
+
+        tk.Label(self, text="Which segmentation run should be analyzed?",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(padx=24, pady=(20, 10))
+        self._choice = tk.StringVar(value=initial if initial in choices else choices[0])
+        picker = ttk.Combobox(self, textvariable=self._choice, values=choices,
+                              state="readonly", width=48)
+        picker.pack(fill="x", padx=24, pady=(0, 6))
+        picker.focus_set()
+        details = tk.Label(
+            self,
+            text=_segmentation_run_details(project_folder, self._choice.get()),
+            bg=BG, fg=MUTED, font=FONT, wraplength=440, justify="left",
+        )
+        details.pack(anchor="w", padx=24, pady=(0, 14))
+        self._choice.trace_add(
+            "write", lambda *_: details.config(text=_segmentation_run_details(
+                project_folder, self._choice.get())))
+
+        buttons = tk.Frame(self, bg=BG)
+        buttons.pack(padx=24, pady=(0, 20))
+        tk.Button(buttons, text="Use selected run", command=self._accept,
+                  bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat",
+                  padx=12, pady=7).pack(side="left", padx=(0, 8))
+        tk.Button(buttons, text="Cancel", command=self.destroy,
+                  bg=CARD, fg=FG, font=FONT, relief="flat",
+                  padx=12, pady=7).pack(side="left")
+        self.bind("<Return>", lambda _event: self._accept())
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.update_idletasks()
+        self.geometry(
+            f"+{parent.winfo_x() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)}"
+            f"+{parent.winfo_y() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)}"
+        )
+        self.wait_window(self)
+
+    def _accept(self) -> None:
+        self.result = self._choice.get()
+        self.destroy()
 
 
 # ---------------------------------------------------------------------------
@@ -855,7 +945,8 @@ class CellMatchrLauncher:
                 results.append(name)
         return results
 
-    def _resolve_output_dir(self, base: str) -> str | None:
+    def _resolve_output_dir(self, base: str,
+                            suggested_suffix: str = "") -> str | None:
         """
         Check if base subfolder exists inside project_output_folder.
         If it does, show conflict dialog.
@@ -867,13 +958,346 @@ class CellMatchrLauncher:
             return None
         candidate = os.path.join(proj, base)
         if os.path.isdir(candidate):
-            dlg = _ConflictDialog(self.root, candidate)
+            dlg = _ConflictDialog(self.root, candidate, suggested_suffix)
             if dlg.result is None:
                 return None
             if dlg.result == "replace":
                 return candidate
             return os.path.join(proj, f"{base}_{dlg.result}")
         return candidate
+
+    def _suggest_segmentation_suffix(self) -> str:
+        """Give a new run a recognizable, collision-free name by default."""
+        backend = str(self.config.get("seg_backend", "microsam")).strip().lower()
+        if backend not in ("microsam", "cellpose"):
+            backend = "microsam"
+        stem = f"{backend}_{datetime.now():%Y%m%d_%H%M%S}"
+        proj = self.config.get("project_output_folder", "").strip()
+        suffix = stem
+        number = 2
+        while os.path.exists(os.path.join(proj, f"{SUBFOLDER['seg']}_{suffix}")):
+            suffix = f"{stem}_{number}"
+            number += 1
+        return suffix
+
+    def _resolve_segmentation_output_dir(self) -> str | None:
+        """Create a separate new run whenever an existing run has content."""
+        proj = self.config.get("project_output_folder", "").strip()
+        if not proj:
+            self._log("ERROR: No project output folder set. Go to Step 1.")
+            return None
+        base = os.path.join(proj, SUBFOLDER["seg"])
+        if not os.path.lexists(base):
+            return base
+        if os.path.isdir(base) and not os.path.islink(base) and not os.listdir(base):
+            return base
+        dialog = _ConflictDialog(
+            self.root, base, self._suggest_segmentation_suffix(),
+            allow_replace=False,
+        )
+        if dialog.result is None or dialog.result == "replace":
+            return None
+        return f"{base}_{dialog.result}"
+
+    def _segmentation_identity_from_config(self) -> dict:
+        """Match the identity stored in a new segmentation progress file."""
+        backend = str(self.config.get("seg_backend") or "microsam").strip().lower()
+        model = (str(self.config.get("seg_model_type") or "vit_b_lm")
+                 if backend == "microsam" else "cpsam")
+        raw_channels = str(self.config.get("seg_channels") or "")
+        channels = [int(part.strip()) for part in raw_channels.split(",")
+                    if part.strip()]
+        return {
+            "backend": backend,
+            "model": model,
+            "preprocess": str(self.config.get("seg_preprocess_mode") or
+                              "local_bg_subtract"),
+            "channels": channels,
+        }
+
+    def _choose_analysis_run(self, *, ask_if_multiple: bool = False) -> str | None:
+        """Choose an existing segmentation folder without guessing its method."""
+        choices = self._find_variants(SUBFOLDER["seg"])
+        if not choices:
+            return None
+        from_card = (self._ana_input_var.get()
+                     if self._ana_input_var is not None else "")
+        saved = str(self.config.get("seg_input_subfolder", "")).strip()
+        selected = next((name for name in (from_card, saved) if name in choices),
+                        None)
+        if len(choices) > 1 and (ask_if_multiple or selected is None):
+            dialog = _SegmentationRunDialog(
+                self.root, choices, selected or choices[0],
+                self.config.get("project_output_folder", "").strip())
+            if dialog.result is None:
+                return None
+            selected = dialog.result
+        if selected is None:
+            selected = choices[0]
+        if self._ana_input_var is not None:
+            self._ana_input_var.set(selected)
+        self.config["seg_input_subfolder"] = selected
+        return selected
+
+    def _analysis_output_dir(self, segmentation_run: str) -> str:
+        """Keep legacy paths while pairing new run variants by suffix."""
+        proj = self.config.get("project_output_folder", "").strip()
+        seg_base = SUBFOLDER["seg"]
+        if segmentation_run == seg_base:
+            name = SUBFOLDER["ana"]
+        elif segmentation_run.startswith(seg_base + "_"):
+            name = SUBFOLDER["ana"] + segmentation_run[len(seg_base):]
+        else:
+            raise ValueError(f"Unknown segmentation run: {segmentation_run}")
+        return os.path.join(proj, name)
+
+    def _analysis_generated_files(self, segmentation_run: str,
+                                  output_dir: str) -> list[str]:
+        """List only established analysis files for the selected run."""
+        files = []
+        for filename in (
+            "combined_analysis_summary.xlsx", "combined_analysis_summary.csv",
+            "analysis_run_summary.json", "analysis_errors.log",
+        ):
+            path = os.path.join(output_dir, filename)
+            if os.path.isfile(path):
+                files.append(path)
+
+        proj = self.config.get("project_output_folder", "").strip()
+        seg_root = os.path.join(proj, segmentation_run)
+        configured = str(self.config.get("ana_subfolder_name") or
+                         "analysis_results").strip()
+        subfolders = {configured, "analysis_results", "colocalization_analysis"}
+        if not os.path.isdir(seg_root):
+            return files
+        for sample in os.listdir(seg_root):
+            if sample.startswith((".", "DEBUG")):
+                continue
+            sample_dir = os.path.join(seg_root, sample)
+            if not os.path.isdir(sample_dir):
+                continue
+            output_pattern = re.compile(
+                rf"^{re.escape(sample)}_(?:summary\.csv|"
+                r"(?:channel_\d+|cell_of_interest|protein_marker)_object_table\.csv|"
+                r"channel_\d+_to_channel_\d+_(?:matches|iou_candidates)\.csv|"
+                r"roi_mask_resized\.tif|QC_(?:overlay|roi_preview)\.(?:tif|png))$"
+            )
+            for subfolder in subfolders:
+                results_dir = os.path.join(sample_dir, subfolder)
+                if not os.path.isdir(results_dir):
+                    continue
+                for filename in os.listdir(results_dir):
+                    path = os.path.join(results_dir, filename)
+                    if output_pattern.fullmatch(filename) and os.path.isfile(path):
+                        files.append(path)
+        return sorted(set(files))
+
+    @staticmethod
+    def _write_analysis_backup_manifest(backup_dir: str, manifest: dict) -> None:
+        """Persist recovery instructions before moving any result file."""
+        path = os.path.join(backup_dir, "backup_manifest.json")
+        pending = path + ".tmp"
+        with open(pending, "w") as f:
+            json.dump(manifest, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(pending, path)
+
+    def _set_analysis_backup_state(self, backup_dir: str, state: str) -> None:
+        with open(os.path.join(backup_dir, "backup_manifest.json")) as f:
+            manifest = json.load(f)
+        manifest["state"] = state
+        self._write_analysis_backup_manifest(backup_dir, manifest)
+
+    def _recover_analysis_backups(self, segmentation_run: str) -> int:
+        """Finish or roll back an interrupted replacement for this run."""
+        proj = os.path.abspath(
+            self.config.get("project_output_folder", "").strip())
+        backup_root = os.path.join(proj, ".analysis_backups")
+        if not os.path.isdir(backup_root):
+            return 0
+        if os.path.commonpath((
+                os.path.realpath(proj), os.path.realpath(backup_root))) != os.path.realpath(proj):
+            raise ValueError(f"Backup folder points outside the project: {backup_root}")
+        recovered = 0
+        for name in sorted(os.listdir(backup_root)):
+            backup_dir = os.path.join(backup_root, name)
+            manifest_path = os.path.join(backup_dir, "backup_manifest.json")
+            if not os.path.isfile(manifest_path):
+                continue
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            if manifest.get("segmentation_run") != segmentation_run:
+                continue
+            if manifest.get("state") not in ("preparing", "ready", "restoring"):
+                continue
+            output_dir = self._analysis_output_dir(segmentation_run)
+            if (manifest["state"] == "ready" and
+                    self._analysis_workbook_written(output_dir)):
+                self._set_analysis_backup_state(backup_dir, "committed")
+                self._log(f"Finished recording the earlier analysis run: {backup_dir}")
+            else:
+                self._restore_analysis_backup(backup_dir)
+                self._log(f"Recovered interrupted analysis results from: {backup_dir}")
+            recovered += 1
+        return recovered
+
+    def _recover_all_analysis_backups(self) -> int:
+        """Recover unfinished replacements when an existing project is opened."""
+        proj = self.config.get("project_output_folder", "").strip()
+        backup_root = os.path.join(proj, ".analysis_backups")
+        if not os.path.isdir(backup_root):
+            return 0
+        if os.path.commonpath((
+                os.path.realpath(proj), os.path.realpath(backup_root))) != os.path.realpath(proj):
+            raise ValueError(f"Backup folder points outside the project: {backup_root}")
+        runs = set()
+        for name in os.listdir(backup_root):
+            manifest_path = os.path.join(backup_root, name,
+                                         "backup_manifest.json")
+            if not os.path.isfile(manifest_path):
+                continue
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+            if manifest.get("state") in ("preparing", "ready", "restoring"):
+                runs.add(manifest["segmentation_run"])
+        return sum(self._recover_analysis_backups(run) for run in sorted(runs))
+
+    def _prepare_analysis_output(self, segmentation_run: str
+                                 ) -> tuple[str, str | None] | None:
+        """Confirm replacement once, then save only this run's old results."""
+        output_dir = self._analysis_output_dir(segmentation_run)
+        try:
+            self._recover_analysis_backups(segmentation_run)
+        except Exception as exc:
+            messagebox.showerror(
+                "Could not recover previous analysis",
+                f"The previous analysis backup needs attention:\n{exc}\n"
+                "Analysis was not started.", parent=self.root,
+            )
+            return None
+        existing = self._analysis_generated_files(segmentation_run, output_dir)
+        if not existing:
+            return output_dir, None
+
+        replace = messagebox.askyesno(
+            "Replace analysis results?",
+            f"Segmentation run: {segmentation_run}\n"
+            f"Analysis folder: {os.path.basename(output_dir)}\n\n"
+            "Results already exist. Replace this run's Excel summary and "
+            "per-sample analysis files?\n"
+            "Yes keeps a backup of the previous results. No cancels.\n"
+            "Other runs will not be changed.",
+            parent=self.root, default=messagebox.NO, icon="warning",
+        )
+        if not replace:
+            self._log("Analysis canceled; existing results were kept.")
+            if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
+                self._ana_status.config(
+                    text="Analysis canceled; existing results were kept.", fg=MUTED)
+            return None
+
+        proj = os.path.abspath(
+            self.config.get("project_output_folder", "").strip())
+        proj_real = os.path.realpath(proj)
+        backup_dir = os.path.join(
+            proj, ".analysis_backups",
+            f"{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}",
+        )
+        moved = []
+        try:
+            originals = [os.path.abspath(path) for path in existing]
+            for original in originals:
+                if os.path.commonpath((proj_real, os.path.realpath(original))) != proj_real:
+                    raise ValueError(
+                        f"Analysis output is outside the project: {original}")
+            if os.path.commonpath((
+                    proj_real, os.path.realpath(os.path.dirname(backup_dir)))) != proj_real:
+                raise ValueError("Analysis backup folder points outside the project")
+            os.makedirs(backup_dir, exist_ok=False)
+            manifest = {
+                "state": "preparing",
+                "segmentation_run": segmentation_run,
+                "analysis_output": os.path.relpath(output_dir, proj),
+                "original_files": [os.path.relpath(p, proj) for p in originals],
+            }
+            self._write_analysis_backup_manifest(backup_dir, manifest)
+            for original in originals:
+                relative = os.path.relpath(original, proj)
+                saved = os.path.join(backup_dir, relative)
+                os.makedirs(os.path.dirname(saved), exist_ok=True)
+                os.replace(original, saved)
+                moved.append((original, saved))
+            manifest["state"] = "ready"
+            self._write_analysis_backup_manifest(backup_dir, manifest)
+        except Exception as exc:
+            for original, saved in reversed(moved):
+                try:
+                    os.makedirs(os.path.dirname(original), exist_ok=True)
+                    os.replace(saved, original)
+                except OSError:
+                    pass
+            messagebox.showerror(
+                "Could not prepare analysis",
+                f"The previous results could not be backed up.\n{exc}\n"
+                f"Backup folder: {backup_dir}\n"
+                "Analysis was not started.", parent=self.root,
+            )
+            if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
+                self._ana_status.config(
+                    text="Could not back up previous results.", fg=RED)
+            return None
+        return output_dir, backup_dir
+
+    def _restore_analysis_backup(self, backup_dir: str) -> str:
+        """Restore previous results if the replacement run fails fatally."""
+        proj = os.path.abspath(
+            self.config.get("project_output_folder", "").strip())
+        proj_real = os.path.realpath(proj)
+        with open(os.path.join(backup_dir, "backup_manifest.json")) as f:
+            manifest = json.load(f)
+        state = manifest.get("state")
+        if state not in ("preparing", "ready", "restoring"):
+            raise ValueError(f"Backup cannot be restored in state {state}: {backup_dir}")
+        segmentation_run = manifest["segmentation_run"]
+        output_dir = self._analysis_output_dir(segmentation_run)
+        if state != "restoring":
+            manifest["state"] = "restoring"
+            self._write_analysis_backup_manifest(backup_dir, manifest)
+        original_paths = {
+            os.path.join(proj, relative) for relative in manifest["original_files"]
+        }
+        for generated in self._analysis_generated_files(segmentation_run, output_dir):
+            if os.path.commonpath((proj_real, os.path.realpath(generated))) != proj_real:
+                raise ValueError(f"Analysis output is outside the project: {generated}")
+            if generated not in original_paths:
+                os.remove(generated)
+        for relative in manifest["original_files"]:
+            original = os.path.join(proj, relative)
+            saved = os.path.join(backup_dir, relative)
+            if os.path.commonpath((
+                    proj_real, os.path.realpath(os.path.dirname(original)))) != proj_real:
+                raise ValueError(f"Cannot restore outside the project: {original}")
+            if os.path.isfile(saved):
+                os.makedirs(os.path.dirname(original), exist_ok=True)
+                os.replace(saved, original)
+            elif not os.path.isfile(original):
+                raise FileNotFoundError(
+                    f"Neither original nor backup is available: {original}")
+        manifest["state"] = "restored"
+        self._write_analysis_backup_manifest(backup_dir, manifest)
+        return backup_dir
+
+    @staticmethod
+    def _analysis_workbook_written(output_dir: str) -> bool:
+        """A zero exit alone does not mean the new workbook was saved."""
+        try:
+            with open(os.path.join(output_dir, "analysis_run_summary.json")) as f:
+                written = bool(json.load(f)["workbook_written"])
+            return written and os.path.isfile(os.path.join(
+                output_dir, "combined_analysis_summary.xlsx"))
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     # ------------------------------------------------------------------
     # Logging helpers
@@ -921,7 +1345,7 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
 
     def _run_subprocess_in_log(self, script: str, label: str,
-                                on_done=None) -> None:
+                                on_done=None, success_check=None) -> None:
         self._log(f"\n{'─'*60}")
         self._log(f"▶  {label}")
         self._log(f"{'─'*60}")
@@ -938,9 +1362,16 @@ class CellMatchrLauncher:
                 for line in proc.stdout:
                     self.root.after(0, self._log, line.rstrip())
                 proc.wait()
-                ok = proc.returncode == 0
-                msg = f"\n✓  {label} complete." if ok \
-                    else f"\n✗  {label} failed (code {proc.returncode})."
+                process_ok = proc.returncode == 0
+                ok = process_ok
+                if process_ok and success_check is not None:
+                    ok = bool(success_check())
+                if ok:
+                    msg = f"\n✓  {label} complete."
+                elif process_ok:
+                    msg = f"\n✗  {label} did not save the Excel summary."
+                else:
+                    msg = f"\n✗  {label} failed (code {proc.returncode})."
                 self.root.after(0, self._log, msg)
                 self.root.after(
                     0, self._set_run_status,
@@ -1109,6 +1540,14 @@ class CellMatchrLauncher:
         # or a moved/renamed folder. Using the json's own directory guarantees
         # the segmentation/validation/analysis folders are found on disk.
         self.config["project_output_folder"] = folder
+        self._val_input_var = None
+        self._ana_input_var = None
+        recovered = 0
+        recovery_error = ""
+        try:
+            recovered = self._recover_all_analysis_backups()
+        except Exception as exc:
+            recovery_error = str(exc)
         # A stored seg-folder selection from another machine may not exist
         # here; clear it so the dropdowns default to a folder actually on disk.
         saved_seg = self.config.get("seg_input_subfolder", "").strip()
@@ -1131,7 +1570,23 @@ class CellMatchrLauncher:
         save_config(self.config)
         self._update_project_display()
         name = self.config.get("project_name") or os.path.basename(folder)
-        self._open_status.config(text=f"✔  Loaded project: {name}", fg=GREEN)
+        if recovery_error:
+            self._open_status.config(
+                text=f"⚠  Loaded project: {name}. Analysis backup needs attention.",
+                fg=YELLOW)
+            messagebox.showwarning(
+                "Analysis backup needs attention",
+                f"The project opened, but an interrupted analysis could not "
+                f"be recovered automatically:\n{recovery_error}\n\n"
+                f"Backups: {os.path.join(folder, '.analysis_backups')}",
+                parent=self.root,
+            )
+        elif recovered:
+            self._open_status.config(
+                text=f"✔  Loaded project: {name}. Recovered {recovered} "
+                     "interrupted analysis run(s).", fg=GREEN)
+        else:
+            self._open_status.config(text=f"✔  Loaded project: {name}", fg=GREEN)
 
     # ==================================================================
     # STEP 2 — Input & Paths
@@ -1871,7 +2326,7 @@ class CellMatchrLauncher:
         return n
 
     def _seg_run_progress(self) -> "dict | None":
-        """Read the run-progress record from the most-recent Segmentation output.
+        """Find the most recently updated unfinished Segmentation run.
 
         Returns the parsed dict (with an added 'folder' key) or None. Segmentation
         writes/updates <Segmentation*>/_run_progress.json after every image, so an
@@ -1882,19 +2337,21 @@ class CellMatchrLauncher:
         variants = self._find_variants(SUBFOLDER["seg"])
         if not variants:
             return None
-        try:
-            folder = max((os.path.join(proj, v) for v in variants),
-                         key=os.path.getmtime)
+        unfinished = []
+        for variant in variants:
+            folder = os.path.join(proj, variant)
             ppath = os.path.join(folder, "_run_progress.json")
             if not os.path.isfile(ppath):
-                return None
-            import json as _json
-            with open(ppath) as f:
-                data = _json.load(f)
-            data["folder"] = folder
-            return data
-        except Exception:
-            return None
+                continue
+            try:
+                with open(ppath) as f:
+                    data = json.load(f)
+                if not data.get("finished", True):
+                    data["folder"] = folder
+                    unfinished.append((os.path.getmtime(ppath), data))
+            except (OSError, ValueError, TypeError):
+                continue
+        return max(unfinished, key=lambda pair: pair[0])[1] if unfinished else None
 
     def _find_input_variants(self) -> list:
         """[(display_name, images_folder)] for every converter output
@@ -2480,21 +2937,46 @@ class CellMatchrLauncher:
             return
 
         if resume:
-            # Continue into the most recently used Segmentation output and skip
-            # files already done — no "replace/new" prompt.
-            proj = self.config.get("project_output_folder", "").strip()
-            variants = self._find_variants(SUBFOLDER["seg"])
-            if not proj or not variants:
+            # Resume precisely the unfinished run shown on this card.
+            progress = self._seg_run_progress()
+            if not progress or progress.get("finished", True):
                 self._seg_status.config(
                     text="⚠  No previous Segmentation output found to continue.", fg=RED)
                 return
-            out = max((os.path.join(proj, v) for v in variants),
-                      key=lambda p: os.path.getmtime(p))
+            out = progress["folder"]
+            saved_identity = progress.get("run_identity")
+            if saved_identity is not None:
+                try:
+                    current_identity = self._segmentation_identity_from_config()
+                except ValueError:
+                    self._seg_status.config(
+                        text="⚠  Check the channel list before continuing.", fg=RED)
+                    return
+                if saved_identity != current_identity:
+                    messagebox.showwarning(
+                        "Settings do not match this run",
+                        "This unfinished run used a different method, model, "
+                        "preprocessing mode, or channel list. Match its settings "
+                        "before continuing, or start a new run. No masks were changed.",
+                        parent=self.root,
+                    )
+                    return
+            elif not messagebox.askyesno(
+                "Continue older segmentation run?",
+                "This older run has no saved method or settings, so the app "
+                "cannot verify that the current choices match it. Continuing "
+                "could mix methods in one folder.\n\n"
+                f"Continue {os.path.basename(out)} anyway? Choose No to "
+                "start a new run instead.",
+                parent=self.root, default=messagebox.NO, icon="warning",
+            ):
+                return
         else:
-            out = self._resolve_output_dir(SUBFOLDER["seg"])
+            out = self._resolve_segmentation_output_dir()
             if out is None:
                 return
         self.config["output_root_folder"] = out
+        self.config["seg_input_subfolder"] = os.path.basename(out)
         self.config["seg_resume"] = bool(resume)
         save_config(self.config)
         save_project_config(self.config)
@@ -2873,7 +3355,8 @@ class CellMatchrLauncher:
         ).pack(anchor="w", pady=(4, 0))
 
         ttk.Separator(toggle_card, orient="horizontal").pack(fill="x", pady=(8, 6))
-        tk.Label(toggle_card, text="Segmentation Input:", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 2))
+        tk.Label(toggle_card, text="Segmentation run to analyze:",
+                 bg=CARD, fg=FG, font=FONT_BOLD).pack(anchor="w", pady=(0, 2))
         _val_input_cur_lbl = tk.Label(
             toggle_card, text=f"Using:  {_default_seg}",
             bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
@@ -3099,14 +3582,15 @@ class CellMatchrLauncher:
 
         # ── Enable toggle ────────────────────────────────────────────
         _a_seg_variants = self._find_variants(SUBFOLDER["seg"])
-        _a_default_seg  = _a_seg_variants[-1] if _a_seg_variants else SUBFOLDER["seg"]
+        _a_default_seg = (_a_seg_variants[0] if len(_a_seg_variants) == 1 else "")
         # Honour the segmentation-input choice made on the Validation step so the
         # same folder (and its validation results) is used for analysis.
         _a_saved_seg = self.config.get("seg_input_subfolder", "").strip()
         if _a_saved_seg and _a_saved_seg in _a_seg_variants:
             _a_default_seg = _a_saved_seg
         self._ana_input_var = tk.StringVar(value=_a_default_seg)
-        self.config["seg_input_subfolder"] = _a_default_seg
+        if _a_default_seg:
+            self.config["seg_input_subfolder"] = _a_default_seg
 
         toggle_card = self._card(parent, "Enable")
         tk.Checkbutton(
@@ -3119,42 +3603,37 @@ class CellMatchrLauncher:
         ttk.Separator(toggle_card, orient="horizontal").pack(fill="x", pady=(8, 6))
         tk.Label(toggle_card, text="Segmentation Input:", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 2))
         _ana_input_cur_lbl = tk.Label(
-            toggle_card, text=f"Using:  {_a_default_seg}",
+            toggle_card, text=(f"Using:  {_a_default_seg}" if _a_default_seg
+                               else "Choose a run below before starting analysis."),
             bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
         )
-        _ana_input_cur_lbl.pack(anchor="w", pady=(0, 4))
+        _ana_input_cur_lbl.pack(anchor="w", pady=(0, 2))
+        _ana_details_lbl = tk.Label(
+            toggle_card,
+            text=(_segmentation_run_details(
+                self.config.get("project_output_folder", "").strip(),
+                _a_default_seg) if _a_default_seg else
+                "Choose a run to see its method and settings."),
+            bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
+        )
+        _ana_details_lbl.pack(anchor="w", pady=(0, 4))
 
         if len(_a_seg_variants) > 1:
-            _ana_input_ovr_frame = tk.Frame(toggle_card, bg=CARD)
-            _ana_ovr_lbl = tk.Label(
-                toggle_card,
-                text="▶  Use a different segmentation output",
-                bg=CARD, fg=MUTED,
-                font=(FONT[0], FONT[1], "underline"), cursor="hand2",
-            )
-            _ana_ovr_lbl.pack(anchor="w")
-
             _cb_ana_src = ttk.Combobox(
-                _ana_input_ovr_frame, textvariable=self._ana_input_var,
+                toggle_card, textvariable=self._ana_input_var,
                 values=_a_seg_variants, state="readonly", width=44,
             )
-            _cb_ana_src.pack(side="left", pady=(4, 0))
+            _cb_ana_src.pack(anchor="w", pady=(4, 6))
             self._bind_combobox_scroll(_cb_ana_src)
 
             def _ana_src_changed(*_):
                 _ana_input_cur_lbl.config(text=f"Using:  {self._ana_input_var.get()}")
+                _ana_details_lbl.config(text=_segmentation_run_details(
+                    self.config.get("project_output_folder", "").strip(),
+                    self._ana_input_var.get()))
                 # Share the choice with the Validation step.
                 self.config["seg_input_subfolder"] = self._ana_input_var.get()
             self._ana_input_var.trace_add("write", _ana_src_changed)
-
-            def _toggle_ana_ovr(lbl=_ana_ovr_lbl):
-                if _ana_input_ovr_frame.winfo_ismapped():
-                    _ana_input_ovr_frame.pack_forget()
-                    lbl.config(text="▶  Use a different segmentation output")
-                else:
-                    _ana_input_ovr_frame.pack(fill="x", pady=(0, 4))
-                    lbl.config(text="▼  Use a different segmentation output")
-            _ana_ovr_lbl.bind("<Button-1>", lambda _: _toggle_ana_ovr())
         elif not _a_seg_variants:
             tk.Label(toggle_card,
                      text="⚠  No segmentation output found yet — run Step 3 first.",
@@ -3407,8 +3886,12 @@ class CellMatchrLauncher:
             pass
 
     def _get_val_status_for_channel(self, project_root: str, channel: int) -> str:
-        """Return 'complete', 'partial', or 'none' for a channel in a project tree."""
+        """Include focused mask-change review in the displayed status."""
         import glob as _glob
+        from .validation_state import get_change_state
+        change = get_change_state(project_root, channel, verify_hash=False)
+        if change["status"] in ("pending", "unknown"):
+            return change["status"]
         val_dir = os.path.join(project_root, "ROI Validation Results")
         if os.path.exists(os.path.join(val_dir, f"_validation_complete_ch{channel}")):
             return "complete"
@@ -3487,11 +3970,20 @@ class CellMatchrLauncher:
                 n_complete = statuses.count("complete")
                 n_partial  = statuses.count("partial")
                 n_none     = statuses.count("none")
+                n_pending  = statuses.count("pending")
+                n_unknown  = statuses.count("unknown")
 
                 _img = "image" if n_total == 1 else "images"
                 if n_total == 0:
                     label_text = f"Channel {ch}: no project folders found"
                     fg = MUTED
+                elif n_pending or n_unknown:
+                    label_text = (
+                        f"Channel {ch}: REVIEW NEEDED — {n_pending} changed, "
+                        f"{n_unknown} uncertain (of {n_total} {_img}); "
+                        "validation filter not applied automatically"
+                    )
+                    fg = YELLOW
                 elif n_complete == n_total:
                     label_text = (f"Channel {ch}: validation COMPLETE "
                                   f"({n_complete}/{n_total} {_img})  ✓  — filter will be applied automatically")
@@ -3572,6 +4064,9 @@ class CellMatchrLauncher:
                 s = self._get_val_status_for_channel(project_root, ch)
                 if s == "complete":
                     icon, col = "✓", GREEN
+                elif s in ("pending", "unknown"):
+                    icon, col = "!", YELLOW
+                    row_status = "partial"
                 elif s == "partial":
                     icon, col = "⟳", YELLOW
                     if row_status == "complete":
@@ -3643,11 +4138,11 @@ class CellMatchrLauncher:
                 self._ana_status.config(text="⚠  No project folder set. Go to Step 1.", fg=RED)
             return
 
-        if self._ana_input_var and self._ana_input_var.get():
-            seg_sub = self._ana_input_var.get()
-        else:
-            seg_variants = self._find_variants(SUBFOLDER["seg"])
-            seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        seg_sub = self._choose_analysis_run()
+        if seg_sub is None:
+            if hasattr(self, "_ana_status"):
+                self._ana_status.config(text="Choose a segmentation run first.", fg=YELLOW)
+            return
         ana_input = os.path.join(proj, seg_sub)
 
         if not os.path.isdir(ana_input):
@@ -3656,14 +4151,27 @@ class CellMatchrLauncher:
                     text=f"⚠  Segmentation output not found: {seg_sub}", fg=RED)
             return
 
-        out = self._resolve_output_dir(SUBFOLDER["ana"])
-        if out is None:
+        prepared = self._prepare_analysis_output(seg_sub)
+        if prepared is None:
             return
+        out, backup_dir = prepared
 
         self.config["ana_microsam_output_root"] = ana_input
         self.config["output_root_folder"] = out
-        save_config(self.config)
-        save_project_config(self.config)
+        try:
+            save_config(self.config)
+            save_project_config(self.config)
+        except Exception as exc:
+            if backup_dir:
+                try:
+                    self._restore_analysis_backup(backup_dir)
+                except Exception as restore_exc:
+                    messagebox.showerror(
+                        "Could not restore previous results",
+                        f"{restore_exc}\nBackup: {backup_dir}", parent=self.root)
+            messagebox.showerror("Could not start analysis",
+                                 f"Could not save settings: {exc}", parent=self.root)
+            return
 
         if hasattr(self, "_ana_status"):
             self._ana_status.config(text="Starting…", fg=ACCENT)
@@ -3692,6 +4200,9 @@ class CellMatchrLauncher:
             except tk.TclError:
                 pass
 
+        if backup_dir:
+            _ana_log_line(f"Previous analysis saved at: {backup_dir}")
+
         def _thread():
             try:
                 proc = subprocess.Popen(
@@ -3703,7 +4214,28 @@ class CellMatchrLauncher:
                 for line in proc.stdout:
                     self.root.after(0, _ana_log_line, line.rstrip())
                 proc.wait()
-                ok = proc.returncode == 0
+                ok = (proc.returncode == 0 and
+                      self._analysis_workbook_written(out))
+                if ok and backup_dir:
+                    try:
+                        self._set_analysis_backup_state(backup_dir, "committed")
+                    except Exception as state_exc:
+                        self.root.after(
+                            0, _ana_log_line,
+                            f"Backup record could not be finalized: {state_exc}. "
+                            f"Backup: {backup_dir}",
+                        )
+                if not ok and backup_dir:
+                    try:
+                        self._restore_analysis_backup(backup_dir)
+                        self.root.after(0, _ana_log_line,
+                                        "Previous analysis results were restored.")
+                    except Exception as restore_exc:
+                        self.root.after(
+                            0, _ana_log_line,
+                            f"Could not restore previous results: {restore_exc}. "
+                            f"Backup: {backup_dir}",
+                        )
                 def _done():
                     try:
                         if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
@@ -3715,18 +4247,30 @@ class CellMatchrLauncher:
                         else:
                             if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
                                 self._ana_status.config(
-                                    text=f"✗  Failed (exit {proc.returncode}).", fg=RED)
-                            _ana_log_line(f"\n✗  Failed (exit code {proc.returncode}).")
+                                    text="✗  Analysis failed; see log.", fg=RED)
+                            _ana_log_line("\n✗  Analysis failed or Excel output was not saved.")
                     except tk.TclError:
                         pass
                 self.root.after(0, _done)
             except Exception as exc:
+                failure = str(exc)
+                if backup_dir:
+                    try:
+                        self._restore_analysis_backup(backup_dir)
+                        self.root.after(0, _ana_log_line,
+                                        "Previous analysis results were restored.")
+                    except Exception as restore_exc:
+                        self.root.after(
+                            0, _ana_log_line,
+                            f"Could not restore previous results: {restore_exc}. "
+                            f"Backup: {backup_dir}",
+                        )
                 def _err():
                     try:
                         if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
                             self._ana_progress.stop()
                         if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
-                            self._ana_status.config(text=f"✗  {exc}", fg=RED)
+                            self._ana_status.config(text=f"✗  {failure}", fg=RED)
                     except tk.TclError:
                         pass
                 self.root.after(0, _err)
@@ -3748,17 +4292,27 @@ class CellMatchrLauncher:
                     return True
             return False
         if step == "val":
-            # Find the segmentation output folder
-            seg_folder = None
-            for v in self._find_variants(SUBFOLDER["seg"]):
-                f = os.path.join(proj, v)
-                if os.path.isdir(f):
-                    seg_folder = f
-                    break
-            if seg_folder is None:
+            variants = self._find_variants(SUBFOLDER["seg"])
+            selected = str(self.config.get("seg_input_subfolder", "")).strip()
+            if selected not in variants and self._val_input_var is not None:
+                selected = self._val_input_var.get()
+            if selected not in variants:
+                selected = variants[0] if len(variants) == 1 else ""
+            if not selected:
                 return False
-            # Find every project subfolder that has a prediction mask
+            seg_folder = os.path.join(proj, selected)
             mask_pat = (self.config.get("val_mask_pattern", "") or "*_predict_original_ch2*.tif").strip()
+            channel_match = re.search(r"_ch(\d+)", mask_pat)
+            if channel_match:
+                channels_to_check = [int(channel_match.group(1))]
+            else:
+                channels_to_check = [
+                    int(part.strip())
+                    for part in str(self.config.get("seg_channels") or "").split(",")
+                    if part.strip().isdigit()
+                ]
+            if not channels_to_check:
+                return False
             projects = [
                 os.path.join(seg_folder, d)
                 for d in os.listdir(seg_folder)
@@ -3768,25 +4322,24 @@ class CellMatchrLauncher:
             ]
             if not projects:
                 return False
-            # Complete only when EVERY project has the validation-complete marker
             return all(
-                os.path.exists(os.path.join(p, "ROI Validation Results", "_validation_complete"))
-                for p in projects
+                self._get_val_status_for_channel(p, channel) == "complete"
+                for p in projects for channel in channels_to_check
             )
         if step == "ana":
-            # combined_analysis_summary.xlsx is written at the very end of
-            # analysis.py to whatever folder was used as the output root.
-            # The folder name varies (Analysis, analysis_output, etc.), so
-            # search every first-level subdirectory of the project folder.
-            if not os.path.isdir(proj):
+            variants = self._find_variants(SUBFOLDER["seg"])
+            selected = (self._ana_input_var.get()
+                        if self._ana_input_var is not None else "")
+            if selected not in variants:
+                selected = str(self.config.get("seg_input_subfolder", "")).strip()
+            if selected not in variants:
+                selected = variants[0] if len(variants) == 1 else ""
+            if not selected:
                 return False
-            for name in os.listdir(proj):
-                folder = os.path.join(proj, name)
-                if os.path.isdir(folder) and os.path.exists(
-                    os.path.join(folder, "combined_analysis_summary.xlsx")
-                ):
-                    return True
-            return False
+            return os.path.isfile(os.path.join(
+                self._analysis_output_dir(selected),
+                "combined_analysis_summary.xlsx",
+            ))
         return False
 
     def _build_run_step(self, parent) -> None:
@@ -3873,7 +4426,9 @@ class CellMatchrLauncher:
         run_all_card = self._card(parent, "Run All")
         tk.Label(
             run_all_card,
-            text="Runs all enabled steps in order. Steps already marked ✔ are automatically skipped.",
+            text="Runs segmentation if needed, then analyzes the run you choose. "
+                 "If analysis results already exist, you can replace them or cancel. "
+                 "Validation opens separately.",
             bg=CARD, fg=MUTED, font=FONT, wraplength=660,
         ).pack(anchor="w", pady=(0, 8))
         if cfg.get("val_enabled"):
@@ -3984,12 +4539,15 @@ class CellMatchrLauncher:
         if self._is_running("Segmentation"):
             self._log("Segmentation is already running…")
             return
-        out = self._resolve_output_dir(SUBFOLDER["seg"])
+        self._sync_vars_to_config()
+        out = self._resolve_segmentation_output_dir()
         if out is None:
             return
-        self._sync_vars_to_config()
         self.config["output_root_folder"] = out
+        self.config["seg_input_subfolder"] = os.path.basename(out)
+        self.config["seg_resume"] = False
         save_config(self.config)
+        save_project_config(self.config)
         self._run_subprocess_in_log(self._script("segmentation.py"), "Segmentation")
 
     def _run_validation(self) -> None:
@@ -4026,23 +4584,60 @@ class CellMatchrLauncher:
             self._log("ERROR: No project output folder set.")
             return
 
-        if self._ana_input_var:
-            seg_sub = self._ana_input_var.get()
-        else:
-            vs = self._find_variants(SUBFOLDER["seg"])
-            seg_sub = vs[-1] if vs else SUBFOLDER["seg"]
+        self._sync_vars_to_config()
+        seg_sub = self._choose_analysis_run(ask_if_multiple=True)
+        if seg_sub is None:
+            self._log("Analysis cancelled — choose a segmentation run first.")
+            return
         ana_input = os.path.join(proj, seg_sub)
-
-        out = self._resolve_output_dir(SUBFOLDER["ana"])
-        if out is None:
+        if not os.path.isdir(ana_input):
+            self._log(f"Segmentation output not found: {seg_sub}")
             return
 
-        self._sync_vars_to_config()
+        prepared = self._prepare_analysis_output(seg_sub)
+        if prepared is None:
+            return
+        out, backup_dir = prepared
+
         self.config["ana_microsam_output_root"] = ana_input
         self.config["output_root_folder"] = out
-        save_config(self.config)
+        try:
+            save_config(self.config)
+            save_project_config(self.config)
+        except Exception as exc:
+            if backup_dir:
+                try:
+                    self._restore_analysis_backup(backup_dir)
+                except Exception as restore_exc:
+                    self._log(f"Could not restore previous results: "
+                              f"{restore_exc}. Backup: {backup_dir}")
+            self._log(f"Could not save analysis settings: {exc}")
+            return
+        if backup_dir:
+            self._log(f"Previous analysis saved at: {backup_dir}")
 
-        self._run_subprocess_in_log(self._script("analysis.py"), "Analysis")
+        def _done(ok: bool) -> None:
+            if not ok and backup_dir:
+                try:
+                    self._restore_analysis_backup(backup_dir)
+                    self._log("Previous analysis results were restored.")
+                except Exception as exc:
+                    self._log(f"Could not restore previous results: {exc}. "
+                              f"Backup: {backup_dir}")
+            elif ok and backup_dir:
+                try:
+                    self._set_analysis_backup_state(backup_dir, "committed")
+                except Exception as exc:
+                    self._log(f"Backup record could not be finalized: {exc}. "
+                              f"Backup: {backup_dir}")
+            if ok:
+                status, color = self._analysis_run_status(out)
+                self._set_run_status(status, color)
+
+        self._run_subprocess_in_log(
+            self._script("analysis.py"), "Analysis", on_done=_done,
+            success_check=lambda: self._analysis_workbook_written(out),
+        )
 
     def _run_all(self) -> None:
         if self._is_running("Segmentation") or self._is_running("Analysis"):
@@ -4053,10 +4648,10 @@ class CellMatchrLauncher:
             self._log("ERROR: No project output folder set. Go to Step 1 — Create Project.")
             return
 
+        self._sync_vars_to_config()
         seg_done = self._step_is_done("seg")
-        ana_done = self._step_is_done("ana")
         run_seg = not seg_done
-        run_ana = bool(self.config.get("ana_enabled")) and not ana_done
+        run_ana = bool(self.config.get("ana_enabled"))
 
         if not run_seg and not run_ana:
             self._log("\n✔  All steps already complete — nothing to run.")
@@ -4065,20 +4660,44 @@ class CellMatchrLauncher:
 
         seg_out = None
         if run_seg:
-            seg_out = self._resolve_output_dir(SUBFOLDER["seg"])
+            seg_out = self._resolve_segmentation_output_dir()
             if seg_out is None:
                 return
+            seg_sub_for_ana = os.path.basename(seg_out)
+            self.config["seg_input_subfolder"] = seg_sub_for_ana
+            if self._ana_input_var is not None:
+                self._ana_input_var.set(seg_sub_for_ana)
+        elif run_ana:
+            seg_sub_for_ana = self._choose_analysis_run(ask_if_multiple=True)
+            if seg_sub_for_ana is None:
+                self._log("Analysis cancelled — choose a segmentation run first.")
+                return
+        else:
+            seg_sub_for_ana = None
 
         ana_out = None
+        backup_dir = None
         if run_ana:
-            ana_out = self._resolve_output_dir(SUBFOLDER["ana"])
-            if ana_out is None:
+            prepared = self._prepare_analysis_output(seg_sub_for_ana)
+            if prepared is None:
                 return
+            ana_out, backup_dir = prepared
 
-        self._sync_vars_to_config()
         if seg_out:
             self.config["output_root_folder"] = seg_out
-        save_config(self.config)
+            self.config["seg_resume"] = False
+        try:
+            save_config(self.config)
+            save_project_config(self.config)
+        except Exception as exc:
+            if backup_dir:
+                try:
+                    self._restore_analysis_backup(backup_dir)
+                except Exception as restore_exc:
+                    self._log(f"Could not restore previous results: "
+                              f"{restore_exc}. Backup: {backup_dir}")
+            self._log(f"Could not save run settings: {exc}")
+            return
 
         seg_script = self._script("segmentation.py")
         ana_script = self._script("analysis.py")
@@ -4086,62 +4705,101 @@ class CellMatchrLauncher:
         self._log(f"\n{'═'*60}")
         self._log("▶▶  Run All")
         self._log(f"{'═'*60}")
+        if backup_dir:
+            self._log(f"Previous analysis saved at: {backup_dir}")
         if self.config.get("val_enabled"):
             self._log("ℹ  Validation is interactive — use the Run button on the Validation row.")
         self._set_run_status("Pipeline running…", ACCENT)
 
         def _thread():
-            if run_seg:
-                proc1 = subprocess.Popen(
-                    [sys.executable, seg_script, "--config", CONFIG_PATH],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
-                )
-                self._track_proc(proc1, "Segmentation")
-                for line in proc1.stdout:
-                    self.root.after(0, self._log, line.rstrip())
-                proc1.wait()
-
-                if proc1.returncode != 0:
-                    self.root.after(0, self._log, "\n✗  Segmentation failed — stopping.")
-                    self.root.after(0, self._set_run_status, "Pipeline failed (segmentation).", RED)
+            def _restore_previous() -> None:
+                if not backup_dir:
                     return
-                self.root.after(0, self._log, "\n✓  Segmentation complete.")
-            else:
-                self.root.after(0, self._log, "\n✔  Segmentation already complete — skipping.")
+                try:
+                    self._restore_analysis_backup(backup_dir)
+                    self.root.after(0, self._log,
+                                    "Previous analysis results were restored.")
+                except Exception as exc:
+                    self.root.after(
+                        0, self._log,
+                        f"Could not restore previous results: {exc}. "
+                        f"Backup: {backup_dir}",
+                    )
 
-            if run_ana and ana_out:
-                vs = self._find_variants(SUBFOLDER["seg"])
-                seg_sub_for_ana = vs[-1] if vs else SUBFOLDER["seg"]
-                self.config["ana_microsam_output_root"] = os.path.join(proj, seg_sub_for_ana)
-                self.config["output_root_folder"] = ana_out
-                save_config(self.config)
-
-                self.root.after(0, self._log, "\n" + "─"*40)
-                self.root.after(0, self._log, "▶  Analysis starting…")
-                self.root.after(0, self._set_run_status, "Analysis running…", ACCENT)
-
-                proc2 = subprocess.Popen(
-                    [sys.executable, ana_script, "--config", CONFIG_PATH],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
-                )
-                self._track_proc(proc2, "Analysis")
-                for line in proc2.stdout:
-                    self.root.after(0, self._log, line.rstrip())
-                proc2.wait()
-
-                if proc2.returncode == 0:
-                    status, color = self._analysis_run_status(ana_out)
-                    self.root.after(0, self._set_run_status, status, color)
+            try:
+                if run_seg:
+                    proc1 = subprocess.Popen(
+                        [sys.executable, seg_script, "--config", CONFIG_PATH],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1,
+                    )
+                    self._track_proc(proc1, "Segmentation")
+                    for line in proc1.stdout:
+                        self.root.after(0, self._log, line.rstrip())
+                    proc1.wait()
+                    if proc1.returncode != 0:
+                        _restore_previous()
+                        self.root.after(0, self._log,
+                                        "\n✗  Segmentation failed — stopping.")
+                        self.root.after(0, self._set_run_status,
+                                        "Pipeline failed (segmentation).", RED)
+                        return
+                    self.root.after(0, self._log, "\n✓  Segmentation complete.")
                 else:
-                    self.root.after(0, self._log, "\n✗  Analysis failed.")
-                    self.root.after(0, self._set_run_status, "Pipeline failed (analysis).", RED)
-            elif self.config.get("ana_enabled") and ana_done:
-                self.root.after(0, self._log, "\n✔  Analysis already complete — skipping.")
-                self.root.after(0, self._set_run_status, "Pipeline complete.", GREEN)
-            else:
-                self.root.after(0, self._set_run_status, "Pipeline complete.", GREEN)
+                    self.root.after(0, self._log,
+                                    "\n✔  Segmentation already complete — skipping.")
+
+                if run_ana and ana_out:
+                    self.config["ana_microsam_output_root"] = os.path.join(
+                        proj, seg_sub_for_ana)
+                    self.config["output_root_folder"] = ana_out
+                    save_config(self.config)
+                    save_project_config(self.config)
+
+                    self.root.after(0, self._log, "\n" + "─"*40)
+                    self.root.after(0, self._log,
+                                    f"▶  Analyzing {seg_sub_for_ana}…")
+                    self.root.after(0, self._set_run_status,
+                                    "Analysis running…", ACCENT)
+
+                    proc2 = subprocess.Popen(
+                        [sys.executable, ana_script, "--config", CONFIG_PATH],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1,
+                    )
+                    self._track_proc(proc2, "Analysis")
+                    for line in proc2.stdout:
+                        self.root.after(0, self._log, line.rstrip())
+                    proc2.wait()
+
+                    if (proc2.returncode == 0 and
+                            self._analysis_workbook_written(ana_out)):
+                        if backup_dir:
+                            try:
+                                self._set_analysis_backup_state(
+                                    backup_dir, "committed")
+                            except Exception as state_exc:
+                                self.root.after(
+                                    0, self._log,
+                                    f"Backup record could not be finalized: "
+                                    f"{state_exc}. Backup: {backup_dir}",
+                                )
+                        status, color = self._analysis_run_status(ana_out)
+                        self.root.after(0, self._set_run_status, status, color)
+                    else:
+                        _restore_previous()
+                        self.root.after(0, self._log,
+                                        "\n✗  Analysis failed or Excel output was not saved.")
+                        self.root.after(0, self._set_run_status,
+                                        "Pipeline failed (analysis).", RED)
+                else:
+                    self.root.after(0, self._set_run_status,
+                                    "Pipeline complete.", GREEN)
+            except Exception as exc:
+                _restore_previous()
+                self.root.after(0, self._log, f"\n[ERROR] Pipeline failed: {exc}")
+                self.root.after(0, self._set_run_status,
+                                "Pipeline failed.", RED)
 
         threading.Thread(target=_thread, daemon=True).start()
 

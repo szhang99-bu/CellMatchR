@@ -296,9 +296,23 @@ automatically on the next launch.
 
 ## Project output structure
 
-The exact folder name may gain a suffix when you choose to keep an existing
-run instead of replacing it. Optional folders and files appear only after
-the corresponding step is run.
+The first segmentation run can use `Segmentation/`. If it already contains
+masks, **Save as new run** proposes a folder such as
+`Segmentation_cellpose_20261028_103000`; existing masks are kept. Choose the
+segmentation run to analyze in Step 5 or Run Pipeline. Its combined results go
+to `Analysis/` for the original run, or the matching `Analysis_<suffix>/` for a
+named run. Mask filenames and older project folders do not need conversion.
+If an unfinished older run has no recorded method settings, **Continue** asks
+you to confirm that the current settings match; starting a new run is the safe
+default.
+
+If analysis results already exist for the selected run, a simple **Yes / No**
+dialog asks whether to replace them. **No** cancels the analysis. **Yes** keeps
+a recoverable copy of that run's previous generated results in
+`.analysis_backups/` before writing new ones. Other runs and unrelated files
+are left in place. Reopening the project recovers previous results if a
+replacement was interrupted before the new workbook finished. Optional
+folders and files appear only after the corresponding step is run.
 
 ```
 <project_output_folder>/
@@ -314,19 +328,31 @@ the corresponding step is run.
 │       ├── ROI Validation Results/
 │       │   ├── roi_verification_results_chN.tsv
 │       │   └── _validation_complete_chN # when that channel is fully reviewed
+│       ├── .validation_history/        # original decisions before a mask edit
 │       └── analysis_results/           # analysis writes beside each sample
 │           ├── <sample_name>_summary.csv
 │           ├── <sample_name>_channel_N_object_table.csv
 │           └── <sample_name>_QC_overlay.tif
-└── Analysis/
-    ├── combined_analysis_summary.xlsx # combined analysis output
-    ├── analysis_run_summary.json       # analyzed/skipped/error counts
-    └── analysis_errors.log             # per-sample skip and error details
+├── Segmentation_<method>_<run>/         # additional segmentation run, if used
+├── Analysis/
+│   ├── combined_analysis_summary.xlsx  # combined analysis output
+│   ├── analysis_run_summary.json        # analyzed/skipped/error counts
+│   └── analysis_errors.log              # per-sample skip and error details
+├── Analysis_<method>_<run>/             # matching analysis run, if used
+└── .analysis_backups/                   # previous results after Yes to replace
 ```
 
 Analysis applies validation-based artifact filtering automatically only when
 the chosen channel has been fully reviewed across all samples. Step 5 offers
 an option to apply partial validation when you explicitly want that behavior.
+If you edit a mask that already has validation decisions, the Validation step
+shows **Review changed cells** and opens only the affected or still-unreviewed
+cells. Decisions for unchanged cells are kept. Until that review is finished,
+older versions of the app see the edited channel as incomplete; they can
+revalidate it from the beginning. Once a mask has a change record, an external
+replacement cannot reliably identify just the changed cells and requires a
+full review. Changes made to an old project before its first tracked edit
+cannot be reconstructed automatically.
 
 If a sample is missing a required analysis channel, it is listed in the
 combined Excel sheet as `skipped_missing_channel` with blank measurement cells.
@@ -344,6 +370,7 @@ CellMatchr/
 ├── CellMatchR (macOS 27+).app/    # macOS launcher — macOS 27 (Golden Gate) and later
 ├── CellMatchr_Logo.png            # application logo
 ├── README.md
+├── CODE_REVIEW_ISSUES.md        # remaining review findings and proposed fixes
 ├── environment.yml                # conda environment (key versions pinned)
 ├── pyproject.toml
 ├── requirements.txt
@@ -362,6 +389,7 @@ CellMatchr/
     ├── parameter_wizard_compute.py # preview segmentation for filter tuning
     ├── parameter_wizard.py        # interactive filter tuning
     ├── roi_editor.py              # add missed cells to segmentation masks
+    ├── validation_state.py        # track mask changes needing review
     ├── validator.py               # manual ROI validation UI
     └── analysis.py                # IoU colocalization analysis
 ```

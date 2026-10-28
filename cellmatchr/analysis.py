@@ -12,6 +12,11 @@ from skimage.measure import regionprops_table
 from skimage.segmentation import find_boundaries
 from skimage.draw import polygon as sk_polygon
 
+if __package__:
+    from .validation_state import get_change_state, get_validation_tsv_path
+else:
+    from validation_state import get_change_state, get_validation_tsv_path
+
 
 # =============================================================================
 # USER SETTINGS
@@ -407,14 +412,9 @@ def read_validation_tsv(project_folder, channel):
     Returns a dict with artifact_labels/yes_labels/no_labels/maybe_labels
     (all sets of int label IDs), or None if no TSV is found.
     """
-    val_dir = os.path.join(project_folder, "ROI Validation Results")
-    tsv_path = os.path.join(val_dir, f"roi_verification_results_ch{channel}.tsv")
-    if not os.path.exists(tsv_path):
-        legacy = os.path.join(val_dir, "roi_verification_results.tsv")
-        if os.path.exists(legacy):
-            tsv_path = legacy
-        else:
-            return None
+    tsv_path = get_validation_tsv_path(project_folder, channel)
+    if tsv_path is None:
+        return None
     try:
         df = pd.read_csv(tsv_path, sep="\t")
         df.columns = [c.strip() for c in df.columns]
@@ -438,6 +438,11 @@ def read_validation_tsv(project_folder, channel):
 
 def is_validation_complete(project_folder, channel):
     """True when the _validation_complete_ch{N} marker has been written."""
+    masks = _matching_files(project_folder, PRED_TIFF_PATTERN.format(ch=channel))
+    selected_mask = masks[-1] if masks else ""
+    if get_change_state(project_folder, channel, selected_mask)["status"] in (
+            "pending", "unknown"):
+        return False
     val_dir = os.path.join(project_folder, "ROI Validation Results")
     if os.path.exists(os.path.join(val_dir, f"_validation_complete_ch{channel}")):
         return True
@@ -727,15 +732,32 @@ def analyze_project_folder(project_folder):
     # the run).  When only some images are validated, filtering is skipped by
     # default so the dataset does not mix validated and unvalidated images;
     # set APPLY_PARTIAL_VALIDATION to opt in to per-image partial filtering.
-    def _apply_val(label_img, channel, ch_token):
+    def _apply_val(label_img, channel, ch_token, mask_path):
+        change_state = get_change_state(project_folder, channel, mask_path)
+        if change_state["status"] == "unknown":
+            reason = change_state["reason"] or "validation needs review"
+            print(f"  {ch_token}: {reason} — validation filtering skipped")
+            return label_img, None, "validation_review_required"
+
         val_data = read_validation_tsv(project_folder, channel)
         if val_data is None:
             print(f"  {ch_token}: no validation TSV — all detected cells included")
             return label_img, None, "none"
 
+        if change_state["status"] == "pending":
+            pending = set(change_state["pending_ids"])
+            val_data = {
+                key: ({label: decision for label, decision in value.items()
+                       if label not in pending} if isinstance(value, dict)
+                      else value - pending)
+                for key, value in val_data.items()
+            }
+            print(f"  {ch_token}: {len(pending)} changed cell(s) need review")
+
         complete = is_validation_complete(project_folder, channel)
         channel_done = CHANNEL_FULLY_VALIDATED.get(channel, False)
-        if not channel_done and not APPLY_PARTIAL_VALIDATION:
+        if (not channel_done or change_state["status"] == "pending") \
+                and not APPLY_PARTIAL_VALIDATION:
             n_reviewed = len(val_data["label_decisions"])
             print(f"  {ch_token}: [PARTIAL — channel not fully validated across all "
                   f"images; {n_reviewed} reviewed here] filter NOT applied — "
@@ -756,8 +778,10 @@ def analyze_project_folder(project_folder):
               f"{len(artifacts)} ARTIFACT removed")
         return label_img, val_data, status
 
-    coi_labels, coi_val_data, coi_val_status = _apply_val(coi_labels, COI_CHANNEL, coi_ch)
-    pm_labels,  pm_val_data,  pm_val_status  = _apply_val(pm_labels,  PM_CHANNEL,  pm_ch)
+    coi_labels, coi_val_data, coi_val_status = _apply_val(
+        coi_labels, COI_CHANNEL, coi_ch, coi_label_path)
+    pm_labels,  pm_val_data,  pm_val_status  = _apply_val(
+        pm_labels, PM_CHANNEL, pm_ch, pm_label_path)
 
     # ── Per-object tables ────────────────────────────────────────────────────
     coi_props = get_label_props(
@@ -995,6 +1019,8 @@ def _write_run_report(out_dir, total, analyzed, skipped, failures,
     data = {
         "status": "complete_with_warnings"
                   if skipped or failures or output_error else "complete",
+        "segmentation_input": os.path.abspath(MICROSAM_OUTPUT_ROOT),
+        "segmentation_run": os.path.basename(os.path.normpath(MICROSAM_OUTPUT_ROOT)),
         "total_samples": total,
         "analyzed": analyzed,
         "skipped_missing_channel": len(skipped),

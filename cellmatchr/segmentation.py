@@ -1574,6 +1574,59 @@ def _run_progress_path(out_dir: str) -> str:
     return os.path.join(out_dir, RUN_PROGRESS_FILENAME)
 
 
+def _run_identity() -> dict:
+    """Settings that must stay fixed when continuing one segmentation run."""
+    return {
+        "backend": SEG_BACKEND,
+        "model": MODEL_TYPE if SEG_BACKEND == "microsam" else "cpsam",
+        "preprocess": PREPROCESS_MODE,
+        "channels": list(CHANNELS_TO_PREDICT),
+    }
+
+
+def _check_resume_identity(out_dir: str) -> None:
+    """Prevent a new method from silently adding masks to an existing run."""
+    if not RESUME:
+        return
+    progress_path = _run_progress_path(out_dir)
+    if not os.path.isfile(progress_path):
+        print("[WARNING] This earlier run has no method record. Continue only "
+              "with its original settings; otherwise start a new run.")
+        return  # Older projects did not record method settings.
+    import json as _json
+    with open(progress_path) as f:
+        previous = _json.load(f)
+    identity = previous.get("run_identity")
+    if identity is None:
+        print("[WARNING] This earlier run has no method record. Continue only "
+              "with its original settings; otherwise start a new run.")
+    if identity is not None and identity != _run_identity():
+        raise ValueError(
+            "This segmentation folder was created with different method or "
+            "channel settings. Select that run's original settings, or start "
+            "a new segmentation run."
+        )
+
+
+def _check_new_run_output(out_dir: str) -> None:
+    """Keep a new run from overwriting masks and their validation in place."""
+    if RESUME or not os.path.isdir(out_dir):
+        return
+    with os.scandir(out_dir) as samples:
+        for sample in samples:
+            if not sample.is_dir() or sample.name.startswith((".", "DEBUG")):
+                continue
+            with os.scandir(sample.path) as items:
+                for item in items:
+                    if (item.is_file() and "_predict_original_ch" in item.name
+                            and item.name.lower().endswith((".tif", ".tiff"))):
+                        raise RuntimeError(
+                            "This segmentation folder already contains prediction "
+                            "masks. Start a new run in a different folder, or use "
+                            "Continue a previous run with its original settings."
+                        )
+
+
 def _write_run_progress(out_dir, total, completed, finished, channels=None):
     """Record how far this segmentation run has got, so the GUI can detect an
     unfinished run and offer to continue it. Written/updated after every image."""
@@ -1587,6 +1640,7 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None):
             "n_completed": len(completed),
             "finished": bool(finished),
             "channels": channels if channels is not None else [],
+            "run_identity": _run_identity(),
             "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
         with open(_run_progress_path(out_dir), "w") as f:
@@ -1602,6 +1656,10 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None):
 def main():
     global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN
     is_dry_run = DRY_RUN and not TEST_RUN
+
+    if not is_dry_run:
+        _check_new_run_output(MAIN_OUTPUT_FOLDER)
+        _check_resume_identity(MAIN_OUTPUT_FOLDER)
 
     all_files = find_input_files(ROOT_INPUT_FOLDER)
 

@@ -1,6 +1,7 @@
 """Synthetic checks for analysis outcomes and batch reporting."""
 
 import contextlib
+import hashlib
 import io
 import json
 import tempfile
@@ -14,6 +15,7 @@ import tifffile
 
 from cellmatchr import analysis
 from cellmatchr.launcher import CellMatchrLauncher, GREEN, YELLOW
+from cellmatchr.validation_state import save_edited_mask, save_review_decision
 
 
 class AnalysisReportingTests(unittest.TestCase):
@@ -162,6 +164,61 @@ class AnalysisReportingTests(unittest.TestCase):
         self.assertEqual(report["analyzed"], 1)
         self.assertEqual(report["skipped_missing_channel"], 0)
         self.assertEqual(report["errors"], 0)
+
+    def test_legacy_project_files_remain_unchanged_and_validation_applies(self):
+        sample = self.make_sample("legacy")
+        val_dir = sample / "ROI Validation Results"
+        val_dir.mkdir()
+        tsv = val_dir / "roi_verification_results.tsv"
+        tsv.write_text("ROI_ID\tDecision\tNote\n1\tARTIFACT\told decision\n")
+        marker = val_dir / "_validation_complete"
+        marker.write_text("done")
+        source_files = [*sample.glob("*.tif"), tsv, marker]
+        before = {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in source_files
+        }
+
+        table, report, _ = self.run_analysis()
+
+        self.assertEqual(table.loc[0, "analysis_status"], "analyzed")
+        self.assertEqual(table.loc[0, "channel_1_total_count"], 0)
+        self.assertEqual(table.loc[0, "channel_3_total_count"], 0)
+        self.assertEqual(report["segmentation_input"], str(self.seg_root))
+        self.assertEqual(before, {
+            path: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in source_files
+        })
+
+    def test_changed_validation_is_excluded_until_focused_review_finishes(self):
+        sample = self.make_sample("edited")
+        mask = next(sample.glob("*_predict_original_ch1_*.tif"))
+        old = tifffile.imread(mask)
+        changed = old.copy()
+        changed[2, 2] = 2  # new cell changes the previously validated cell
+        val_dir = sample / "ROI Validation Results"
+        val_dir.mkdir()
+        (val_dir / "roi_verification_results_ch1.tsv").write_text(
+            "ROI_ID\tDecision\tNote\n1\tARTIFACT\told\n"
+        )
+        (val_dir / "_validation_complete_ch1").write_text("done")
+        save_edited_mask(str(mask), 1, old, changed)
+
+        before_review, _, _ = self.run_analysis()
+        self.assertEqual(before_review.loc[0, "channel_1_total_count"], 2)
+        self.assertEqual(before_review.loc[0, "channel_1_validation_status"],
+                         "partial_skipped")
+
+        with patch.object(analysis, "APPLY_PARTIAL_VALIDATION", True):
+            partial, _, _ = self.run_analysis()
+        self.assertEqual(partial.loc[0, "channel_1_total_count"], 2)
+
+        save_review_decision(str(sample), 1, str(mask), 1, "ARTIFACT", "rechecked")
+        save_review_decision(str(sample), 1, str(mask), 2, "YES", "new cell")
+        after_review, _, _ = self.run_analysis()
+        self.assertEqual(after_review.loc[0, "channel_1_total_count"], 1)
+        self.assertEqual(after_review.loc[0, "channel_1_validation_status"],
+                         "complete")
 
     def test_workbook_write_failure_is_reported_separately(self):
         self.make_sample("good")

@@ -25,6 +25,35 @@ or [Cellpose-SAM](https://github.com/MouseLand/cellpose) (selectable per run).
 > the difference automatically: each confocal acquisition becomes its own sample,
 > while a slide-scanner file uses its stitched/merged image.
 
+### Using Leica LIF files
+
+Choose the workflow by acquisition type, even when both files have the `.lif`
+extension or the same filename in different folders:
+
+1. For **confocal LIF**, choose **Confocal / direct read** in Step 2. Select a
+   folder containing the files directly or in one level of subfolders. The file
+   list identifies confocal and slide-scanner LIF files. A slide scan in this
+   folder is skipped; each confocal acquisition becomes a separate sample.
+2. For **slide-scanner LIF**, choose **Slide scanner** in Step 2 and open the
+   LIF in the converter. It offers stitched images; draw the regions you want
+   to analyze and export them. Step 3 segments those exported TIFFs, and
+   Step 5 analyzes the resulting masks with the matching ROI mask folder. A
+   confocal-only LIF is directed back to the confocal workflow.
+3. If you use both workflows in one project, keep each segmentation run in its
+   own folder. **Run All** asks whether to analyze an existing run or segment
+   the current input as a new run. Choose the intended run for analysis. The
+   matching converter ROI masks follow the selected segmentation run when its
+   source is recorded. For an older run without a source record, confirm the
+   ROI mask folder before analysis. Direct-read runs leave converter ROI masks
+   out of analysis.
+
+When two direct-read acquisitions would otherwise produce the same sample
+name, CellMatchR adds a stable source-based suffix to the new sample folders.
+Unique inputs keep their established names, so existing projects need no
+renaming. If two slide scans also share a filename, use separate converter
+output runs for them.
+Large stitched slide scans may need substantial memory during ROI conversion.
+
 ---
 
 ## Pipeline overview
@@ -304,7 +333,9 @@ to `Analysis/` for the original run, or the matching `Analysis_<suffix>/` for a
 named run. Mask filenames and older project folders do not need conversion.
 If an unfinished older run has no recorded method settings, **Continue** asks
 you to confirm that the current settings match; starting a new run is the safe
-default.
+default. New runs also record which source files and Leica scenes they used;
+**Continue** stops if that input plan changes. If you replace source image
+content, start a new run, even when the filename stays the same.
 
 If analysis results already exist for the selected run, a simple **Yes / No**
 dialog asks whether to replace them. **No** cancels the analysis. **Yes** keeps

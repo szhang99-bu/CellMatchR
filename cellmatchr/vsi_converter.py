@@ -13,6 +13,11 @@ import warnings
 import napari
 import slideio
 
+try:
+    from .lif_classify import classify_lif_image
+except ImportError:  # This file can also be launched directly as a script.
+    from lif_classify import classify_lif_image
+
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox, QGroupBox,
     QLineEdit, QHBoxLayout, QScrollArea, QSizePolicy, QProgressBar,
@@ -501,9 +506,8 @@ class _LifScene:
 class _LifSlide:
     """slideio-Slide-compatible wrapper over a Leica .lif container.
 
-    Scenes = the non-mosaic (m == 1) images: a slide-scanner file's stitched
-    image(s), or each confocal acquisition. Raw mosaic tiles (m > 1) are skipped
-    when a stitched image exists.
+    Scenes are stitched slide-scanner images only. Confocal acquisitions and
+    raw mosaic tiles are never offered to the ROI converter.
     """
     raw_metadata = ""   # VSI-only; empty for LIF
 
@@ -511,12 +515,22 @@ class _LifSlide:
         from readlif.reader import LifFile
         lif = LifFile(path)
         imgs = list(lif.get_iter_image())
-        singles = [im for im in imgs if int(im.dims.m) <= 1]
-        chosen = singles if singles else imgs
-        if not singles:
-            debug("[LIF] No stitched (m==1) image found — using images as-is "
-                  "(mosaic stitching not supported).")
-        self._scenes = [_LifScene(im) for im in chosen]
+        scanner_images = [im for im in imgs
+                          if classify_lif_image(im) == "slide_scanner"]
+        if not scanner_images:
+            raise ValueError(
+                "This LIF contains no slide-scanner images. For confocal LIF "
+                "data, choose Confocal direct-read in Step 2 instead."
+            )
+        stitched = [im for im in scanner_images
+                    if int(getattr(im.dims, "m", 1)) <= 1]
+        if not stitched:
+            raise ValueError(
+                "This slide-scanner LIF contains raw mosaic tiles but no "
+                "stitched image. Export a merged image from Leica software "
+                "before opening it in the Slide Scanner Converter."
+            )
+        self._scenes = [_LifScene(im) for im in stitched]
 
     @property
     def num_scenes(self):
@@ -1730,11 +1744,9 @@ def main():
 
         debug(f"Chosen VSI: {vsi_path}")
 
-        # Leica writes both confocal and slide-scanner data as .lif. Warn
-        # (non-blocking) if this particular file looks like pure confocal
-        # data -- it belongs in Confocal direct-read (Step 2), not here.
-        # Advisory only: any classification failure is swallowed and the
-        # file opens exactly as before. VSI files are never affected.
+        # Leica writes both confocal and slide-scanner data as .lif. A pure
+        # confocal file belongs in direct-read mode; keep it out of the ROI
+        # converter before that app creates any output folders.
         if vsi_path.lower().endswith(".lif"):
             try:
                 # This script runs as a standalone subprocess (its own
@@ -1749,19 +1761,17 @@ def main():
                 if classify_lif_file(vsi_path).get("file_type") == "confocal":
                     box = QMessageBox()
                     box.setIcon(QMessageBox.Warning)
-                    box.setWindowTitle("This looks like confocal data")
+                    box.setWindowTitle("Choose Confocal mode for this file")
                     box.setText(
-                        f"'{os.path.basename(vsi_path)}' has no slide-scan / tile-scan "
-                        "images — it looks like confocal data, not a slide scan.\n\n"
-                        "Continue opening it here anyway, or cancel and use "
-                        "Confocal mode (Step 2) instead?"
+                        f"'{os.path.basename(vsi_path)}' contains confocal "
+                        "acquisitions, not a stitched slide scan.\n\n"
+                        "In Step 2, choose Confocal direct-read for this file."
                     )
-                    box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-                    box.setDefaultButton(QMessageBox.Cancel)
-                    if box.exec_() != QMessageBox.Yes:
-                        debug("User cancelled after confocal-file warning. Returning to picker.")
-                        QTimer.singleShot(0, pick_next)
-                        return
+                    box.setStandardButtons(QMessageBox.Ok)
+                    box.exec_()
+                    debug("Confocal LIF selected in slide-scanner mode. Returning to picker.")
+                    QTimer.singleShot(0, pick_next)
+                    return
             except Exception:
                 debug("LIF classification check failed (non-fatal) — opening file as usual.")
 

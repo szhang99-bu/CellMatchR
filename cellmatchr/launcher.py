@@ -475,6 +475,12 @@ class CellMatchrLauncher:
             return
         try:
             img = Image.open(logo_path)
+            if (
+                sys.platform.startswith("linux")
+                and self.root.tk.call("tk", "windowingsystem") == "x11"
+            ):
+                # X11 can reject the full-size logo as an oversized window icon.
+                img.thumbnail((128, 128), Image.LANCZOS)
             # Keep a reference so Tk doesn't garbage-collect the image.
             self._icon_img = ImageTk.PhotoImage(img)
             self.root.iconphoto(True, self._icon_img)

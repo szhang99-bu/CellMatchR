@@ -1,0 +1,2 @@
+# Keep pip dependencies compatible with the NumPy 1.x imaging stack.
+numpy==1.26.4

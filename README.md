@@ -153,6 +153,9 @@ cd ~/Desktop/CellMatchR
 
 ### 2. Create the conda environment
 
+On Linux, follow the [Linux setup](#linux-setup) below. On macOS, use the
+instructions in this section.
+
 First, confirm conda is working and that you're inside the project folder (the
 one containing `environment.yml`):
 
@@ -196,9 +199,42 @@ python -c "import torch, micro_sam; print('env OK')"
 
 ### 3. Install CellMatchR itself
 
+This step installs the optional `cellmatchr` terminal entry point. The Linux
+launcher runs directly from the checkout after the Linux environment is ready.
+
 ```bash
 pip install -e .
 ```
+
+### Linux setup
+
+From the repository root on Linux, create a separate environment and launch
+from a terminal in your graphical desktop session:
+
+```bash
+PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
+  conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml
+bash run-linux.sh
+```
+
+The pip constraint keeps NumPy at 1.26.4 when the Cellpose dependencies are
+installed. Use the launcher directly and keep the OpenCV supplied by Conda.
+Installing a separate GUI OpenCV wheel can interfere with napari's Qt plugins.
+Set `CELLMATCHR_LINUX_ENV` to the full path if you put the environment
+elsewhere. The launcher keeps both model caches inside this environment by
+default.
+
+### Run Cellpose-SAM on an image
+
+1. In **Step 2**, select the input folder. For a microscopy TIFF, use the
+   direct-read workflow.
+2. In **Step 3**, choose **Cellpose-SAM** under **Segmentation backend**,
+   select the channels to segment, and start a new segmentation run.
+   On first use the model downloads about 1.2 GB. On an NVIDIA system,
+   `Using device: cuda` in the log confirms GPU execution.
+3. Confirm the run produced a prediction TIFF and inspect the mask or QC
+   overlay. If GPU memory is tight, start with 1024 × 1024 tiles and 128 px
+   halo on each axis.
 
 ---
 
@@ -296,6 +332,9 @@ window open showing the live log — handy for debugging. Keep it inside the
 `scripts/` folder.
 
 ### Option C — terminal
+
+On Linux, run `bash run-linux.sh` from the checkout after completing
+[Linux setup](#linux-setup). On macOS, run:
 
 ```bash
 conda activate cellmatchr

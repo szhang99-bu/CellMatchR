@@ -12,7 +12,7 @@ import threading
 from datetime import datetime
 from uuid import uuid4
 import tkinter as tk
-from tkinter import ttk, filedialog, scrolledtext, messagebox
+from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 
 from .config import (load_config, save_config, save_project_config,
                      load_project_config, CONFIG_PATH, DEFAULT_CONFIG)
@@ -2286,6 +2286,17 @@ class CellMatchrLauncher:
         _cb_model.grid(row=2, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_model)
 
+        choice_row = tk.Frame(model_card, bg=CARD)
+        choice_row.pack(fill="x", pady=(6, 2))
+        tk.Label(choice_row, text="Model for this run:", bg=CARD, fg=FG,
+                 font=FONT, width=24, anchor="w").pack(side="left")
+        model_choice = tk.StringVar()
+        model_options = {}
+        model_choice_box = ttk.Combobox(choice_row, textvariable=model_choice,
+                                        state="readonly", width=48)
+        model_choice_box.pack(side="left", padx=8, fill="x", expand=True)
+        self._bind_combobox_scroll(model_choice_box)
+
         custom_card = tk.Frame(model_card, bg=CARD)
         tk.Label(custom_card, text="Trained model (optional):", bg=CARD,
                  fg=FG, font=FONT).pack(anchor="w")
@@ -2314,7 +2325,31 @@ class CellMatchrLauncher:
         custom_path.set(self._vars[selected_key[0]].get())
         def _model_path_changed(*_):
             self._vars[selected_key[0]].set(custom_path.get())
+            refresh_model_choices(self._vars["seg_backend"].get())
         custom_path.trace_add("write", _model_path_changed)
+
+        def refresh_model_choices(backend):
+            from .retraining import list_trained_models
+            builtin = {"microsam": "Built-in Micro-SAM model",
+                       "cellpose": "Built-in Cellpose-SAM (cpsam)",
+                       "stardist": "Built-in StarDist (2D_versatile_fluo)"}[backend]
+            model_options.clear()
+            model_options[builtin] = ""
+            project = self.config.get("project_output_folder", "")
+            for record in list_trained_models(project, backend):
+                label = (f"{record['name']}  (ch{record['channel']}, "
+                         f"{record['location']}, {record['record_folder'][-15:]})")
+                model_options[label] = record["model_path"]
+            selected = custom_path.get().strip()
+            if selected and selected not in model_options.values():
+                model_options["External model (current path)"] = selected
+            model_choice_box.configure(values=list(model_options))
+            model_choice.set(next((label for label, path in model_options.items()
+                                   if path == selected), builtin))
+
+        def choose_model(_event=None):
+            custom_path.set(model_options.get(model_choice.get(), ""))
+        model_choice_box.bind("<<ComboboxSelected>>", choose_model)
 
         tk.Label(g, text="Preprocessing mode:", bg=CARD, fg=FG, font=FONT).grid(
             row=3, column=0, sticky="w", pady=3)
@@ -2382,6 +2417,7 @@ class CellMatchrLauncher:
                 except tk.TclError: pass
             selected_key[0] = model_keys[bk]
             custom_path.set(self._vars[selected_key[0]].get())
+            refresh_model_choices(bk)
         self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
         _on_seg_backend_changed()   # apply initial state
 
@@ -3325,6 +3361,32 @@ class CellMatchrLauncher:
         if not channels:
             self._seg_status.config(text="⚠  Channels to predict is required (red ✱).", fg=RED)
             return
+
+        # A named model is trained from one channel. Keep multi-channel runs
+        # possible, but make cross-channel reuse an explicit choice.
+        from .retraining import list_trained_models
+        backend = self.config.get("seg_backend", "microsam")
+        model_key = {"microsam": "seg_custom_model_path",
+                     "cellpose": "seg_cellpose_model_path",
+                     "stardist": "seg_stardist_model_path"}.get(backend)
+        selected_model = str(self.config.get(model_key) or "") if model_key else ""
+        if selected_model:
+            try:
+                requested_channels = {int(part.strip()) for part in channels.split(",")}
+            except ValueError:
+                requested_channels = set()
+            for record in list_trained_models(
+                    self.config.get("project_output_folder", ""), backend):
+                if os.path.normpath(record["model_path"]) != os.path.normpath(selected_model):
+                    continue
+                if requested_channels - {record["channel"]} and not messagebox.askyesno(
+                    "Use a model on other channels?",
+                    f"{record['name']} was trained on channel {record['channel']}, "
+                    f"but this run includes {channels}. The same model will be used "
+                    "on every selected channel. Continue?",
+                    parent=self.root, default=messagebox.NO, icon="warning"):
+                    return
+                break
 
         if resume:
             # Resume precisely the unfinished run shown on this card.
@@ -4816,14 +4878,14 @@ class CellMatchrLauncher:
         if not variants:
             tk.Label(card, text="No segmentation runs found in this project.",
                      bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
-            return
 
         run_var = tk.StringVar(value=(self.config.get("seg_input_subfolder")
                                      if self.config.get("seg_input_subfolder") in variants
-                                     else variants[-1]))
+                                     else variants[-1] if variants else ""))
         backend_var = tk.StringVar(value=self.config.get("seg_backend", "microsam"))
         channels = str(self.config.get("seg_channels") or "1").split(",")
         channel_var = tk.StringVar(value=channels[0].strip())
+        model_name_var = tk.StringVar(value="")
         epochs_var = tk.StringVar(value="20")
         preprocess_var = tk.StringVar(value=self.config.get("seg_preprocess_mode")
                                      or "local_bg_subtract")
@@ -4841,8 +4903,10 @@ class CellMatchrLauncher:
 
         row(0, "Reviewed segmentation run:", ttk.Combobox(
             grid, textvariable=run_var, values=variants, state="readonly"))
-        row(1, "Channel:", tk.Entry(grid, textvariable=channel_var, bg=BG,
-                                     fg=FG, insertbackground=FG, relief="flat"))
+        channel_box = ttk.Combobox(grid, textvariable=channel_var,
+                                   state="readonly")
+        row(1, "Channel to train:", channel_box)
+        self._bind_combobox_scroll(channel_box)
         row(2, "Model to fine-tune:", ttk.Combobox(
             grid, textvariable=backend_var,
             values=("microsam", "cellpose", "stardist"), state="readonly"))
@@ -4854,33 +4918,338 @@ class CellMatchrLauncher:
             values=("local_bg_subtract", "local_bg_subtract_mild",
                     "raw_percentile", "tile_clahe_mild", "tile_clahe"),
             state="readonly"))
-        base_row = tk.Frame(grid, bg=CARD)
-        tk.Entry(base_row, textvariable=base_var, bg=BG, fg=FG,
-                 insertbackground=FG, relief="flat").pack(
-                     side="left", fill="x", expand=True)
+        starting_choice = tk.StringVar()
+        starting_options = {}
+        starting_keys = {"microsam": "seg_custom_model_path",
+                         "cellpose": "seg_cellpose_model_path",
+                         "stardist": "seg_stardist_model_path"}
+        selected_by_backend = {kind: str(self.config.get(key) or "")
+                               for kind, key in starting_keys.items()}
+        starting_box = ttk.Combobox(grid, textvariable=starting_choice,
+                                    state="readonly")
+        row(5, "Starting model to fine-tune:", starting_box)
+        self._bind_combobox_scroll(starting_box)
+        row(6, "New model name:", tk.Entry(grid, textvariable=model_name_var,
+                                             bg=BG, fg=FG,
+                                             insertbackground=FG, relief="flat"))
+        tk.Label(card, text=("Choose a built-in or previously trained model above. "
+                             "Your named result is saved separately in the shared CellMatchR model library. "
+                             "Train one channel at a time; choose another channel for another model."),
+                 bg=CARD, fg=MUTED, font=FONT, wraplength=750,
+                 justify="left").pack(anchor="w", pady=(5, 2))
+        from .retraining import model_library_root
+        library_row = tk.Frame(card, bg=CARD)
+        library_row.pack(fill="x", pady=(3, 5))
+        tk.Label(library_row, text=f"Model library: {model_library_root()}",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8),
+                 anchor="w").pack(side="left", fill="x", expand=True)
+        def open_model_library():
+            folder = model_library_root()
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", str(folder)])
+                elif sys.platform == "win32":
+                    os.startfile(str(folder))
+                else:
+                    subprocess.Popen(["xdg-open", str(folder)])
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Model library", f"Could not open {folder}: {exc}",
+                                     parent=self.root)
+        tk.Button(library_row, text="Open Model Library",
+                  command=open_model_library, bg=ACTIVE, fg=FG,
+                  font=FONT, relief="flat", padx=8).pack(side="right")
+
+        def refresh_channels(*_):
+            from .retraining import available_channels
+            project = self.config.get("project_output_folder", "")
+            found = available_channels(os.path.join(project, run_var.get()))
+            values = [str(v) for v in found]
+            channel_box.configure(values=values)
+            if channel_var.get() not in values:
+                channel_var.set(values[0] if values else "")
+        run_var.trace_add("write", refresh_channels)
+        refresh_channels()
+
+        advanced_card = tk.Frame(card, bg=CARD)
+        advanced_grid = tk.Frame(advanced_card, bg=CARD)
+        advanced_grid.pack(fill="x")
+        advanced_grid.grid_columnconfigure(1, weight=1)
+        advanced_vars = {key: tk.StringVar(value="") for key in
+                         ("learning_rate", "batch_size", "patch_size",
+                          "validation_percent")}
+        advanced_labels = (
+            ("Learning rate:", "learning_rate", "default: Cellpose/Micro-SAM 1e-5; StarDist model default"),
+            ("Batch size:", "batch_size", "blank = model default"),
+            ("Patch size (px):", "patch_size", "blank = model default; multiple of 16"),
+            ("Validation samples (%):", "validation_percent", "blank = about 20%"),
+        )
+        advanced_rows = {}
+        for index, (caption, key, hint) in enumerate(advanced_labels):
+            label = tk.Label(advanced_grid, text=caption, bg=CARD, fg=FG,
+                             font=FONT, anchor="w", width=22)
+            label.grid(row=index, column=0, sticky="w", pady=3)
+            field = tk.Frame(advanced_grid, bg=CARD)
+            field.grid(row=index, column=1, sticky="ew", pady=3)
+            advanced_rows[key] = (label, field)
+            tk.Entry(field, textvariable=advanced_vars[key], bg=BG, fg=FG,
+                     insertbackground=FG, relief="flat", width=14).pack(side="left")
+            tk.Label(field, text=hint, bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 8)).pack(side="left", padx=8)
+        manual_path_var = tk.StringVar(value="")
+        updating_starting = [False]
+        manual_row = tk.Frame(advanced_card, bg=CARD)
+        manual_row.pack(fill="x", pady=(8, 2))
+        tk.Label(manual_row, text="Other starting model:", bg=CARD, fg=FG,
+                 font=FONT, width=22, anchor="w").pack(side="left")
+        tk.Entry(manual_row, textvariable=manual_path_var, bg=BG, fg=FG,
+                 insertbackground=FG, relief="flat").pack(side="left", fill="x",
+                                                         expand=True, padx=8)
         def browse_base():
             if backend_var.get() == "stardist":
                 selected = filedialog.askdirectory(parent=self.root,
-                                                   title="Choose a trained StarDist model folder")
+                                                   title="Choose a StarDist model folder")
             else:
                 selected = filedialog.askopenfilename(parent=self.root,
-                                                     title="Choose a trained model checkpoint")
+                                                     title="Choose a model checkpoint")
             if selected:
-                base_var.set(selected)
-        tk.Button(base_row, text="Browse…", command=browse_base,
+                manual_path_var.set(selected)
+        tk.Button(manual_row, text="Browse…", command=browse_base,
                   bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left", padx=6)
-        row(5, "Starting model:", base_row)
+        tk.Label(advanced_card, text=("Choose a model file or folder here only if it is "
+                                      "not already in the dropdown above."),
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
 
-        def refresh_base(*_):
+        def open_model_manager():
+            from .retraining import delete_managed_model, list_trained_models
+            manager = tk.Toplevel(self.root)
+            manager.title("CellMatchR Model Manager")
+            manager.geometry("1020x480")
+            manager.configure(bg=BG)
+            tk.Label(manager, text="Saved fine-tuned models", bg=BG, fg=FG,
+                     font=FONT_TITLE).pack(anchor="w", padx=18, pady=(16, 4))
+            tk.Label(manager, text=("Shared models are available in every project. "
+                                    "Older project models are shown when that project is open."),
+                     bg=BG, fg=MUTED, font=FONT,
+                     wraplength=960, justify="left").pack(anchor="w", padx=18, pady=(0, 10))
+            columns = ("name", "backend", "channel", "created", "rounds",
+                       "epochs", "location")
+            table_frame = tk.Frame(manager, bg=BG)
+            table_frame.pack(fill="both", expand=True, padx=18)
+            table = ttk.Treeview(table_frame, columns=columns, show="headings",
+                                 selectmode="browse")
+            headings = {"name": "Model name", "backend": "Model", "channel": "Channel",
+                        "created": "Created", "rounds": "Training rounds",
+                        "epochs": "Recorded epochs", "location": "Location"}
+            widths = {"name": 230, "backend": 90, "channel": 65,
+                      "created": 155, "rounds": 110, "epochs": 120,
+                      "location": 160}
+            for column in columns:
+                table.heading(column, text=headings[column])
+                table.column(column, width=widths[column], anchor="w")
+            table.pack(side="left", fill="both", expand=True)
+            scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=table.yview)
+            scrollbar.pack(side="right", fill="y")
+            table.configure(yscrollcommand=scrollbar.set)
+            detail = tk.Label(manager, text="Select a model to see its folder and training history.",
+                              bg=BG, fg=MUTED, font=("Segoe UI", 9),
+                              wraplength=960, justify="left", anchor="w")
+            detail.pack(fill="x", padx=18, pady=(8, 3))
+            manager_status = tk.Label(manager, text="", bg=BG, fg=FG,
+                                      font=FONT, anchor="w")
+            manager_status.pack(fill="x", padx=18)
+            buttons = tk.Frame(manager, bg=BG)
+            buttons.pack(fill="x", padx=18, pady=(8, 14))
+            records = {}
+            project = self.config.get("project_output_folder", "")
+
+            def reload_models():
+                records.clear()
+                for iid in table.get_children():
+                    table.delete(iid)
+                for index, record in enumerate(list_trained_models(project, include_missing=True)):
+                    iid = str(index)
+                    records[iid] = record
+                    rounds = record.get("training_rounds", 1)
+                    epochs = record.get("recorded_epochs", record.get("epochs"))
+                    if epochs is None:
+                        epochs_text = "Unknown"
+                    else:
+                        epochs_text = str(epochs)
+                        if not record.get("history_complete", True):
+                            epochs_text += "+ known"
+                    table.insert("", "end", iid=iid, values=(
+                        record["name"], record["backend"], record["channel"],
+                        str(record.get("completed_at") or "Unknown (older model)").replace("T", " "),
+                        rounds, epochs_text,
+                        record["location"] + (" (file missing)" if not record["available"] else "")))
+                manager_status.config(text=f"{len(records)} model(s) listed.", fg=FG)
+
+            def show_selected(_event=None):
+                selected = table.selection()
+                if not selected:
+                    return
+                record = records[selected[0]]
+                origin = record.get("starting_model_name") or record.get("base_model") or "Unknown"
+                detail.config(text=(f"Folder: {record['record_dir']}\n"
+                                    f"Starting model: {origin}"))
+
+            def delete_selected():
+                selected = table.selection()
+                if not selected:
+                    manager_status.config(text="Select a model first.", fg=YELLOW)
+                    return
+                if self._is_running("Model Retraining"):
+                    manager_status.config(text="Finish the current training run before deleting models.",
+                                          fg=YELLOW)
+                    return
+                record = records[selected[0]]
+                name = record["name"]
+                folder = record["record_dir"]
+                if not messagebox.askyesno(
+                        "Delete model — first confirmation",
+                        f"Permanently delete '{name}' and its saved model folder?\n\n"
+                        f"{folder}\n\nProjects using it will need another model. "
+                        "Models trained from it remain available.",
+                        parent=manager, default=messagebox.NO, icon="warning"):
+                    return
+                typed = simpledialog.askstring(
+                    "Delete model — second confirmation",
+                    f"Type the exact model name to permanently delete it:\n{name}",
+                    parent=manager)
+                if typed != name:
+                    manager_status.config(text="Deletion cancelled: model name did not match.",
+                                          fg=YELLOW)
+                    return
+                try:
+                    delete_managed_model(folder, project)
+                    key = starting_keys[record["backend"]]
+                    if (self.config.get(key) == record["model_path"] or
+                            self._vars[key].get() == record["model_path"]):
+                        self.config[key] = ""
+                        self._vars[key].set("")
+                        save_config(self.config)
+                        save_project_config(self.config)
+                    if selected_by_backend[record["backend"]] == record["model_path"]:
+                        selected_by_backend[record["backend"]] = ""
+                    refresh_starting_models()
+                    reload_models()
+                    detail.config(text="Select a model to see its folder and training history.")
+                    manager_status.config(text=f"Deleted {name}.", fg=GREEN)
+                except (OSError, ValueError) as exc:
+                    manager_status.config(text=f"Could not delete model: {exc}", fg=RED)
+
+            table.bind("<<TreeviewSelect>>", show_selected)
+            tk.Button(buttons, text="Refresh", command=reload_models,
+                      bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=12).pack(side="left")
+            tk.Button(buttons, text="Delete Selected Model…", command=delete_selected,
+                      bg=RED, fg="#1e1e2e", font=FONT_BOLD,
+                      relief="flat", padx=12).pack(side="right")
+            reload_models()
+
+        tk.Button(advanced_card, text="Model Manager…", command=open_model_manager,
+                  bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                  padx=10, pady=5).pack(anchor="w", pady=(10, 3))
+
+        def manual_path_changed(*_):
+            if updating_starting[0]:
+                return
+            path = manual_path_var.get().strip()
+            if path:
+                starting_options["Other model from file/folder"] = path
+                starting_box.configure(values=list(starting_options))
+                starting_choice.set("Other model from file/folder")
+                base_var.set(path)
+                selected_by_backend[backend_var.get()] = path
+            elif starting_choice.get() == "Other model from file/folder":
+                starting_options.pop("Other model from file/folder", None)
+                starting_box.configure(values=list(starting_options))
+                first = next(iter(starting_options), "")
+                starting_choice.set(first)
+                base_var.set(starting_options.get(first, ""))
+                selected_by_backend[backend_var.get()] = base_var.get()
+        manual_path_var.trace_add("write", manual_path_changed)
+        loss_row = tk.Frame(advanced_card, bg=CARD)
+        tk.Label(loss_row, text="StarDist distance loss:", bg=CARD, fg=FG,
+                 font=FONT, width=22, anchor="w").pack(side="left")
+        loss_var = tk.StringVar(value="Model default")
+        ttk.Combobox(loss_row, textvariable=loss_var,
+                     values=("Model default", "mae", "mse"),
+                     state="readonly", width=18).pack(side="left", padx=8)
+        freeze_var = tk.BooleanVar(value=True)
+        freeze_row = tk.Checkbutton(
+            advanced_card, text="Micro-SAM: keep image encoder frozen (current default)",
+            variable=freeze_var, bg=CARD, fg=FG, selectcolor=BG,
+            activebackground=CARD, font=FONT)
+        tk.Label(advanced_card, text=("Loss selection is available for StarDist distance loss. "
+                                      "Cellpose and Micro-SAM use their built-in loss functions."),
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8),
+                 wraplength=750, justify="left").pack(anchor="w", pady=(6, 0))
+        def show_backend_advanced(*_):
+            loss_row.pack_forget()
+            freeze_row.pack_forget()
+            for widget in advanced_rows["patch_size"]:
+                (widget.grid_remove() if backend_var.get() == "cellpose"
+                 else widget.grid())
+            if backend_var.get() == "stardist":
+                loss_row.pack(anchor="w", pady=3)
+            elif backend_var.get() == "microsam":
+                freeze_row.pack(anchor="w", pady=3)
+        backend_var.trace_add("write", show_backend_advanced)
+        show_backend_advanced()
+        def toggle_advanced():
+            if advanced_card.winfo_manager():
+                advanced_card.pack_forget()
+                advanced_button.config(text="Show advanced settings ▸")
+            else:
+                advanced_card.pack(fill="x", pady=(4, 10), after=advanced_button)
+                advanced_button.config(text="Hide advanced settings ▾")
+        advanced_button = tk.Button(card, text="Show advanced settings ▸",
+                                    command=toggle_advanced, bg=ACTIVE, fg=FG,
+                                    font=FONT, relief="flat", padx=10, pady=5)
+        advanced_button.pack(anchor="w", pady=(7, 0))
+
+        def refresh_starting_models(*_args, prefer_path=None):
+            from .retraining import list_trained_models
             backend = backend_var.get()
-            keys = {"microsam": "seg_custom_model_path",
-                    "cellpose": "seg_cellpose_model_path",
-                    "stardist": "seg_stardist_model_path"}
-            defaults = {"microsam": self.config.get("seg_model_type") or "vit_b_lm",
-                        "cellpose": "cpsam", "stardist": "2D_versatile_fluo"}
-            base_var.set(self.config.get(keys[backend]) or defaults[backend])
-        backend_var.trace_add("write", refresh_base)
-        refresh_base()
+            builtins = ({"microsam": ("vit_b_lm", "vit_l_lm", "vit_h_lm",
+                                     "vit_b", "vit_l", "vit_h"),
+                         "cellpose": ("cpsam",),
+                         "stardist": ("2D_versatile_fluo",)})[backend]
+            starting_options.clear()
+            for name in builtins:
+                starting_options[f"Built-in: {name}"] = name
+            for record in list_trained_models(
+                    self.config.get("project_output_folder", ""), backend):
+                label = (f"{record['name']}  (ch{record['channel']}, "
+                         f"{record['location']}, {record['record_folder'][-15:]})")
+                starting_options[label] = record["model_path"]
+            default = (self.config.get("seg_model_type") or "vit_b_lm") if backend == "microsam" else builtins[0]
+            current = prefer_path or selected_by_backend[backend] or default
+            label = next((text for text, path in starting_options.items()
+                          if path == current), None)
+            if label is None:
+                label = "Other model from file/folder"
+                starting_options[label] = current
+            starting_box.configure(values=list(starting_options))
+            starting_choice.set(label)
+            base_var.set(current)
+            selected_by_backend[backend] = current
+            updating_starting[0] = True
+            manual_path_var.set(current if label == "Other model from file/folder" else "")
+            updating_starting[0] = False
+
+        def choose_starting_model(_event=None):
+            choice = starting_choice.get()
+            value = starting_options.get(choice, "")
+            base_var.set(value)
+            selected_by_backend[backend_var.get()] = value
+            updating_starting[0] = True
+            manual_path_var.set(value if choice == "Other model from file/folder" else "")
+            updating_starting[0] = False
+        starting_box.bind("<<ComboboxSelected>>", choose_starting_model)
+        backend_var.trace_add("write", refresh_starting_models)
+        refresh_starting_models()
 
         def refresh_preprocess(*_):
             path = os.path.join(self.config.get("project_output_folder", ""),
@@ -4895,12 +5264,15 @@ class CellMatchrLauncher:
         run_var.trace_add("write", refresh_preprocess)
         refresh_preprocess()
 
-        tk.Checkbutton(card, text="Use the trained model for future segmentation runs",
+        tk.Checkbutton(card, text=("Select the new model for this project's next segmentation runs "
+                                       "(available in every project)"),
                        variable=use_var, bg=CARD, fg=FG, selectcolor=BG,
                        activebackground=CARD, font=FONT).pack(anchor="w", pady=(8, 4))
         actions = tk.Frame(card, bg=CARD)
         actions.pack(anchor="w", pady=6)
-        status = tk.Label(card, text="Ready to check reviewed samples.",
+        status = tk.Label(card, text=("Ready to check reviewed samples." if variants else
+                                      "Open a project with a segmentation run to train. "
+                                      "Model Manager is available under Advanced settings."),
                           bg=CARD, fg=MUTED, font=FONT, wraplength=700,
                           justify="left")
         status.pack(anchor="w", pady=(3, 0))
@@ -4963,21 +5335,57 @@ class CellMatchrLauncher:
                 epochs = int(epochs_var.get())
                 if channel < 0 or not 1 <= epochs <= 500:
                     raise ValueError("Use a channel ID of 0 or higher and 1–500 epochs")
+                model_name = model_name_var.get().strip()
+                if not model_name:
+                    raise ValueError("Enter a name for the new model")
+                if len(model_name) > 60 or any(ch in model_name for ch in "/\\\n\r\t"):
+                    raise ValueError("Model name must be under 60 characters with no slashes")
+                from .retraining import validate_advanced
+                advanced = {}
+                for key, var in advanced_vars.items():
+                    if var.get().strip():
+                        advanced[key] = var.get().strip()
+                backend = backend_var.get()
+                if starting_choice.get() == "Other model from file/folder":
+                    chosen = os.path.expanduser(manual_path_var.get().strip())
+                    valid = (os.path.isdir(chosen) if backend == "stardist"
+                             else os.path.isfile(chosen))
+                    if not valid:
+                        raise ValueError("Choose an existing starting model "
+                                         + ("folder" if backend == "stardist" else "file"))
+                    base_var.set(os.path.abspath(chosen))
+                if backend == "cellpose":
+                    advanced.pop("patch_size", None)
+                if backend == "stardist" and loss_var.get() != "Model default":
+                    advanced["loss"] = loss_var.get()
+                if backend == "microsam" and not freeze_var.get():
+                    advanced["freeze_encoder"] = False
+                advanced = validate_advanced(backend, advanced)
             except ValueError as exc:
-                status.config(text=f"Check channel and epochs: {exc}", fg=RED)
+                status.config(text=f"Check training settings: {exc}", fg=RED)
                 return
             project = self.config.get("project_output_folder", "").strip()
             if not project:
                 status.config(text="Open a project in Step 1 first.", fg=RED)
                 return
-            backend = backend_var.get()
+            if backend == "stardist":
+                from importlib.util import find_spec
+                if find_spec("stardist") is None or find_spec("tensorflow") is None:
+                    status.config(text=("StarDist training needs the optional StarDist and "
+                                        "TensorFlow packages in this app's environment."), fg=RED)
+                    return
             chosen_preprocess = preprocess_var.get()
             use_trained_model = use_var.get()
             cmd = [sys.executable, "-m", "cellmatchr.retraining",
                    "--project", project, "--seg-run", run_var.get(),
                    "--channel", str(channel), "--backend", backend,
                    "--epochs", str(epochs), "--base-model", base_var.get().strip(),
-                   "--preprocess", chosen_preprocess]
+                   "--preprocess", chosen_preprocess, "--model-name", model_name]
+            for key, value in advanced.items():
+                flag = "--" + key.replace("_", "-")
+                if key == "freeze_encoder":
+                    value = "yes" if value else "no"
+                cmd.extend((flag, str(value)))
             start_btn.config(state="disabled", text="Training…")
             status.config(text="Training started. Progress appears below.", fg=ACCENT)
             log("Starting " + backend + " retraining…")
@@ -5017,8 +5425,13 @@ class CellMatchrLauncher:
                         try:
                             start_btn.config(state="normal", text="Start Retraining")
                             if proc.returncode == 0 and model_path:
-                                message = (f"Training complete. Select the saved model in Step 3: {model_path}"
-                                           if setup_error else f"Training complete: {model_path}")
+                                refresh_starting_models(prefer_path=model_path)
+                                message = (f"Training complete: {model_name}. "
+                                           + ("Open Step 3 to select it. " if not use_trained_model else
+                                              "It is selected for future segmentation. ")
+                                           + (f"Automatic selection failed: {setup_error}. "
+                                              if setup_error else "")
+                                           + f"Saved at {model_path}")
                                 status.config(text=message, fg=YELLOW if setup_error else GREEN)
                             else:
                                 status.config(text="Training failed; check the log above.", fg=RED)
@@ -5038,11 +5451,13 @@ class CellMatchrLauncher:
 
         check_btn = tk.Button(actions, text="Check Training Data", command=check_data,
                               bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
-                              padx=12, pady=7)
+                              padx=12, pady=7,
+                              state="normal" if variants else "disabled")
         check_btn.pack(side="left", padx=(0, 8))
         start_btn = tk.Button(actions, text="Start Retraining", command=start_training,
                               bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD,
-                              relief="flat", padx=12, pady=7)
+                              relief="flat", padx=12, pady=7,
+                              state="normal" if variants else "disabled")
         start_btn.pack(side="left")
 
     def _launch_vsi(self) -> None:

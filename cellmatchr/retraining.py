@@ -7,10 +7,12 @@ are read only. Heavy training libraries are imported only for their backend.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import importlib.util
 import json
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime
@@ -25,6 +27,109 @@ from .validation_state import get_change_state, get_validation_tsv_path
 BACKENDS = ("microsam", "cellpose", "stardist")
 PREPROCESS_MODES = ("local_bg_subtract", "local_bg_subtract_mild",
                     "raw_percentile", "tile_clahe_mild", "tile_clahe")
+
+
+def model_library_root() -> Path:
+    """Shared, visible model folder; environment override supports isolated tests."""
+    override = os.environ.get("CELLMATCHR_MODEL_LIBRARY")
+    return Path(override).expanduser() if override else Path.home() / "CellMatchR" / "Models"
+
+
+def available_channels(seg_folder: str) -> list[int]:
+    """Return channel IDs present in a segmentation run's prediction masks."""
+    root = Path(seg_folder)
+    found = set()
+    for mask in root.glob("*/*_predict_original_ch*.tif"):
+        match = re.search(r"_predict_original_ch(\d+)(?:_|\.)", mask.name)
+        if match:
+            found.add(int(match.group(1)))
+    return sorted(found)
+
+
+def list_trained_models(project: str, backend: str | None = None,
+                        include_missing: bool = False) -> list[dict]:
+    """Read shared models and older project-local records without modifying either."""
+    roots = [(model_library_root(), "Shared library")]
+    if project:
+        legacy = Path(project) / "Trained_Models"
+        if legacy != roots[0][0]:
+            roots.append((legacy, "This project"))
+    found = []
+    for root, location in roots:
+        if not root.is_dir():
+            continue
+        for record in sorted(root.glob("*/model.json"), reverse=True):
+            try:
+                data = json.loads(record.read_text())
+                kind = data["backend"]
+                model_path = Path(data["model_path"])
+                if not model_path.exists() and data.get("model_relative_path"):
+                    model_path = record.parent / data["model_relative_path"]
+                if not model_path.exists() and record.parent.name in model_path.parts:
+                    parts = model_path.parts
+                    index = len(parts) - 1 - parts[::-1].index(record.parent.name)
+                    model_path = record.parent.joinpath(*parts[index + 1:])
+                available = model_path.exists()
+                if kind not in BACKENDS or (backend and kind != backend) or (not available and not include_missing):
+                    continue
+                data["name"] = str(data.get("name") or record.parent.name)
+                data["model_path"] = str(model_path)
+                data["record_folder"] = record.parent.name
+                data["record_dir"] = str(record.parent)
+                data["location"] = location
+                data["available"] = available
+                found.append(data)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+    return found
+
+
+def delete_managed_model(record_dir: str, project: str) -> None:
+    """Remove one registered model folder after the UI's two confirmations."""
+    folder = Path(record_dir)
+    roots = [model_library_root()]
+    if project:
+        roots.append(Path(project) / "Trained_Models")
+    if (folder.is_symlink() or not (folder / "model.json").is_file() or
+            not any(folder.resolve().parent == root.resolve() for root in roots)):
+        raise ValueError("Choose a model folder managed by CellMatchR")
+    shutil.rmtree(folder)
+
+
+def validate_advanced(backend: str, advanced: dict | None) -> dict:
+    """Validate optional overrides before creating a model output folder."""
+    settings = dict(advanced or {})
+    allowed = {"learning_rate", "batch_size", "patch_size", "validation_percent",
+               "loss", "freeze_encoder"}
+    unknown = settings.keys() - allowed
+    if unknown:
+        raise ValueError(f"Unknown advanced training setting: {', '.join(sorted(unknown))}")
+    if "learning_rate" in settings:
+        value = float(settings["learning_rate"])
+        if not 0 < value <= 1:
+            raise ValueError("Learning rate must be greater than 0 and at most 1")
+        settings["learning_rate"] = value
+    for key, limit in (("batch_size", 64), ("patch_size", 2048)):
+        if key in settings:
+            value = int(settings[key])
+            if not 1 <= value <= limit or (key == "patch_size" and (value < 64 or value % 16)):
+                raise ValueError(f"{key.replace('_', ' ').capitalize()} must be 1–{limit}"
+                                 + (" and a multiple of 16 (at least 64)" if key == "patch_size" else ""))
+            settings[key] = value
+    if backend == "cellpose" and "patch_size" in settings and settings["patch_size"] != 256:
+        raise ValueError("Cellpose-SAM requires a fixed 256-pixel training patch")
+    if "validation_percent" in settings:
+        value = int(settings["validation_percent"])
+        if not 5 <= value <= 50:
+            raise ValueError("Validation percent must be 5–50")
+        settings["validation_percent"] = value
+    if "loss" in settings:
+        if backend != "stardist" or settings["loss"] not in ("mae", "mse"):
+            raise ValueError("Only StarDist supports choosing MAE or MSE distance loss")
+    if "freeze_encoder" in settings:
+        if backend != "microsam" or not isinstance(settings["freeze_encoder"], bool):
+            raise ValueError("Freeze image encoder is only available for Micro-SAM")
+    return settings
 
 
 def _review_complete(sample: Path, channel: int) -> bool:
@@ -119,7 +224,7 @@ def _prepare_pair(example: dict, destination: Path, index: int,
 
 
 def _train_cellpose(train_pairs, val_pairs, output: Path, epochs: int,
-                    base_model: str) -> str:
+                    base_model: str, advanced: dict | None = None) -> str:
     from cellpose import models, train
     import torch
 
@@ -133,27 +238,33 @@ def _train_cellpose(train_pairs, val_pairs, output: Path, epochs: int,
                (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()))
     model = models.CellposeModel(gpu=use_gpu,
                                 pretrained_model=base_model or "cpsam")
+    settings = advanced or {}
     model_path, _loss, _val_loss = train.train_seg(
         model.net, train_data=x_train, train_labels=y_train,
         test_data=x_val, test_labels=y_val, n_epochs=epochs,
-        learning_rate=1e-5, batch_size=1, min_train_masks=1,
+        learning_rate=settings.get("learning_rate", 1e-5),
+        batch_size=settings.get("batch_size", 1),
+        bsize=settings.get("patch_size", 256), min_train_masks=1,
         save_path=str(output), model_name="cellmatchr_cellpose",
     )
     return str(model_path)
 
 
 def _train_microsam(train_pairs, val_pairs, output: Path, epochs: int,
-                    base_model: str) -> str:
+                    base_model: str, advanced: dict | None = None) -> str:
     from micro_sam.training import default_sam_loader, train_sam
     from micro_sam.util import export_custom_sam_model
     from torch_em.data.sampler import MinInstanceSampler
 
+    settings = advanced or {}
     def loader(pairs, is_train):
         return default_sam_loader(
             raw_paths=[p[0] for p in pairs], raw_key=None,
             label_paths=[p[1] for p in pairs], label_key=None,
-            patch_shape=(256, 256), with_segmentation_decoder=True,
-            batch_size=1, num_workers=0, n_samples=max(4, 4 * len(pairs)),
+            patch_shape=(settings.get("patch_size", 256),) * 2,
+            with_segmentation_decoder=True,
+            batch_size=settings.get("batch_size", 1), num_workers=0,
+            n_samples=max(4, 4 * len(pairs)),
             is_train=is_train, min_size=5,
             sampler=MinInstanceSampler(1, min_size=5, exclude_ids=[0]),
             max_sampling_attempts=1000,
@@ -167,7 +278,8 @@ def _train_microsam(train_pairs, val_pairs, output: Path, epochs: int,
         val_loader=loader(val_pairs, False),
         n_epochs=epochs, n_sub_iteration=2, n_objects_per_batch=4,
         checkpoint_path=checkpoint, with_segmentation_decoder=True,
-        freeze=["image_encoder"], save_root=str(output),
+        freeze=["image_encoder"] if settings.get("freeze_encoder", True) else [],
+        lr=settings.get("learning_rate", 1e-5), save_root=str(output),
         verify_n_labels_in_loader=4,
     )
     best = output / "checkpoints" / "cellmatchr_microsam" / "best.pt"
@@ -180,7 +292,7 @@ def _train_microsam(train_pairs, val_pairs, output: Path, epochs: int,
 
 
 def _train_stardist(train_pairs, val_pairs, output: Path, epochs: int,
-                    base_model: str) -> str:
+                    base_model: str, advanced: dict | None = None) -> str:
     try:
         from stardist.models import StarDist2D
     except ImportError as exc:
@@ -191,7 +303,17 @@ def _train_stardist(train_pairs, val_pairs, output: Path, epochs: int,
         pretrained = StarDist2D(None, name=source.name, basedir=str(source.parent))
     else:
         pretrained = StarDist2D.from_pretrained(base_model or "2D_versatile_fluo")
-    trained = StarDist2D(pretrained.config, name="cellmatchr_stardist",
+    settings = advanced or {}
+    config = copy.deepcopy(pretrained.config)
+    if "learning_rate" in settings:
+        config.train_learning_rate = settings["learning_rate"]
+    if "batch_size" in settings:
+        config.train_batch_size = settings["batch_size"]
+    if "patch_size" in settings:
+        config.train_patch_size = (settings["patch_size"],) * 2
+    if "loss" in settings:
+        config.train_dist_loss = settings["loss"]
+    trained = StarDist2D(config, name="cellmatchr_stardist",
                          basedir=str(output))
     trained.keras_model.set_weights(pretrained.keras_model.get_weights())
     x_train = [tifffile.imread(p[0]).astype(np.float32) / 255 for p in train_pairs]
@@ -208,7 +330,8 @@ TRAINERS = {"microsam": _train_microsam, "cellpose": _train_cellpose,
 
 
 def train_model(project: str, seg_run: str, channel: int, backend: str,
-                epochs: int, base_model: str = "", preprocess_mode: str = "local_bg_subtract") -> dict:
+                epochs: int, base_model: str = "", preprocess_mode: str = "local_bg_subtract",
+                model_name: str = "", advanced: dict | None = None) -> dict:
     if backend not in BACKENDS:
         raise ValueError(f"Choose one of: {', '.join(BACKENDS)}")
     if epochs < 1 or epochs > 500:
@@ -217,6 +340,10 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         raise ValueError("Channel must be 0 or higher")
     if preprocess_mode not in PREPROCESS_MODES:
         raise ValueError(f"Choose a preprocessing mode: {', '.join(PREPROCESS_MODES)}")
+    model_name = model_name.strip()
+    if len(model_name) > 60 or any(ch in model_name for ch in "/\\\n\r\t"):
+        raise ValueError("Model name must be at most 60 characters with no slashes or line breaks")
+    advanced = validate_advanced(backend, advanced)
     if backend == "stardist" and (importlib.util.find_spec("stardist") is None or
                                    importlib.util.find_spec("tensorflow") is None):
         raise RuntimeError("StarDist training needs the optional StarDist and TensorFlow packages")
@@ -237,13 +364,29 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
     if len(examples) < 2:
         raise ValueError("At least two fully validated samples with YES cells are needed for training")
 
-    output_root = project_path / "Trained_Models"
-    output_root.mkdir(exist_ok=True)
+    parent = None
+    custom_base = bool(base_model and os.path.isabs(base_model))
+    if custom_base:
+        starting_path = os.path.normcase(os.path.realpath(base_model))
+        parent = next((model for model in list_trained_models(str(project_path), backend)
+                       if os.path.normcase(os.path.realpath(model["model_path"])) == starting_path),
+                      None)
+    prior_rounds = int(parent.get("training_rounds") or 1) if parent else 0
+    prior_epochs = int(parent.get("recorded_epochs") or parent.get("epochs") or 0) if parent else 0
+    history_complete = (not custom_base if parent is None
+                        else bool(parent.get("history_complete", parent.get("epochs") is not None)))
+
+    output_root = model_library_root()
+    output_root.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output = output_root / f"{backend}_ch{channel}_{timestamp}"
+    name_slug = re.sub(r"[^a-z0-9]+", "_", model_name.lower()).strip("_")[:32]
+    folder_stem = f"{backend}_ch{channel}"
+    if name_slug:
+        folder_stem += f"_{name_slug}"
+    output = output_root / f"{folder_stem}_{timestamp}"
     suffix = 2
     while output.exists():
-        output = output_root / f"{backend}_ch{channel}_{timestamp}_{suffix}"
+        output = output_root / f"{folder_stem}_{timestamp}_{suffix}"
         suffix += 1
     output.mkdir()
     stage = Path(tempfile.mkdtemp(prefix=".training_data_", dir=output))
@@ -251,13 +394,23 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         pairs = [_prepare_pair(example, stage, i, preprocess_mode)
                  for i, example in enumerate(examples)]
         # Keep whole samples apart so validation does not reuse training pixels.
-        n_val = max(1, len(pairs) // 5)
+        n_val = max(1, len(pairs) // 5) if "validation_percent" not in advanced else max(
+            1, round(len(pairs) * advanced["validation_percent"] / 100))
         train_pairs, val_pairs = pairs[:-n_val], pairs[-n_val:]
         print(f"Training {backend}: {len(train_pairs)} samples; "
               f"validation: {len(val_pairs)}; channel {channel}", flush=True)
-        path = TRAINERS[backend](train_pairs, val_pairs, output, epochs, base_model)
+        path = TRAINERS[backend](train_pairs, val_pairs, output, epochs, base_model, advanced)
         result = {"backend": backend, "model_path": path, "channel": channel,
+                  "model_relative_path": str(Path(path).relative_to(output)),
+                  "name": model_name or f"{backend} channel {channel} {timestamp}",
+                  "source_project": str(project_path),
+                  "starting_model_name": parent["name"] if parent else base_model,
+                  "parent_model_path": parent["model_path"] if parent else "",
+                  "training_rounds": prior_rounds + 1,
+                  "recorded_epochs": prior_epochs + epochs,
+                  "history_complete": history_complete,
                   "segmentation_run": seg_run, "preprocess": preprocess_mode,
+                  "epochs": epochs, "advanced": advanced,
                   "training_samples": [e["sample"] for e in examples[:-n_val]],
                   "validation_samples": [e["sample"] for e in examples[-n_val:]],
                   "skipped": skipped, "base_model": base_model,
@@ -278,9 +431,21 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--base-model", default="")
     parser.add_argument("--preprocess", default="local_bg_subtract")
+    parser.add_argument("--model-name", default="")
+    parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--patch-size", type=int)
+    parser.add_argument("--validation-percent", type=int)
+    parser.add_argument("--loss", choices=("mae", "mse"))
+    parser.add_argument("--freeze-encoder", choices=("yes", "no"))
     args = parser.parse_args()
+    advanced = {key: getattr(args, key) for key in
+                ("learning_rate", "batch_size", "patch_size", "validation_percent", "loss")
+                if getattr(args, key) is not None}
+    if args.freeze_encoder is not None:
+        advanced["freeze_encoder"] = args.freeze_encoder == "yes"
     train_model(args.project, args.seg_run, args.channel, args.backend,
-                args.epochs, args.base_model, args.preprocess)
+                args.epochs, args.base_model, args.preprocess, args.model_name, advanced)
 
 
 if __name__ == "__main__":

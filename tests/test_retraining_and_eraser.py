@@ -1,16 +1,22 @@
 """Focused checks for the reviewed-data and whole-object erase workflows."""
 
 import json
+import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
 import tifffile
 
 from cellmatchr.roi_editor import RoiEditorApp, _remove_touched_objects
-from cellmatchr.retraining import collect_examples, train_model
+from cellmatchr.retraining import (available_channels, collect_examples,
+                                  delete_managed_model, list_trained_models,
+                                  train_model, validate_advanced,
+                                  _train_stardist)
 from cellmatchr.validation_state import get_change_state
 
 
@@ -70,12 +76,57 @@ class StarDistRoutingTests(unittest.TestCase):
         model.predict_instances.assert_called_once()
         self.assertEqual(float(model.predict_instances.call_args.args[0].max()), 1.0)
 
+    def test_stardist_training_passes_supported_overrides_to_its_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw, mask = root / "raw.tif", root / "mask.tif"
+            tifffile.imwrite(raw, np.ones((128, 128), dtype=np.uint8))
+            tifffile.imwrite(mask, np.ones((128, 128), dtype=np.uint32))
+            original = SimpleNamespace(train_learning_rate=0.0003,
+                                       train_batch_size=4,
+                                       train_patch_size=(256, 256),
+                                       train_dist_loss="mae")
+            pretrained = SimpleNamespace(
+                config=original, keras_model=SimpleNamespace(get_weights=lambda: [1]))
+            trained = []
+            class FakeStarDist:
+                def __init__(self, config, name, basedir):
+                    self.config = config
+                    self.keras_model = SimpleNamespace(set_weights=lambda weights: None)
+                    self.train = Mock()
+                    trained.append(self)
+                @classmethod
+                def from_pretrained(cls, name):
+                    assert name == "2D_versatile_fluo"
+                    return pretrained
+            package = ModuleType("stardist")
+            models = ModuleType("stardist.models")
+            models.StarDist2D = FakeStarDist
+            with patch.dict(sys.modules, {"stardist": package, "stardist.models": models}):
+                result = _train_stardist([(str(raw), str(mask))],
+                                         [(str(raw), str(mask))], root, 2,
+                                         "2D_versatile_fluo",
+                                         {"learning_rate": 0.0001,
+                                          "batch_size": 2, "patch_size": 128,
+                                          "loss": "mse"})
+            self.assertEqual(result, str(root / "cellmatchr_stardist"))
+            self.assertEqual(trained[0].config.train_dist_loss, "mse")
+            self.assertEqual(trained[0].config.train_patch_size, (128, 128))
+            self.assertEqual(trained[0].config.train_batch_size, 2)
+            self.assertEqual(trained[0].config.train_learning_rate, 0.0001)
+            self.assertEqual(original.train_dist_loss, "mae")
+            trained[0].train.assert_called_once()
+
 
 class ReviewedTrainingDataTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.project = Path(self.temp.name)
+        library = self.project / "CellMatchR" / "Models"
+        env = patch.dict(os.environ, {"CELLMATCHR_MODEL_LIBRARY": str(library)})
+        env.start()
+        self.addCleanup(env.stop)
         self.run = self.project / "Segmentation"
         self.run.mkdir()
 
@@ -104,6 +155,37 @@ class ReviewedTrainingDataTests(unittest.TestCase):
         self.assertEqual(examples[0]["accepted_ids"], [1])
         self.assertEqual(examples[0]["rejected_count"], 1)
         self.assertTrue(any("unfinished" in reason for reason in skipped))
+        self.assertEqual(available_channels(str(self.run)), [1])
+
+    def test_advanced_controls_reject_unsupported_loss(self):
+        self.assertEqual(validate_advanced("stardist", {"loss": "mse",
+                         "learning_rate": "0.0003", "batch_size": "2"}),
+                         {"loss": "mse", "learning_rate": 0.0003, "batch_size": 2})
+        with self.assertRaisesRegex(ValueError, "Only StarDist"):
+            validate_advanced("cellpose", {"loss": "mse"})
+        with self.assertRaisesRegex(ValueError, "multiple of 16"):
+            validate_advanced("microsam", {"patch_size": 100})
+        with self.assertRaisesRegex(ValueError, "fixed 256"):
+            validate_advanced("cellpose", {"patch_size": 64})
+
+    def test_model_list_resolves_model_after_project_move(self):
+        record = self.project / "Trained_Models" / "cellpose_ch1_old"
+        record.mkdir(parents=True)
+        model = record / "models" / "saved"
+        model.parent.mkdir()
+        model.touch()
+        (record / "model.json").write_text(json.dumps({
+            "backend": "cellpose", "channel": 1, "name": "Older result",
+            "model_path": "/old/project/Trained_Models/cellpose_ch1_old/models/saved",
+            "model_relative_path": "models/saved"}))
+        self.assertEqual(list_trained_models(str(self.project))[0]["model_path"], str(model))
+        (record / "model.json").write_text(json.dumps({
+            "backend": "cellpose", "channel": 1, "name": "Older result",
+            "model_path": "/old/project/Trained_Models/cellpose_ch1_old/models/saved"}))
+        self.assertEqual(list_trained_models(str(self.project))[0]["model_path"], str(model))
+        model.unlink()
+        self.assertEqual(list_trained_models(str(self.project)), [])
+        self.assertFalse(list_trained_models(str(self.project), include_missing=True)[0]["available"])
 
     def test_erasing_rejected_cell_preserves_completed_legacy_review(self):
         sample = self.sample("a")
@@ -138,20 +220,44 @@ class ReviewedTrainingDataTests(unittest.TestCase):
             tifffile.imwrite(image, np.zeros((8, 8), dtype=np.uint8))
             tifffile.imwrite(label, np.ones((8, 8), dtype=np.uint32))
             return str(image), str(label)
-        def trainer(train, val, output, epochs, base):
+        def trainer(train, val, output, epochs, base, advanced):
             self.assertEqual((len(train), len(val), epochs), (1, 1, 2))
+            self.assertEqual(advanced, {"learning_rate": 0.0001})
             model = output / "trained_model"
             model.touch()
             return str(model)
         with patch("cellmatchr.retraining._prepare_pair", side_effect=prepare), \
              patch.dict("cellmatchr.retraining.TRAINERS", {"cellpose": trainer}):
             result = train_model(str(self.project), "Segmentation", 1,
-                                 "cellpose", 2, "cpsam")
+                                 "cellpose", 2, "cpsam", model_name="My cell model",
+                                 advanced={"learning_rate": "0.0001"})
         folder = Path(result["model_path"]).parent
+        self.assertIn("my_cell_model", folder.name)
         self.assertTrue((folder / "model.json").is_file())
         self.assertEqual(json.loads((folder / "model.json").read_text())["backend"],
                          "cellpose")
         self.assertFalse(list(folder.glob(".training_data_*")))
+        self.assertEqual(list_trained_models(str(self.project), "cellpose")[0]["name"],
+                         "My cell model")
+        with patch("cellmatchr.retraining._prepare_pair", side_effect=prepare), \
+             patch.dict("cellmatchr.retraining.TRAINERS", {"cellpose": trainer}):
+            second = train_model(str(self.project), "Segmentation", 1,
+                                 "cellpose", 2, result["model_path"], model_name="Second model",
+                                 advanced={"learning_rate": "0.0001"})
+        self.assertNotEqual(result["model_path"], second["model_path"])
+        self.assertEqual((second["training_rounds"], second["recorded_epochs"]), (2, 4))
+        self.assertEqual(second["parent_model_path"], result["model_path"])
+        self.assertEqual({m["name"] for m in list_trained_models(str(self.project))},
+                         {"My cell model", "Second model"})
+        another_project = self.project / "Another_Project"
+        another_project.mkdir()
+        self.assertEqual({m["name"] for m in list_trained_models(str(another_project))},
+                         {"My cell model", "Second model"})
+        delete_managed_model(str(Path(result["model_path"]).parent), str(self.project))
+        self.assertEqual([m["name"] for m in list_trained_models(str(another_project))],
+                         ["Second model"])
+        with self.assertRaisesRegex(ValueError, "managed"):
+            delete_managed_model(str(self.run), str(self.project))
 
 
 if __name__ == "__main__":

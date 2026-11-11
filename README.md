@@ -258,14 +258,41 @@ default.
    reported. At least two usable samples are required, with whole samples
    separated between training and validation.
 3. Open **Step 7 — Retrain Models**. Choose the reviewed segmentation run,
-   channel, and model type; use **Check Training Data** to see how many samples
-   are ready. Choose the training epochs and starting model, then select
-   **Start Retraining**. Model training can take considerable time and memory.
-   The new model is saved in the project's `Trained_Models` folder. Temporary
-   training images are removed when training ends.
-4. To use the result for new segmentation runs, tick **Use the trained model
-   for future segmentation runs** before starting training, or browse to the
-   saved model in **Step 3** later. Start a **new segmentation run** when you
+   then select one available channel from the dropdown. A training run makes
+   one model for one channel; repeat with another channel if needed. Choose
+   Cellpose, Micro-SAM, or StarDist, enter a name for the new model, and use
+   **Check Training Data** to see how many samples are ready. Set the epochs
+   and, if needed, the **starting model to fine-tune** from its dropdown.
+   It lists built-in models and previous trained models by name. This starting
+   model supplies initial weights; it is not the save location and is not replaced.
+   Select **Start Retraining**. Training can take considerable time and memory.
+   The new model is saved separately in the shared `~/CellMatchR/Models` library.
+   **Open Model Library** in Step 7 opens that folder in the file manager.
+   A completed model appears immediately in the starting-model dropdown, so
+   another training run can continue fine-tuning it without locating its file.
+   Temporary training images are removed when training ends.
+4. **Show advanced settings** exposes optional overrides for learning rate,
+   batch size, and the percentage of samples held out for validation. Patch
+   size is available for Micro-SAM and StarDist; Cellpose-SAM requires a fixed
+   256-pixel patch. Leave a field blank to keep its backend default. StarDist also
+   offers MAE or MSE distance loss; Micro-SAM can unfreeze its image encoder.
+   Cellpose and Micro-SAM retain their built-in loss functions. **Other starting
+   model** in this section allows a model file or StarDist folder outside the
+   model list.
+   **Model Manager** in Advanced settings lists the saved date, backend,
+   channel, known training rounds and recorded epochs for shared models and
+   older models in the open project. Deleting a selected model requires two
+   confirmations: first a warning, then typing its exact name. Deletion
+   permanently removes that model's folder; models fine-tuned from it remain.
+5. Completed named models appear in the **Model for this run** dropdown in
+   Step 3 for every project, alongside the built-in model. Tick **Select the new
+   model for this project's next segmentation runs** to select it automatically
+   when training completes; unticked models remain available in every project's
+   dropdown. Older saved models are kept. Models saved by an earlier version in
+   a project's `Trained_Models` folder remain selectable for that project.
+   When moving a project to another computer, also copy any shared model it
+   uses and select the copied model from **Other starting model** or Step 3.
+   Start a **new segmentation run** when you
    change the backend or model so predictions from different methods stay
    separate. Review its masks before relying on analysis results.
 

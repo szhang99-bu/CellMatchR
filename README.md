@@ -6,8 +6,9 @@ Neuronal confocal image segmentation, manual validation, and colocalization anal
 
 Reads images directly from most major microscope brands, plus **Olympus `.vsi`**
 slide-scanner files via the built-in VSI Converter.
-Segmentation runs with either [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam)
-or [Cellpose-SAM](https://github.com/MouseLand/cellpose) (selectable per run).
+Segmentation runs with [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam),
+[Cellpose-SAM](https://github.com/MouseLand/cellpose), or the optional
+[StarDist 2D](https://github.com/stardist/stardist) backend (selectable per run).
 
 **Supported input formats**
 
@@ -70,12 +71,12 @@ Large stitched slide scans may need substantial memory during ROI conversion.
 │                    the converter, export full-res TIFFs         │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 3  — Segmentation                                         │
-│    • Tiled Micro-SAM or Cellpose-SAM on chosen channels         │
+│    • Tiled Micro-SAM, Cellpose-SAM, or StarDist 2D              │
 │    • Tune object filters with the Parameter Wizard if needed    │
 │    • Configure preprocessing, filters, and resume behavior      │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 4  — Validation  (optional)                               │
-│    • Review masks and add missed cells in the ROI editor        │
+│    • Review masks; add missed cells or erase false predictions  │
 │    • Name/colour channels and review each detected cell         │
 │    • Per-channel TSV and completion marker for each sample      │
 ├─────────────────────────────────────────────────────────────────┤
@@ -87,6 +88,10 @@ Large stitched slide scans may need substantial memory during ROI conversion.
 │  Step 6  — Run Pipeline                                         │
 │    • Run pending segmentation and analysis steps together       │
 │    • Validation remains an interactive step                     │
+├─────────────────────────────────────────────────────────────────┤
+│  Step 7  — Retrain Models                                       │
+│    • Fine-tune a model from completed human-reviewed masks      │
+│    • Save a new model for future segmentation runs               │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -235,6 +240,57 @@ default.
 3. Confirm the run produced a prediction TIFF and inspect the mask or QC
    overlay. If GPU memory is tight, start with 1024 × 1024 tiles and 128 px
    halo on each axis.
+
+### Edit predictions and retrain a model
+
+1. In **Step 4**, open the ROI editor for a segmentation run and channel. Paint
+   missed cells on **Add ROIs here**. Select **Erase whole object** and paint
+   any part of a false prediction to remove the entire predicted cell. The
+   existing mask previews the removal before you save. **Ctrl+Z** undoes a
+   stroke on the selected painting layer before saving. **Finish** saves any
+   pending strokes. The original prediction is not overwritten by a test-mode
+   save.
+2. Complete the cell-by-cell validation for the same channel. Retraining uses
+   the final edited mask and its decisions. **YES** cells are targets;
+   **NO**, **MAYBE**, and **ARTIFACT** cells become background. A sample needs
+   at least one YES cell to contribute. Samples with unfinished validation,
+   changed masks awaiting review, or custom decision words are skipped and
+   reported. At least two usable samples are required, with whole samples
+   separated between training and validation.
+3. Open **Step 7 — Retrain Models**. Choose the reviewed segmentation run,
+   channel, and model type; use **Check Training Data** to see how many samples
+   are ready. Choose the training epochs and starting model, then select
+   **Start Retraining**. Model training can take considerable time and memory.
+   The new model is saved in the project's `Trained_Models` folder. Temporary
+   training images are removed when training ends.
+4. To use the result for new segmentation runs, tick **Use the trained model
+   for future segmentation runs** before starting training, or browse to the
+   saved model in **Step 3** later. Start a **new segmentation run** when you
+   change the backend or model so predictions from different methods stay
+   separate. Review its masks before relying on analysis results.
+
+The edited prediction TIFF and validation TSV keep their existing formats;
+older CellMatchR versions can still open those projects. The optional deletion
+record (`_manual_deletions_chN.tsv`) is extra information for the user and is
+ignored by older versions. Older versions cannot run the new StarDist backend
+or retraining menu; use this version to make new predictions with those models.
+
+### Optional StarDist backend
+
+StarDist requires extra packages and is not installed by the standard
+CellMatchR environment. Install it in the environment used to launch CellMatchR:
+
+```bash
+conda activate cellmatchr
+pip install -e '.[stardist]'
+```
+
+Then choose **StarDist 2D** in Step 3. The default starting model is
+`2D_versatile_fluo`; a model trained in Step 7 can be selected by its folder.
+StarDist produces the same per-channel prediction TIFFs as the other backends,
+so the existing editor, validation, and analysis steps apply. Check that the
+optional TensorFlow installation works on your computer before starting a
+large segmentation or training run.
 
 ---
 

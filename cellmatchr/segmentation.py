@@ -74,7 +74,11 @@ HALO_2D = (256, 256)
 # =============================================================================
 # "microsam"  → tiled Micro-SAM (default, uses MODEL_TYPE below)
 # "cellpose"  → Cellpose-SAM (cellpose 4.x, the "cpsam" model)
+# "stardist"  → StarDist 2D (optional TensorFlow backend)
 SEG_BACKEND = "microsam"
+CUSTOM_MODEL_PATH = ""
+CELLPOSE_MODEL_PATH = ""
+STARDIST_MODEL_PATH = ""
 
 # Cellpose-SAM parameters (only used when SEG_BACKEND == "cellpose").
 CELLPOSE_DIAMETER          = 0.0   # cell diameter in px; 0 = let Cellpose estimate
@@ -735,6 +739,7 @@ def segment_by_tiling(
     ndim,
     debug_folder=None,
     cellpose_model=None,
+    stardist_model=None,
     **generate_kwargs
 ):
     if ndim != 2:
@@ -841,7 +846,12 @@ def segment_by_tiling(
             mode=PREPROCESS_MODE
         )
 
-        if cellpose_model is not None:
+        if stardist_model is not None:
+            labeled_tile, _details = stardist_model.predict_instances(
+                processed_uint8.astype(np.float32) / 255.0
+            )
+            labeled_tile = np.asarray(labeled_tile, dtype=np.uint32)
+        elif cellpose_model is not None:
             # ── Cellpose-SAM backend ─────────────────────────────────────────
             # Cellpose returns a labelled mask directly. Feed it the same
             # preprocessed grayscale tile the SAM path uses.
@@ -1643,12 +1653,19 @@ def _run_progress_path(out_dir: str) -> str:
 
 def _run_identity() -> dict:
     """Settings that must stay fixed when continuing one segmentation run."""
-    return {
+    identity = {
         "backend": SEG_BACKEND,
-        "model": MODEL_TYPE if SEG_BACKEND == "microsam" else "cpsam",
+        "model": (MODEL_TYPE if SEG_BACKEND == "microsam" else
+                  "cpsam" if SEG_BACKEND == "cellpose" else "2D_versatile_fluo"),
         "preprocess": PREPROCESS_MODE,
         "channels": list(CHANNELS_TO_PREDICT),
     }
+    chosen = {"microsam": CUSTOM_MODEL_PATH,
+              "cellpose": CELLPOSE_MODEL_PATH,
+              "stardist": STARDIST_MODEL_PATH}[SEG_BACKEND]
+    if chosen:
+        identity["custom_model"] = os.path.abspath(chosen)
+    return identity
 
 
 def _check_resume_identity(out_dir: str) -> None:
@@ -1841,7 +1858,7 @@ def main():
 
     print(f"Found {len(all_files)} file(s) → {len(work_items)} sample(s) to process.")
 
-    predictor, segmenter, cellpose_model = None, None, None
+    predictor, segmenter, cellpose_model, stardist_model = None, None, None, None
 
     if not is_dry_run:
         if torch.cuda.is_available():
@@ -1862,10 +1879,26 @@ def main():
                 sys.exit(1)
             # Cellpose-SAM ships a single unified model ("cpsam"); first use
             # downloads the weights (~1 GB) to ~/.cellpose.
-            cellpose_model = _cp_models.CellposeModel(gpu=(device != "cpu"))
+            cellpose_model = _cp_models.CellposeModel(
+                gpu=(device != "cpu"),
+                pretrained_model=CELLPOSE_MODEL_PATH or "cpsam")
             print(f"  diameter={CELLPOSE_DIAMETER or 'auto'}  "
                   f"flow_threshold={CELLPOSE_FLOW_THRESHOLD}  "
                   f"cellprob_threshold={CELLPOSE_CELLPROB_THRESHOLD}")
+        elif SEG_BACKEND == "stardist":
+            try:
+                from stardist.models import StarDist2D
+            except ImportError as exc:
+                raise RuntimeError("StarDist is not installed. Install the optional "
+                                   "StarDist packages before selecting this backend.") from exc
+            if STARDIST_MODEL_PATH:
+                source = os.path.abspath(STARDIST_MODEL_PATH)
+                stardist_model = StarDist2D(
+                    None, name=os.path.basename(source),
+                    basedir=os.path.dirname(source))
+            else:
+                stardist_model = StarDist2D.from_pretrained("2D_versatile_fluo")
+            print("Segmentation backend: StarDist 2D")
         else:
             print(f"Segmentation backend: Micro-SAM (model {MODEL_TYPE})")
             # Patch cached decoder checkpoints if they were saved with old torch_em naming
@@ -1874,8 +1907,9 @@ def main():
             _patch_decoder_checkpoints(MODEL_TYPE)
 
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
-                model_type=MODEL_TYPE,
+                model_type="vit_b" if CUSTOM_MODEL_PATH else MODEL_TYPE,
                 device=device,
+                checkpoint=CUSTOM_MODEL_PATH or None,
             )
 
     generate_kwargs = {
@@ -1961,7 +1995,8 @@ def main():
                     f"min={image_data.min()}, max={image_data.max()}"
                 )
 
-                _backend_tag = "cellpose" if SEG_BACKEND == "cellpose" else "microSAM"
+                _backend_tag = {"cellpose": "cellpose", "stardist": "stardist",
+                                "microsam": "microSAM"}[SEG_BACKEND]
                 debug_folder = os.path.join(
                     output_subfolder,
                     f"DEBUG_{_backend_tag}_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048"
@@ -1980,6 +2015,7 @@ def main():
                     NDIM,
                     debug_folder=debug_folder,
                     cellpose_model=cellpose_model,
+                    stardist_model=stardist_model,
                     **generate_kwargs
                 )
 
@@ -2058,6 +2094,7 @@ def _apply_config(config_path: str) -> None:
     global DRY_RUN, TEST_RUN, SKIP_SUBDIRS
     global PER_CHANNEL_FILTERS_ENABLED, PER_CHANNEL_FILTERS
     global SEG_BACKEND, CELLPOSE_DIAMETER, CELLPOSE_FLOW_THRESHOLD, CELLPOSE_CELLPROB_THRESHOLD
+    global CUSTOM_MODEL_PATH, CELLPOSE_MODEL_PATH, STARDIST_MODEL_PATH
 
     with open(config_path) as f:
         cfg = json.load(f)
@@ -2071,8 +2108,11 @@ def _apply_config(config_path: str) -> None:
         MAIN_OUTPUT_FOLDER = cfg["output_root_folder"]
 
     # Segmentation backend + Cellpose params
-    if str(cfg.get("seg_backend", "")).strip().lower() in ("microsam", "cellpose"):
+    if str(cfg.get("seg_backend", "")).strip().lower() in ("microsam", "cellpose", "stardist"):
         SEG_BACKEND = str(cfg["seg_backend"]).strip().lower()
+    CUSTOM_MODEL_PATH = str(cfg.get("seg_custom_model_path") or "").strip()
+    CELLPOSE_MODEL_PATH = str(cfg.get("seg_cellpose_model_path") or "").strip()
+    STARDIST_MODEL_PATH = str(cfg.get("seg_stardist_model_path") or "").strip()
     if cfg.get("seg_cellpose_diameter") is not None:
         try: CELLPOSE_DIAMETER = float(cfg["seg_cellpose_diameter"])
         except (ValueError, TypeError): pass

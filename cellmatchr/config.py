@@ -20,8 +20,11 @@ DEFAULT_CONFIG: dict = {
 
     # --- Segmentation ---
     "seg_channels": "",
-    "seg_backend": "microsam",          # "microsam" | "cellpose" (Cellpose-SAM)
+    "seg_backend": "microsam",          # "microsam" | "cellpose" | "stardist"
     "seg_model_type": "vit_b_lm",       # Micro-SAM model (when backend == microsam)
+    "seg_custom_model_path": "",       # optional fine-tuned Micro-SAM checkpoint
+    "seg_cellpose_model_path": "",     # optional fine-tuned Cellpose checkpoint
+    "seg_stardist_model_path": "",     # optional fine-tuned StarDist model folder
     "seg_cellpose_diameter": 0.0,            # 0 = auto-estimate
     "seg_cellpose_flow_threshold": 0.4,
     "seg_cellpose_cellprob_threshold": 0.0,

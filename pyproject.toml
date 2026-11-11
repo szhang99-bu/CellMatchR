@@ -32,6 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 vsi = ["slideio", "napari", "PyQt5", "qtpy"]
 seg = ["torch", "micro-sam"]
+stardist = ["numpy<2", "stardist>=0.9,<0.10", "tensorflow>=2.15,<2.17"]
 all = ["cellmatchr[vsi,seg]"]
 
 [project.scripts]

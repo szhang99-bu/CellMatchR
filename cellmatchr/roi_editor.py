@@ -35,9 +35,9 @@ import tifffile
 from skimage.measure import label as connected_components
 
 if __package__:
-    from .validation_state import save_edited_mask
+    from .validation_state import finalize_if_ready, save_edited_mask
 else:
-    from validation_state import save_edited_mask
+    from validation_state import finalize_if_ready, save_edited_mask
 
 # ── Display resolution cap ───────────────────────────────────────────────────
 # Large TIFFs freeze napari on the first brush stroke because it must upload
@@ -172,6 +172,19 @@ def _merge_additions(existing: np.ndarray,
     return new_mask, added, new_ids
 
 
+def _remove_touched_objects(mask: np.ndarray, predicted: np.ndarray,
+                            erase_strokes: np.ndarray) -> tuple[np.ndarray, set[int]]:
+    """Remove complete predicted objects touched by the erase brush."""
+    if mask.shape != predicted.shape or mask.shape != erase_strokes.shape:
+        raise ValueError("Erase strokes and prediction mask must have the same shape")
+    touched = {int(v) for v in np.unique(predicted[erase_strokes > 0]) if v > 0}
+    if not touched:
+        return mask, set()
+    result = mask.copy()
+    result[np.isin(result, list(touched))] = 0
+    return result, touched
+
+
 # ── Debug PNG ────────────────────────────────────────────────────────────────
 
 def _save_debug_png(raw_path: str,
@@ -281,6 +294,8 @@ class RoiEditorApp:
         self._raw_lyr  = None
         self._mask_lyr = None
         self._add_lyr  = None
+        self._erase_lyr = None
+        self._base_display_mask = None
 
         # Qt widgets (set in _build_dock)
         self._prog_lbl   = None
@@ -289,6 +304,7 @@ class RoiEditorApp:
         self._save_btn   = None     # stored so we can disable it in test mode
         self._skip_btn   = None     # stored so we can disable after all reviewed
         self._colour_btns: dict = {}  # label_value → QPushButton
+        self._erase_btn = None
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -492,7 +508,10 @@ class RoiEditorApp:
             "   • Same colour + not touching → separate ROIs ✓<br>"
             "   • <b>Touching cells → use different colours</b><br>"
             "4. <b>Right-click drag</b> to pan the view<br>"
-            "5. Press Save when done<br><br>"
+            "5. To reject a prediction, select <b>Erase whole object</b> "
+            "and paint any part of it<br>"
+            "6. Press <b>Ctrl+Z</b> to undo a brush stroke before saving<br>"
+            "7. Press Save when done<br><br>"
             "<i>[ and ] keys adjust brush size</i>"
         )
         instr.setWordWrap(True)
@@ -548,6 +567,15 @@ class RoiEditorApp:
             self._colour_btns[lv] = btn
 
         lay.addWidget(colour_row)
+        self._erase_btn = QPushButton("🧽  Erase whole object")
+        self._erase_btn.setCheckable(True)
+        self._erase_btn.setStyleSheet(
+            "QPushButton { background:#713541; color:white; padding:6px; "
+            "border-radius:4px; }"
+            "QPushButton:checked { border:2px solid #ff7485; }"
+        )
+        self._erase_btn.clicked.connect(self._select_eraser)
+        lay.addWidget(self._erase_btn)
         lay.addWidget(self._hr())
 
         # ── Buttons ──
@@ -584,7 +612,7 @@ class RoiEditorApp:
             " border-radius:4px; }"
             "QPushButton:hover { background:#666; }"
         )
-        finish_btn.clicked.connect(self.viewer.close)
+        finish_btn.clicked.connect(self._finish)
         lay.addWidget(finish_btn)
 
         self._refresh_labels()
@@ -619,6 +647,7 @@ class RoiEditorApp:
 
         raw_d = _downsample(raw, self._scale)
         msk_d = _downsample(msk, self._scale)
+        self._base_display_mask = msk_d.copy()
 
         if self._scale > 1:
             print(f"[roi_editor]   {w}×{h} → display at "
@@ -648,6 +677,18 @@ class RoiEditorApp:
             self._add_lyr.brush_size     = self.DEFAULT_BRUSH_SIZE
             self._add_lyr.selected_label = 1
             self._add_lyr.mode           = "paint"
+            self._erase_lyr = self.viewer.add_labels(
+                np.zeros_like(msk_d, dtype=np.uint8),
+                name="Erase whole objects", opacity=0.65,
+            )
+            self._erase_lyr.color = {1: "red"}
+            self._erase_lyr.brush_size = self.DEFAULT_BRUSH_SIZE
+            self._erase_lyr.selected_label = 1
+            self._erase_lyr.mode = "paint"
+            self._erase_lyr.events.paint.connect(self._update_erasure_preview)
+            self._erase_lyr.events.data.connect(self._update_erasure_preview)
+            self._erase_lyr.bind_key("Control-Z", self._undo_eraser, overwrite=True)
+            self._add_lyr.bind_key("Control-Z", self._undo_addition, overwrite=True)
             self.viewer.layers.selection.active = self._add_lyr
             # Hook for first-stroke debug output
             self._add_lyr.events.data.connect(self._on_first_paint)
@@ -662,9 +703,12 @@ class RoiEditorApp:
             self._raw_lyr.contrast_limits = [lo, hi]
             self._mask_lyr.data           = msk_d
             self._add_lyr.data            = np.zeros_like(msk_d, dtype=np.int32)
+            self._erase_lyr.data          = np.zeros_like(msk_d, dtype=np.uint8)
             self._add_lyr.selected_label  = 1
             self._add_lyr.mode            = "paint"
             self.viewer.layers.selection.active = self._add_lyr
+            if self._erase_btn is not None:
+                self._erase_btn.setChecked(False)
 
         self.viewer.reset_view()
 
@@ -678,6 +722,38 @@ class RoiEditorApp:
             self.viewer.layers.selection.active = self._add_lyr
         for lv, btn in self._colour_btns.items():
             btn.setChecked(lv == label)
+        if self._erase_btn is not None:
+            self._erase_btn.setChecked(False)
+
+    def _select_eraser(self) -> None:
+        if self._erase_lyr is None:
+            return
+        self._erase_lyr.selected_label = 1
+        self._erase_lyr.mode = "paint"
+        self.viewer.layers.selection.active = self._erase_lyr
+        for btn in self._colour_btns.values():
+            btn.setChecked(False)
+        self._erase_btn.setChecked(True)
+        self._set_status("Paint any part of a predicted object to remove it on Save. Ctrl+Z undoes a stroke.")
+
+    def _update_erasure_preview(self, event=None) -> None:
+        if self._erase_lyr is None or self._base_display_mask is None:
+            return
+        touched = {int(v) for v in np.unique(
+            self._base_display_mask[self._erase_lyr.data > 0]) if v > 0}
+        preview = self._base_display_mask.copy()
+        if touched:
+            preview[np.isin(preview, list(touched))] = 0
+        self._mask_lyr.data = preview
+        if touched:
+            self._set_status(f"{len(touched)} whole predicted object(s) marked for removal. Ctrl+Z to undo.")
+
+    def _undo_eraser(self, layer=None) -> None:
+        self._erase_lyr.undo()
+        self._update_erasure_preview()
+
+    def _undo_addition(self, layer=None) -> None:
+        self._add_lyr.undo()
 
     def _save_and_next(self) -> None:
         saved = self._save_current()
@@ -687,6 +763,10 @@ class RoiEditorApp:
     def _skip(self) -> None:
         self._set_status("Skipped — no changes saved.", colour="#aaaaaa")
         self._advance()
+
+    def _finish(self) -> None:
+        if self.test_mode or self._auto_save_current():
+            self.viewer.close()
 
     def _prev(self) -> None:
         if self.idx > 0:
@@ -717,27 +797,9 @@ class RoiEditorApp:
         """
         if self.test_mode or self._add_lyr is None:
             return True
-        if self._add_lyr.data.max() == 0:
+        if self._add_lyr.data.max() == 0 and self._erase_lyr.data.max() == 0:
             return True   # nothing painted
-        s = self.samples[self.idx]
-        additions = _upsample_additions(
-            self._add_lyr.data, self._scale, self._orig_h, self._orig_w
-        )
-        existing = tifffile.imread(s["mask"]).astype(np.int32)
-        new_mask, n_added, new_ids = _merge_additions(existing, additions)
-        if n_added > 0:
-            try:
-                state = save_edited_mask(s["mask"], self.channel, existing, new_mask)
-            except Exception as exc:
-                print(f"[roi_editor] ERROR: could not auto-save mask: {exc}")
-                self._set_status(f"Could not save mask: {exc}", colour="#f38ba8")
-                return False
-            self._record_added_rois(s, new_mask, new_ids)
-            print(f"[roi_editor] Auto-saved {n_added} ROI(s) for '{s['name']}'")
-            pending = len(state["pending_ids"])
-            note = f" {pending} cell(s) need validation." if pending else ""
-            self._set_status(f"✓  Auto-saved {n_added} ROI(s).{note}", colour="#a6e3a1")
-        return True
+        return self._save_current()
 
     def _set_action_buttons_enabled(self, enabled: bool) -> None:
         """Enable or disable the save, skip, and colour-picker buttons."""
@@ -747,6 +809,8 @@ class RoiEditorApp:
                 self._save_btn.setText("💾  Save & Next  →")
         if self._skip_btn is not None:
             self._skip_btn.setEnabled(enabled)
+        if self._erase_btn is not None:
+            self._erase_btn.setEnabled(enabled)
         for btn in self._colour_btns.values():
             btn.setEnabled(enabled)
 
@@ -789,9 +853,28 @@ class RoiEditorApp:
         except Exception as exc:
             print(f"[roi_editor] WARNING: could not record added ROI ids: {exc}")
 
+    def _record_deleted_rois(self, s: dict, old_mask: np.ndarray,
+                             deleted_ids: set[int]) -> None:
+        """Keep a human-readable false-prediction record beside the edited mask."""
+        if not deleted_ids:
+            return
+        import datetime
+        path = os.path.join(os.path.dirname(s["mask"]),
+                            f"_manual_deletions_ch{self.channel}.tsv")
+        header = not os.path.exists(path)
+        timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(path, "a", encoding="utf-8") as output:
+            if header:
+                output.write("label_id\tchannel\tsample\treason\tdeleted_at\n")
+            for label_id in sorted(deleted_ids):
+                if np.any(old_mask == label_id):
+                    output.write(f"{label_id}\t{self.channel}\t{s['name']}\t"
+                                 f"false_prediction\t{timestamp}\n")
+
     def _save_current(self) -> bool:
         additions_display = self._add_lyr.data
-        if additions_display.max() == 0:
+        erasures_display = self._erase_lyr.data
+        if additions_display.max() == 0 and erasures_display.max() == 0:
             self._set_status("Nothing drawn — skipped.", colour="#aaaaaa")
             return True
 
@@ -801,43 +884,62 @@ class RoiEditorApp:
         additions = _upsample_additions(
             additions_display, self._scale, self._orig_h, self._orig_w
         )
+        erasures = _upsample_additions(
+            erasures_display, self._scale, self._orig_h, self._orig_w
+        )
 
         # Always merge into the original full-res mask from disk
         existing = tifffile.imread(s["mask"]).astype(np.int32)
         new_mask, n_added, new_ids = _merge_additions(existing, additions)
+        new_mask, deleted_ids = _remove_touched_objects(
+            new_mask, existing, erasures)
 
-        if n_added == 0:
+        if n_added == 0 and not deleted_ids:
             self._set_status(
-                "Painted pixels overlapped existing ROIs only — nothing added.",
+                "No predicted object was touched and no new cell was drawn.",
                 colour="#fab387",
             )
             return True
 
         if self.test_mode:
-            self._test_save(s, existing, new_mask, new_ids, n_added)
+            self._test_save(s, existing, new_mask, new_ids, n_added,
+                            len(deleted_ids))
         else:
             try:
-                self._normal_save(s, existing, new_mask, n_added)
+                self._normal_save(s, existing, new_mask, n_added,
+                                  len(deleted_ids))
             except Exception as exc:
                 print(f"[roi_editor] ERROR: could not save mask: {exc}")
                 self._set_status(f"Could not save mask: {exc}", colour="#f38ba8")
                 return False
             self._record_added_rois(s, new_mask, new_ids)
+            try:
+                self._record_deleted_rois(s, existing, deleted_ids)
+            except OSError as exc:
+                print(f"[roi_editor] WARNING: mask saved but deletion log failed: {exc}")
         return True
 
     def _normal_save(self, s: dict, existing: np.ndarray,
-                     new_mask: np.ndarray, n_added: int) -> None:
+                     new_mask: np.ndarray, n_added: int,
+                     n_deleted: int = 0) -> None:
         """Write directly to the original mask TIF. No PNG, no debug files."""
         state = save_edited_mask(s["mask"], self.channel, existing, new_mask)
+        if state["status"] == "pending" and not state["pending_ids"]:
+            state = finalize_if_ready(os.path.dirname(s["mask"]), self.channel,
+                                      s["mask"])
         # Refresh display layers at display resolution
-        self._mask_lyr.data = _downsample(new_mask, self._scale)
+        self._base_display_mask = _downsample(new_mask, self._scale).copy()
+        self._mask_lyr.data = self._base_display_mask
         self._add_lyr.data  = np.zeros_like(self._mask_lyr.data, dtype=np.int32)
+        self._erase_lyr.data = np.zeros_like(self._mask_lyr.data, dtype=np.uint8)
         pending = len(state["pending_ids"])
         note = f" {pending} cell(s) need validation." if pending else ""
-        self._set_status(f"✓  {n_added} new ROI(s) saved.{note}", colour="#a6e3a1")
+        self._set_status(f"✓  {n_added} added, {n_deleted} false prediction(s) removed.{note}",
+                         colour="#a6e3a1")
 
     def _test_save(self, s: dict, existing: np.ndarray,
-                   new_mask: np.ndarray, new_ids: set[int], n_added: int) -> None:
+                   new_mask: np.ndarray, new_ids: set[int], n_added: int,
+                   n_deleted: int = 0) -> None:
         """
         Test-mode save:
           1. Write DEBUG_ TIF (never touches the original)
@@ -871,18 +973,20 @@ class RoiEditorApp:
         print("=" * 55)
         print(f"  Sample        : {s['name']}")
         print(f"  Original ROIs : {n_before}")
-        print(f"  After adding  : {n_after}  (+{n_added})")
+        print(f"  After editing : {n_after}  (+{n_added}, -{n_deleted})")
         print(f"  DEBUG TIF     : {debug_tif}")
         print(f"  DEBUG PNG     : {debug_png}")
         print("=" * 55)
         print()
 
         # 4. Update viewer for visual confirmation (display res), disable save
-        self._mask_lyr.data = _downsample(new_mask, self._scale)
+        self._base_display_mask = _downsample(new_mask, self._scale).copy()
+        self._mask_lyr.data = self._base_display_mask
         self._add_lyr.data  = np.zeros_like(self._mask_lyr.data, dtype=np.int32)
+        self._erase_lyr.data = np.zeros_like(self._mask_lyr.data, dtype=np.uint8)
 
         self._set_status(
-            f"🧪 Test done: +{n_added} ROI(s)\n"
+            f"🧪 Test done: +{n_added}, -{n_deleted} ROI(s)\n"
             f"DEBUG files saved.\nUncheck Test Mode to save for real.",
             colour="#fab387",
         )

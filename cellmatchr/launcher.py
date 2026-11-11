@@ -52,6 +52,7 @@ STEPS = [
     ("4", "Validation"),
     ("5", "Analysis"),
     ("6", "Run Pipeline"),
+    ("7", "Retrain Models"),
 ]
 
 # Spinner frames
@@ -134,7 +135,8 @@ def _segmentation_run_details(project_folder: str, run_name: str) -> str:
         if not isinstance(identity, dict):
             raise ValueError("run identity unavailable")
         backend = str(identity["backend"]).strip().lower()
-        method = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM"}.get(
+        method = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM",
+                  "stardist": "StarDist 2D"}.get(
             backend, backend)
         model = str(identity["model"])
         preprocess = str(identity["preprocess"])
@@ -419,6 +421,8 @@ class CellMatchrLauncher:
             "project_name", "project_output_folder",
             "input_type", "input_root_folder",
             "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
+            "seg_custom_model_path", "seg_cellpose_model_path",
+            "seg_stardist_model_path",
             "val_mask_pattern", "val_channel_names", "val_channel_colors",
             "ana_red_channel", "ana_pv_channel", "ana_iou_threshold",
             "ana_roi_cell_rule", "ana_roi_mask_folder", "ana_subfolder_name",
@@ -812,6 +816,7 @@ class CellMatchrLauncher:
             self._build_validation_step,
             self._build_analysis_step,
             self._build_run_step,
+            self._build_retraining_step,
         ]
         builders[idx](self.content_frame)
 
@@ -1128,17 +1133,25 @@ class CellMatchrLauncher:
         """Match the identity stored in a new segmentation progress file."""
         backend = str(self.config.get("seg_backend") or "microsam").strip().lower()
         model = (str(self.config.get("seg_model_type") or "vit_b_lm")
-                 if backend == "microsam" else "cpsam")
+                 if backend == "microsam" else
+                 "cpsam" if backend == "cellpose" else "2D_versatile_fluo")
         raw_channels = str(self.config.get("seg_channels") or "")
         channels = [int(part.strip()) for part in raw_channels.split(",")
                     if part.strip()]
-        return {
+        identity = {
             "backend": backend,
             "model": model,
             "preprocess": str(self.config.get("seg_preprocess_mode") or
                               "local_bg_subtract"),
             "channels": channels,
         }
+        key = {"microsam": "seg_custom_model_path",
+               "cellpose": "seg_cellpose_model_path",
+               "stardist": "seg_stardist_model_path"}.get(backend)
+        chosen = str(self.config.get(key) or "").strip() if key else ""
+        if chosen:
+            identity["custom_model"] = os.path.abspath(chosen)
+        return identity
 
     def _choose_analysis_run(self, *, ask_if_multiple: bool = False) -> str | None:
         """Choose an existing segmentation folder without guessing its method."""
@@ -2229,7 +2242,8 @@ class CellMatchrLauncher:
         model_card = self._card(parent, "Segmentation Settings")
 
         # ── Backend selector (Micro-SAM | Cellpose-SAM) ──────────────
-        _BK_DISPLAY = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM"}
+        _BK_DISPLAY = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM",
+                       "stardist": "StarDist 2D"}
         _BK_REVERSE = {v: k for k, v in _BK_DISPLAY.items()}
         _bk_frame = tk.Frame(model_card, bg=CARD)
         _bk_frame.pack(fill="x", pady=(0, 8))
@@ -2271,6 +2285,36 @@ class CellMatchrLauncher:
         )
         _cb_model.grid(row=2, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_model)
+
+        custom_card = tk.Frame(model_card, bg=CARD)
+        tk.Label(custom_card, text="Trained model (optional):", bg=CARD,
+                 fg=FG, font=FONT).pack(anchor="w")
+        model_path_row = tk.Frame(custom_card, bg=CARD)
+        model_path_row.pack(fill="x", pady=(2, 4))
+        custom_path = tk.StringVar()
+        tk.Entry(model_path_row, textvariable=custom_path, bg=BG, fg=FG,
+                 insertbackground=FG, relief="flat", font=FONT).pack(
+                     side="left", fill="x", expand=True)
+        def _browse_model():
+            if self._vars["seg_backend"].get() == "stardist":
+                chosen = filedialog.askdirectory(parent=self.root,
+                                                   title="Choose trained StarDist model folder")
+            else:
+                chosen = filedialog.askopenfilename(parent=self.root,
+                                                     title="Choose trained model file")
+            if chosen:
+                custom_path.set(chosen)
+        tk.Button(model_path_row, text="Browse…", command=_browse_model,
+                  bg=ACTIVE, fg=FG, relief="flat", font=FONT).pack(side="left", padx=6)
+        custom_card.pack(fill="x", pady=(4, 8))
+        model_keys = {"microsam": "seg_custom_model_path",
+                      "cellpose": "seg_cellpose_model_path",
+                      "stardist": "seg_stardist_model_path"}
+        selected_key = [model_keys.get(self.config.get("seg_backend"), "seg_custom_model_path")]
+        custom_path.set(self._vars[selected_key[0]].get())
+        def _model_path_changed(*_):
+            self._vars[selected_key[0]].set(custom_path.get())
+        custom_path.trace_add("write", _model_path_changed)
 
         tk.Label(g, text="Preprocessing mode:", bg=CARD, fg=FG, font=FONT).grid(
             row=3, column=0, sticky="w", pady=3)
@@ -2334,8 +2378,10 @@ class CellMatchrLauncher:
                 except tk.TclError: pass
             else:
                 self._cellpose_frame.pack_forget()
-                try: _cb_model.configure(state="readonly")
+                try: _cb_model.configure(state="readonly" if bk == "microsam" else "disabled")
                 except tk.TclError: pass
+            selected_key[0] = model_keys[bk]
+            custom_path.set(self._vars[selected_key[0]].get())
         self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
         _on_seg_backend_changed()   # apply initial state
 
@@ -4654,7 +4700,9 @@ class CellMatchrLauncher:
             f"Output folder:   {proj}",
             f"Input root:      {cfg.get('input_root_folder') or '—'}",
             f"Channels:        {cfg.get('seg_channels', '?')}",
-            (f"Backend:         Cellpose-SAM  (diameter "
+            (f"Backend:         StarDist 2D  /  {cfg.get('seg_preprocess_mode', '?')}"
+             if str(cfg.get('seg_backend', 'microsam')).lower() == 'stardist'
+             else f"Backend:         Cellpose-SAM  (diameter "
              f"{cfg.get('seg_cellpose_diameter') or 'auto'})  /  {cfg.get('seg_preprocess_mode', '?')}"
              if str(cfg.get('seg_backend', 'microsam')).lower() == 'cellpose'
              else f"Backend:         Micro-SAM  {cfg.get('seg_model_type', '?')}  /  {cfg.get('seg_preprocess_mode', '?')}"),
@@ -4752,6 +4800,250 @@ class CellMatchrLauncher:
     # ==================================================================
     # Launch actions
     # ==================================================================
+
+    def _build_retraining_step(self, parent) -> None:
+        self._section_header(
+            parent, "Step 7 — Retrain Models",
+            "Use completed human validation to fine-tune a model for future runs.")
+        card = self._card(parent, "Training data and model")
+        tk.Label(card, text=(
+            "Finish validation for a channel first. Only cells marked YES are "
+            "training targets; NO, MAYBE and ARTIFACT are excluded. "
+            "The original predictions and project files stay in place."),
+            bg=CARD, fg=MUTED, font=FONT, wraplength=720,
+            justify="left").pack(anchor="w", pady=(0, 10))
+        variants = self._find_variants(SUBFOLDER["seg"])
+        if not variants:
+            tk.Label(card, text="No segmentation runs found in this project.",
+                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
+            return
+
+        run_var = tk.StringVar(value=(self.config.get("seg_input_subfolder")
+                                     if self.config.get("seg_input_subfolder") in variants
+                                     else variants[-1]))
+        backend_var = tk.StringVar(value=self.config.get("seg_backend", "microsam"))
+        channels = str(self.config.get("seg_channels") or "1").split(",")
+        channel_var = tk.StringVar(value=channels[0].strip())
+        epochs_var = tk.StringVar(value="20")
+        preprocess_var = tk.StringVar(value=self.config.get("seg_preprocess_mode")
+                                     or "local_bg_subtract")
+        base_var = tk.StringVar()
+        use_var = tk.BooleanVar(value=False)
+        grid = tk.Frame(card, bg=CARD)
+        grid.pack(fill="x")
+        grid.grid_columnconfigure(1, weight=1)
+
+        def row(number, label, widget):
+            tk.Label(grid, text=label, bg=CARD, fg=FG, font=FONT,
+                     anchor="w", width=22).grid(row=number, column=0,
+                                                 sticky="w", pady=4)
+            widget.grid(row=number, column=1, sticky="ew", padx=8, pady=4)
+
+        row(0, "Reviewed segmentation run:", ttk.Combobox(
+            grid, textvariable=run_var, values=variants, state="readonly"))
+        row(1, "Channel:", tk.Entry(grid, textvariable=channel_var, bg=BG,
+                                     fg=FG, insertbackground=FG, relief="flat"))
+        row(2, "Model to fine-tune:", ttk.Combobox(
+            grid, textvariable=backend_var,
+            values=("microsam", "cellpose", "stardist"), state="readonly"))
+        row(3, "Training epochs:", tk.Entry(grid, textvariable=epochs_var,
+                                             bg=BG, fg=FG,
+                                             insertbackground=FG, relief="flat"))
+        row(4, "Preprocessing:", ttk.Combobox(
+            grid, textvariable=preprocess_var,
+            values=("local_bg_subtract", "local_bg_subtract_mild",
+                    "raw_percentile", "tile_clahe_mild", "tile_clahe"),
+            state="readonly"))
+        base_row = tk.Frame(grid, bg=CARD)
+        tk.Entry(base_row, textvariable=base_var, bg=BG, fg=FG,
+                 insertbackground=FG, relief="flat").pack(
+                     side="left", fill="x", expand=True)
+        def browse_base():
+            if backend_var.get() == "stardist":
+                selected = filedialog.askdirectory(parent=self.root,
+                                                   title="Choose a trained StarDist model folder")
+            else:
+                selected = filedialog.askopenfilename(parent=self.root,
+                                                     title="Choose a trained model checkpoint")
+            if selected:
+                base_var.set(selected)
+        tk.Button(base_row, text="Browse…", command=browse_base,
+                  bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left", padx=6)
+        row(5, "Starting model:", base_row)
+
+        def refresh_base(*_):
+            backend = backend_var.get()
+            keys = {"microsam": "seg_custom_model_path",
+                    "cellpose": "seg_cellpose_model_path",
+                    "stardist": "seg_stardist_model_path"}
+            defaults = {"microsam": self.config.get("seg_model_type") or "vit_b_lm",
+                        "cellpose": "cpsam", "stardist": "2D_versatile_fluo"}
+            base_var.set(self.config.get(keys[backend]) or defaults[backend])
+        backend_var.trace_add("write", refresh_base)
+        refresh_base()
+
+        def refresh_preprocess(*_):
+            path = os.path.join(self.config.get("project_output_folder", ""),
+                                run_var.get(), "_run_progress.json")
+            try:
+                with open(path) as source:
+                    identity = json.load(source).get("run_identity", {})
+                if identity.get("preprocess"):
+                    preprocess_var.set(identity["preprocess"])
+            except (OSError, ValueError, TypeError):
+                pass
+        run_var.trace_add("write", refresh_preprocess)
+        refresh_preprocess()
+
+        tk.Checkbutton(card, text="Use the trained model for future segmentation runs",
+                       variable=use_var, bg=CARD, fg=FG, selectcolor=BG,
+                       activebackground=CARD, font=FONT).pack(anchor="w", pady=(8, 4))
+        actions = tk.Frame(card, bg=CARD)
+        actions.pack(anchor="w", pady=6)
+        status = tk.Label(card, text="Ready to check reviewed samples.",
+                          bg=CARD, fg=MUTED, font=FONT, wraplength=700,
+                          justify="left")
+        status.pack(anchor="w", pady=(3, 0))
+        log_card = self._card(parent, "Retraining Log")
+        log_box = scrolledtext.ScrolledText(
+            log_card, bg="#0d0d15", fg="#a6e3a1", font=FONT_MONO,
+            height=16, relief="flat", wrap="word")
+        log_box.pack(fill="both", expand=True)
+
+        def log(line):
+            try:
+                log_box.insert("end", line + "\n")
+                log_box.see("end")
+            except tk.TclError:
+                pass
+
+        def check_data():
+            try:
+                channel = int(channel_var.get())
+                if channel < 0:
+                    raise ValueError("Channel must be 0 or higher")
+                path = os.path.join(self.config["project_output_folder"], run_var.get())
+            except (ValueError, OSError) as exc:
+                status.config(text=str(exc), fg=RED)
+                return
+            check_btn.config(state="disabled")
+            status.config(text="Checking reviewed samples…", fg=ACCENT)
+            def worker():
+                try:
+                    from .retraining import collect_examples
+                    examples, skipped = collect_examples(path, channel)
+                    def finished():
+                        try:
+                            check_btn.config(state="normal")
+                            status.config(text=(f"{len(examples)} reviewed sample(s) ready; "
+                                                f"{len(skipped)} skipped. At least two are needed."),
+                                          fg=GREEN if len(examples) >= 2 else YELLOW)
+                            for reason in skipped:
+                                log("Skipped: " + reason)
+                        except tk.TclError:
+                            pass
+                    self.root.after(0, finished)
+                except (ValueError, OSError, RuntimeError) as exc:
+                    error = str(exc)
+                    def failed():
+                        try:
+                            check_btn.config(state="normal")
+                            status.config(text=error, fg=RED)
+                        except tk.TclError:
+                            pass
+                    self.root.after(0, failed)
+            threading.Thread(target=worker, daemon=True).start()
+
+        def start_training():
+            if self._is_running("Model Retraining"):
+                status.config(text="Training is already running.", fg=YELLOW)
+                return
+            try:
+                channel = int(channel_var.get())
+                epochs = int(epochs_var.get())
+                if channel < 0 or not 1 <= epochs <= 500:
+                    raise ValueError("Use a channel ID of 0 or higher and 1–500 epochs")
+            except ValueError as exc:
+                status.config(text=f"Check channel and epochs: {exc}", fg=RED)
+                return
+            project = self.config.get("project_output_folder", "").strip()
+            if not project:
+                status.config(text="Open a project in Step 1 first.", fg=RED)
+                return
+            backend = backend_var.get()
+            chosen_preprocess = preprocess_var.get()
+            use_trained_model = use_var.get()
+            cmd = [sys.executable, "-m", "cellmatchr.retraining",
+                   "--project", project, "--seg-run", run_var.get(),
+                   "--channel", str(channel), "--backend", backend,
+                   "--epochs", str(epochs), "--base-model", base_var.get().strip(),
+                   "--preprocess", chosen_preprocess]
+            start_btn.config(state="disabled", text="Training…")
+            status.config(text="Training started. Progress appears below.", fg=ACCENT)
+            log("Starting " + backend + " retraining…")
+
+            def worker():
+                model_path = ""
+                try:
+                    proc = subprocess.Popen(
+                        cmd, cwd=os.path.dirname(os.path.dirname(self._script("retraining.py"))),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1)
+                    self._track_proc(proc, "Model Retraining")
+                    for line in proc.stdout:
+                        clean = line.rstrip()
+                        if clean.startswith("[COMPLETE] Trained model: "):
+                            model_path = clean.partition(": ")[2]
+                        self.root.after(0, log, clean)
+                    proc.wait()
+                    def finished():
+                        setup_error = None
+                        if proc.returncode == 0 and model_path and use_trained_model:
+                            try:
+                                key = {"microsam": "seg_custom_model_path",
+                                       "cellpose": "seg_cellpose_model_path",
+                                       "stardist": "seg_stardist_model_path"}[backend]
+                                self.config[key] = model_path
+                                self._vars[key].set(model_path)
+                                self.config["seg_backend"] = backend
+                                self._vars["seg_backend"].set(backend)
+                                self.config["seg_preprocess_mode"] = chosen_preprocess
+                                self._vars["seg_preprocess_mode"].set(chosen_preprocess)
+                                save_config(self.config)
+                                save_project_config(self.config)
+                            except (OSError, ValueError, tk.TclError) as exc:
+                                setup_error = str(exc)
+                                log(f"Model trained, but automatic selection failed: {exc}")
+                        try:
+                            start_btn.config(state="normal", text="Start Retraining")
+                            if proc.returncode == 0 and model_path:
+                                message = (f"Training complete. Select the saved model in Step 3: {model_path}"
+                                           if setup_error else f"Training complete: {model_path}")
+                                status.config(text=message, fg=YELLOW if setup_error else GREEN)
+                            else:
+                                status.config(text="Training failed; check the log above.", fg=RED)
+                        except tk.TclError:
+                            pass
+                    self.root.after(0, finished)
+                except Exception as exc:
+                    self.root.after(0, log, f"Training error: {exc}")
+                    def failed():
+                        try:
+                            start_btn.config(state="normal", text="Start Retraining")
+                            status.config(text="Training could not start; check the log above.", fg=RED)
+                        except tk.TclError:
+                            pass
+                    self.root.after(0, failed)
+            threading.Thread(target=worker, daemon=True).start()
+
+        check_btn = tk.Button(actions, text="Check Training Data", command=check_data,
+                              bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                              padx=12, pady=7)
+        check_btn.pack(side="left", padx=(0, 8))
+        start_btn = tk.Button(actions, text="Start Retraining", command=start_training,
+                              bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD,
+                              relief="flat", padx=12, pady=7)
+        start_btn.pack(side="left")
 
     def _launch_vsi(self) -> None:
         # Guard: don't allow re-launch while already running

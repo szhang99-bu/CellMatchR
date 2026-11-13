@@ -78,6 +78,7 @@ HALO_2D = (256, 256)
 SEG_BACKEND = "microsam"
 CUSTOM_MODEL_PATH = ""
 CELLPOSE_MODEL_PATH = ""
+CELLPOSE_VARIANT = "cpsam"
 STARDIST_MODEL_PATH = ""
 
 # Cellpose-SAM parameters (only used when SEG_BACKEND == "cellpose").
@@ -852,16 +853,16 @@ def segment_by_tiling(
             )
             labeled_tile = np.asarray(labeled_tile, dtype=np.uint32)
         elif cellpose_model is not None:
-            # ── Cellpose-SAM backend ─────────────────────────────────────────
+            # ── Cellpose backend ─────────────────────────────────────────────
             # Cellpose returns a labelled mask directly. Feed it the same
             # preprocessed grayscale tile the SAM path uses.
             _diam = CELLPOSE_DIAMETER if (CELLPOSE_DIAMETER and CELLPOSE_DIAMETER > 0) else None
-            _cp_out = cellpose_model.eval(
-                processed_uint8,
-                diameter=_diam,
-                flow_threshold=CELLPOSE_FLOW_THRESHOLD,
-                cellprob_threshold=CELLPOSE_CELLPROB_THRESHOLD,
-            )
+            _cp_kwargs = dict(diameter=_diam,
+                              flow_threshold=CELLPOSE_FLOW_THRESHOLD,
+                              cellprob_threshold=CELLPOSE_CELLPROB_THRESHOLD)
+            if CELLPOSE_VARIANT != "cpsam":
+                _cp_kwargs["channels"] = [0, 0]
+            _cp_out = cellpose_model.eval(processed_uint8, **_cp_kwargs)
             labeled_tile = np.asarray(_cp_out[0]).astype(np.uint32)
         else:
             # ── Micro-SAM backend ────────────────────────────────────────────
@@ -1656,7 +1657,7 @@ def _run_identity() -> dict:
     identity = {
         "backend": SEG_BACKEND,
         "model": (MODEL_TYPE if SEG_BACKEND == "microsam" else
-                  "cpsam" if SEG_BACKEND == "cellpose" else "2D_versatile_fluo"),
+                  CELLPOSE_VARIANT if SEG_BACKEND == "cellpose" else "2D_versatile_fluo"),
         "preprocess": PREPROCESS_MODE,
         "channels": list(CHANNELS_TO_PREDICT),
     }
@@ -1870,18 +1871,26 @@ def main():
         print(f"Using device: {device}")
 
         if SEG_BACKEND == "cellpose":
-            print("Segmentation backend: Cellpose-SAM (cellpose 4.x)")
+            print(f"Segmentation backend: Cellpose {CELLPOSE_VARIANT}")
             try:
                 from cellpose import models as _cp_models
             except ImportError:
                 print("[ERROR] The Cellpose-SAM backend requires the 'cellpose' package.\n"
                       "        Install it with:  pip install \"cellpose==4.1.1\"")
                 sys.exit(1)
-            # Cellpose-SAM ships a single unified model ("cpsam"); first use
-            # downloads the weights (~1 GB) to ~/.cellpose.
+            if CELLPOSE_VARIANT == "cpsam":
+                chosen_model = CELLPOSE_MODEL_PATH or "cpsam"
+            else:
+                if CELLPOSE_MODEL_PATH:
+                    raise ValueError("Legacy Cellpose choices cannot use a Cellpose-SAM "
+                                     "custom checkpoint; choose one model in Step 3.")
+                chosen_model = os.environ.get("CELLMATCHR_LEGACY_CELLPOSE_MODEL_PATH", "")
+                if not os.path.isfile(chosen_model):
+                    raise RuntimeError("The legacy Cellpose model is not prepared. "
+                                       "Start the run from the CellMatchR app.")
             cellpose_model = _cp_models.CellposeModel(
                 gpu=(device != "cpu"),
-                pretrained_model=CELLPOSE_MODEL_PATH or "cpsam")
+                pretrained_model=chosen_model)
             print(f"  diameter={CELLPOSE_DIAMETER or 'auto'}  "
                   f"flow_threshold={CELLPOSE_FLOW_THRESHOLD}  "
                   f"cellprob_threshold={CELLPOSE_CELLPROB_THRESHOLD}")
@@ -2094,7 +2103,7 @@ def _apply_config(config_path: str) -> None:
     global DRY_RUN, TEST_RUN, SKIP_SUBDIRS
     global PER_CHANNEL_FILTERS_ENABLED, PER_CHANNEL_FILTERS
     global SEG_BACKEND, CELLPOSE_DIAMETER, CELLPOSE_FLOW_THRESHOLD, CELLPOSE_CELLPROB_THRESHOLD
-    global CUSTOM_MODEL_PATH, CELLPOSE_MODEL_PATH, STARDIST_MODEL_PATH
+    global CUSTOM_MODEL_PATH, CELLPOSE_MODEL_PATH, CELLPOSE_VARIANT, STARDIST_MODEL_PATH
 
     with open(config_path) as f:
         cfg = json.load(f)
@@ -2112,6 +2121,9 @@ def _apply_config(config_path: str) -> None:
         SEG_BACKEND = str(cfg["seg_backend"]).strip().lower()
     CUSTOM_MODEL_PATH = str(cfg.get("seg_custom_model_path") or "").strip()
     CELLPOSE_MODEL_PATH = str(cfg.get("seg_cellpose_model_path") or "").strip()
+    CELLPOSE_VARIANT = str(cfg.get("seg_cellpose_variant") or "cpsam").strip().lower()
+    if CELLPOSE_VARIANT not in ("cpsam", "cyto2", "rat_nissl_v2"):
+        raise ValueError(f"Unknown Cellpose model: {CELLPOSE_VARIANT}")
     STARDIST_MODEL_PATH = str(cfg.get("seg_stardist_model_path") or "").strip()
     if cfg.get("seg_cellpose_diameter") is not None:
         try: CELLPOSE_DIAMETER = float(cfg["seg_cellpose_diameter"])

@@ -24,6 +24,7 @@ DEFAULT_CONFIG: dict = {
     "seg_model_type": "vit_b_lm",       # Micro-SAM model (when backend == microsam)
     "seg_custom_model_path": "",       # optional fine-tuned Micro-SAM checkpoint
     "seg_cellpose_model_path": "",     # optional fine-tuned Cellpose checkpoint
+    "seg_cellpose_variant": "cpsam",   # cpsam | cyto2 | rat_nissl_v2
     "seg_stardist_model_path": "",     # optional fine-tuned StarDist model folder
     "seg_cellpose_diameter": 0.0,            # 0 = auto-estimate
     "seg_cellpose_flow_threshold": 0.4,

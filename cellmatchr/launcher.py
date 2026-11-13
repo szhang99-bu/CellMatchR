@@ -16,6 +16,7 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 
 from .config import (load_config, save_config, save_project_config,
                      load_project_config, CONFIG_PATH, DEFAULT_CONFIG)
+from .legacy_cellpose import segmentation_command
 
 # Optional PIL for logo
 try:
@@ -135,7 +136,7 @@ def _segmentation_run_details(project_folder: str, run_name: str) -> str:
         if not isinstance(identity, dict):
             raise ValueError("run identity unavailable")
         backend = str(identity["backend"]).strip().lower()
-        method = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM",
+        method = {"microsam": "Micro-SAM", "cellpose": "Cellpose",
                   "stardist": "StarDist 2D"}.get(
             backend, backend)
         model = str(identity["model"])
@@ -421,7 +422,7 @@ class CellMatchrLauncher:
             "project_name", "project_output_folder",
             "input_type", "input_root_folder",
             "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
-            "seg_custom_model_path", "seg_cellpose_model_path",
+            "seg_custom_model_path", "seg_cellpose_model_path", "seg_cellpose_variant",
             "seg_stardist_model_path",
             "val_mask_pattern", "val_channel_names", "val_channel_colors",
             "ana_red_channel", "ana_pv_channel", "ana_iou_threshold",
@@ -1096,8 +1097,12 @@ class CellMatchrLauncher:
     def _suggest_segmentation_suffix(self) -> str:
         """Give a new run a recognizable, collision-free name by default."""
         backend = str(self.config.get("seg_backend", "microsam")).strip().lower()
-        if backend not in ("microsam", "cellpose"):
+        if backend not in ("microsam", "cellpose", "stardist"):
             backend = "microsam"
+        if backend == "cellpose":
+            variant = str(self.config.get("seg_cellpose_variant") or "cpsam").strip()
+            if variant != "cpsam":
+                backend = f"cellpose_{variant}"
         stem = f"{backend}_{datetime.now():%Y%m%d_%H%M%S}"
         proj = self.config.get("project_output_folder", "").strip()
         suffix = stem
@@ -1134,7 +1139,8 @@ class CellMatchrLauncher:
         backend = str(self.config.get("seg_backend") or "microsam").strip().lower()
         model = (str(self.config.get("seg_model_type") or "vit_b_lm")
                  if backend == "microsam" else
-                 "cpsam" if backend == "cellpose" else "2D_versatile_fluo")
+                 str(self.config.get("seg_cellpose_variant") or "cpsam")
+                 if backend == "cellpose" else "2D_versatile_fluo")
         raw_channels = str(self.config.get("seg_channels") or "")
         channels = [int(part.strip()) for part in raw_channels.split(",")
                     if part.strip()]
@@ -1648,8 +1654,15 @@ class CellMatchrLauncher:
 
         def _thread():
             try:
+                if (os.path.basename(script) == "segmentation.py"
+                        and self.config.get("seg_backend") == "cellpose"
+                        and self.config.get("seg_cellpose_variant", "cpsam") != "cpsam"):
+                    self.root.after(0, self._log,
+                                    "Preparing the selected Cellpose model; first use "
+                                    "downloads its weights and separate runtime…")
+                command, environment = segmentation_command(script, CONFIG_PATH, self.config)
                 proc = subprocess.Popen(
-                    [sys.executable, script, "--config", CONFIG_PATH],
+                    command, env=environment,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
@@ -2241,8 +2254,8 @@ class CellMatchrLauncher:
         # ── Channels field ───────────────────────────────────────────
         model_card = self._card(parent, "Segmentation Settings")
 
-        # ── Backend selector (Micro-SAM | Cellpose-SAM) ──────────────
-        _BK_DISPLAY = {"microsam": "Micro-SAM", "cellpose": "Cellpose-SAM",
+        # ── Backend selector ─────────────────────────────────────────
+        _BK_DISPLAY = {"microsam": "Micro-SAM", "cellpose": "Cellpose",
                        "stardist": "StarDist 2D"}
         _BK_REVERSE = {v: k for k, v in _BK_DISPLAY.items()}
         _bk_frame = tk.Frame(model_card, bg=CARD)
@@ -2291,7 +2304,7 @@ class CellMatchrLauncher:
         tk.Label(choice_row, text="Model for this run:", bg=CARD, fg=FG,
                  font=FONT, width=24, anchor="w").pack(side="left")
         model_choice = tk.StringVar()
-        model_options = {}
+        model_options = {}  # label -> (Cellpose variant, custom checkpoint path)
         model_choice_box = ttk.Combobox(choice_row, textvariable=model_choice,
                                         state="readonly", width=48)
         model_choice_box.pack(side="left", padx=8, fill="x", expand=True)
@@ -2325,6 +2338,9 @@ class CellMatchrLauncher:
         custom_path.set(self._vars[selected_key[0]].get())
         def _model_path_changed(*_):
             self._vars[selected_key[0]].set(custom_path.get())
+            if (self._vars["seg_backend"].get() == "cellpose"
+                    and custom_path.get().strip()):
+                self._vars["seg_cellpose_variant"].set("cpsam")
             refresh_model_choices(self._vars["seg_backend"].get())
         custom_path.trace_add("write", _model_path_changed)
 
@@ -2334,21 +2350,29 @@ class CellMatchrLauncher:
                        "cellpose": "Built-in Cellpose-SAM (cpsam)",
                        "stardist": "Built-in StarDist (2D_versatile_fluo)"}[backend]
             model_options.clear()
-            model_options[builtin] = ""
+            model_options[builtin] = ("cpsam", "")
+            if backend == "cellpose":
+                model_options["Cellpose 2 (cyto2)"] = ("cyto2", "")
+                model_options["Rat Nissl v2 (Meystre et al.)"] = ("rat_nissl_v2", "")
             project = self.config.get("project_output_folder", "")
             for record in list_trained_models(project, backend):
                 label = (f"{record['name']}  (ch{record['channel']}, "
                          f"{record['location']}, {record['record_folder'][-15:]})")
-                model_options[label] = record["model_path"]
+                model_options[label] = ("cpsam", record["model_path"])
             selected = custom_path.get().strip()
-            if selected and selected not in model_options.values():
-                model_options["External model (current path)"] = selected
+            if selected and selected not in (path for _, path in model_options.values()):
+                model_options["External model (current path)"] = ("cpsam", selected)
             model_choice_box.configure(values=list(model_options))
-            model_choice.set(next((label for label, path in model_options.items()
-                                   if path == selected), builtin))
+            variant = (self._vars["seg_cellpose_variant"].get()
+                       if backend == "cellpose" else "cpsam")
+            model_choice.set(next((label for label, pair in model_options.items()
+                                   if pair == (variant, selected)), builtin))
 
         def choose_model(_event=None):
-            custom_path.set(model_options.get(model_choice.get(), ""))
+            variant, path = model_options.get(model_choice.get(), ("cpsam", ""))
+            if self._vars["seg_backend"].get() == "cellpose":
+                self._vars["seg_cellpose_variant"].set(variant)
+            custom_path.set(path)
         model_choice_box.bind("<<ComboboxSelected>>", choose_model)
 
         tk.Label(g, text="Preprocessing mode:", bg=CARD, fg=FG, font=FONT).grid(
@@ -2362,10 +2386,10 @@ class CellMatchrLauncher:
         _cb_prep.grid(row=3, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_prep)
 
-        # ── Cellpose-SAM parameters (shown only when that backend is chosen) ──
+        # ── Cellpose parameters (shown only when that backend is chosen) ────
         self._cellpose_frame = tk.Frame(model_card, bg=CARD)
         tk.Label(self._cellpose_frame,
-                 text="Cellpose-SAM parameters  (defaults work for most images — tune on a test image if needed):",
+                 text="Cellpose parameters  (tune on a test image if needed):",
                  bg=CARD, fg=FG, font=FONT_BOLD, wraplength=700, justify="left").pack(anchor="w", pady=(0, 4))
         _cg = tk.Frame(self._cellpose_frame, bg=CARD)
         _cg.pack(fill="x")
@@ -2374,9 +2398,9 @@ class CellMatchrLauncher:
         # (label, config key, short unit hint, full explanation line)
         _cp_fields = [
             ("Cell diameter (px)", "seg_cellpose_diameter", "0 = auto",
-             "Expected cell size in pixels. 0 = let the model decide (recommended — "
-             "Cellpose-SAM handles scale itself). Set your cells' typical diameter only "
-             "if detections look systematically too coarse or too fine."),
+             "Expected cell size in pixels. 0 uses the model default: Cellpose-SAM "
+             "handles scale itself; older Cellpose models use 30 px. Set the typical "
+             "diameter if detections look too coarse or too fine."),
             ("Flow threshold", "seg_cellpose_flow_threshold", "~0.0–3.0, default 0.4",
              "Shape-quality filter: discards masks whose recomputed flow error exceeds this. "
              "Higher = keep more cells (incl. irregular ones); lower = stricter, drops "
@@ -2400,8 +2424,9 @@ class CellMatchrLauncher:
                                                           sticky="w", pady=(0, 2))
             _r += 1
         tk.Label(self._cellpose_frame,
-                 text="Cellpose-SAM uses one unified model; the first run downloads ~1 GB of weights to ~/.cellpose. "
-                      "The preprocessing, tiling and object-size/shape filters above still apply to its output.",
+                 text="Cellpose-SAM is the current default. Cellpose 2 and Rat Nissl v2 use a separate "
+                      "legacy runtime prepared automatically on first use; the rat model was trained on "
+                      "juvenile rat cresyl-violet images. Preprocessing and object filters still apply.",
                  bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=700, justify="left").pack(anchor="w", pady=(6, 0))
 
         def _on_seg_backend_changed(*_):
@@ -3463,8 +3488,14 @@ class CellMatchrLauncher:
 
         def _thread():
             try:
+                if (self.config.get("seg_backend") == "cellpose"
+                        and self.config.get("seg_cellpose_variant", "cpsam") != "cpsam"):
+                    self.root.after(0, _seg_log_line,
+                                    "Preparing the selected Cellpose model; first use "
+                                    "downloads its weights and separate runtime…")
+                command, environment = segmentation_command(script, CONFIG_PATH, self.config)
                 proc = subprocess.Popen(
-                    [sys.executable, script, "--config", CONFIG_PATH],
+                    command, env=environment,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
@@ -3490,13 +3521,15 @@ class CellMatchrLauncher:
                         pass
                 self.root.after(0, _done)
             except Exception as exc:
+                error_text = str(exc)
                 def _err():
                     try:
                         self._seg_progress.stop()
                         self._seg_run_btn.config(state="normal", text="▶  Run Segmentation")
                         if hasattr(self, "_seg_resume_btn"):
                             self._seg_resume_btn.config(state="normal")
-                        self._seg_status.config(text=f"✗  {exc}", fg=RED)
+                        self._seg_status.config(text=f"✗  {error_text}", fg=RED)
+                        _seg_log_line(f"[ERROR] {error_text}")
                     except tk.TclError:
                         pass
                 self.root.after(0, _err)
@@ -4764,7 +4797,7 @@ class CellMatchrLauncher:
             f"Channels:        {cfg.get('seg_channels', '?')}",
             (f"Backend:         StarDist 2D  /  {cfg.get('seg_preprocess_mode', '?')}"
              if str(cfg.get('seg_backend', 'microsam')).lower() == 'stardist'
-             else f"Backend:         Cellpose-SAM  (diameter "
+             else f"Backend:         Cellpose {cfg.get('seg_cellpose_variant') or 'cpsam'}  (diameter "
              f"{cfg.get('seg_cellpose_diameter') or 'auto'})  /  {cfg.get('seg_preprocess_mode', '?')}"
              if str(cfg.get('seg_backend', 'microsam')).lower() == 'cellpose'
              else f"Backend:         Micro-SAM  {cfg.get('seg_model_type', '?')}  /  {cfg.get('seg_preprocess_mode', '?')}"),
@@ -4870,7 +4903,8 @@ class CellMatchrLauncher:
         card = self._card(parent, "Training data and model")
         tk.Label(card, text=(
             "Finish validation for a channel first. Only cells marked YES are "
-            "training targets; NO, MAYBE and ARTIFACT are excluded. "
+            "training targets; NO and ARTIFACT are treated as background. "
+            "Resolve MAYBE cells before training. "
             "The original predictions and project files stay in place."),
             bg=CARD, fg=MUTED, font=FONT, wraplength=720,
             justify="left").pack(anchor="w", pady=(0, 10))
@@ -5307,8 +5341,11 @@ class CellMatchrLauncher:
                     def finished():
                         try:
                             check_btn.config(state="normal")
-                            status.config(text=(f"{len(examples)} reviewed sample(s) ready; "
-                                                f"{len(skipped)} skipped. At least two are needed."),
+                            yes_count = sum(len(item["accepted_ids"]) for item in examples)
+                            rejected_count = sum(item["rejected_count"] for item in examples)
+                            status.config(text=(f"{len(examples)} reviewed sample(s) ready "
+                                                f"({yes_count} YES cells, {rejected_count} NO/ARTIFACT); "
+                                                f"{len(skipped)} skipped. At least two samples are needed."),
                                           fg=GREEN if len(examples) >= 2 else YELLOW)
                             for reason in skipped:
                                 log("Skipped: " + reason)
@@ -5413,6 +5450,9 @@ class CellMatchrLauncher:
                                        "stardist": "seg_stardist_model_path"}[backend]
                                 self.config[key] = model_path
                                 self._vars[key].set(model_path)
+                                if backend == "cellpose":
+                                    self.config["seg_cellpose_variant"] = "cpsam"
+                                    self._vars["seg_cellpose_variant"].set("cpsam")
                                 self.config["seg_backend"] = backend
                                 self._vars["seg_backend"].set(backend)
                                 self.config["seg_preprocess_mode"] = chosen_preprocess
@@ -5786,8 +5826,15 @@ class CellMatchrLauncher:
 
             try:
                 if run_seg:
+                    if (self.config.get("seg_backend") == "cellpose"
+                            and self.config.get("seg_cellpose_variant", "cpsam") != "cpsam"):
+                        self.root.after(0, self._log,
+                                        "Preparing the selected Cellpose model; first use "
+                                        "downloads its weights and separate runtime…")
+                    command, environment = segmentation_command(
+                        seg_script, CONFIG_PATH, self.config)
                     proc1 = subprocess.Popen(
-                        [sys.executable, seg_script, "--config", CONFIG_PATH],
+                        command, env=environment,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         text=True, bufsize=1,
                     )

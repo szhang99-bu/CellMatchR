@@ -7,7 +7,8 @@ Neuronal confocal image segmentation, manual validation, and colocalization anal
 Reads images directly from most major microscope brands, plus **Olympus `.vsi`**
 slide-scanner files via the built-in VSI Converter.
 Segmentation runs with [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam),
-[Cellpose-SAM](https://github.com/MouseLand/cellpose), or the optional
+[Cellpose-SAM](https://github.com/MouseLand/cellpose) (with optional Cellpose 2
+and published rat Nissl model choices), or the optional
 [StarDist 2D](https://github.com/stardist/stardist) backend (selectable per run).
 
 **Supported input formats**
@@ -21,6 +22,12 @@ Segmentation runs with [Micro-SAM](https://github.com/computational-cell-analyti
 | `.oib` / `.oif` | Olympus FluoView | 🧪 **beta** — not yet validated on a real file; use with caution |
 | `.vsi` | Olympus slide scanner | ✅ tested (via VSI Converter) |
 | `.oir` | Olympus FV3000 | ❌ not supported — convert to `.tif` in [Fiji/ImageJ](https://imagej.net/software/fiji/) first |
+
+**Brightfield Nissl slides:** the input format may be readable, but a native
+Nissl workflow is still under evaluation. The current fluorescence defaults can
+remove all candidates from an 8-bit stain image; RGB TIFFs are split into color
+channels. See the [public-image model comparison](NISSL_MODEL_EVALUATION.md)
+before using these scans for analysis. Existing fluorescence settings are unchanged.
 
 > Leica writes both confocal and slide-scanner data as `.lif`. CellMatchR detects
 > the difference automatically: each confocal acquisition becomes its own sample,
@@ -233,13 +240,33 @@ default.
 
 1. In **Step 2**, select the input folder. For a microscopy TIFF, use the
    direct-read workflow.
-2. In **Step 3**, choose **Cellpose-SAM** under **Segmentation backend**,
+2. In **Step 3**, choose **Cellpose** under **Segmentation backend** and
+   **Built-in Cellpose-SAM** under **Model for this run**,
    select the channels to segment, and start a new segmentation run.
    On first use the model downloads about 1.2 GB. On an NVIDIA system,
    `Using device: cuda` in the log confirms GPU execution.
 3. Confirm the run produced a prediction TIFF and inspect the mask or QC
    overlay. If GPU memory is tight, start with 1024 × 1024 tiles and 128 px
    halo on each axis.
+
+### Compare Cellpose models
+
+In **Step 3**, set the backend to **Cellpose**, then use **Model for this
+run** to choose **Built-in Cellpose-SAM**, **Cellpose 2 (cyto2)**, or **Rat Nissl
+v2 (Meystre et al.)**. The last two use older Cellpose weights, so their first
+run automatically prepares a separate Cellpose 3 runtime and verified model
+files in `~/CellMatchR/Legacy_Cellpose`. This leaves the regular Cellpose-SAM
+installation and older project files unchanged. Each model choice starts a
+separate segmentation run; review the masks before analysis. Step 7 currently
+fine-tunes Cellpose-SAM, Micro-SAM, and StarDist, but does not fine-tune these
+two legacy Cellpose models.
+
+For Nissl images, start with Cellpose-SAM: it was strongest on the small
+[expert-annotated public comparison](NISSL_MODEL_EVALUATION.md). This is not
+a ready-made brightfield profile. Set preprocessing and object filters for the
+actual image before running; the fluorescence defaults can remove small 8-bit
+Nissl cells. The local [gold-standard subset](benchmark_data/CytoDArk0_subset/README.md)
+contains 28 paired Nissl images and expert-reviewed cell masks for inspection.
 
 ### Edit predictions and retrain a model
 
@@ -252,7 +279,8 @@ default.
    save.
 2. Complete the cell-by-cell validation for the same channel. Retraining uses
    the final edited mask and its decisions. **YES** cells are targets;
-   **NO**, **MAYBE**, and **ARTIFACT** cells become background. A sample needs
+   **NO** and **ARTIFACT** cells become background. Resolve **MAYBE** cells
+   before training so uncertain objects are not taught as negatives. A sample needs
    at least one YES cell to contribute. Samples with unfinished validation,
    changed masks awaiting review, or custom decision words are skipped and
    reported. At least two usable samples are required, with whole samples
@@ -300,7 +328,9 @@ The edited prediction TIFF and validation TSV keep their existing formats;
 older CellMatchR versions can still open those projects. The optional deletion
 record (`_manual_deletions_chN.tsv`) is extra information for the user and is
 ignored by older versions. Older versions cannot run the new StarDist backend
-or retraining menu; use this version to make new predictions with those models.
+or retraining menu. They also ignore the new Cellpose model choice and would
+use Cellpose-SAM for a new run; use this version to reproduce a Cellpose 2 or
+rat Nissl run. Existing segmentation masks remain in their separate folders.
 
 ### Optional StarDist backend
 

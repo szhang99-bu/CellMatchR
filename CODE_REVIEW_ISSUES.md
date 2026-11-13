@@ -1,6 +1,6 @@
 # Code review issue log
 
-Reviewed: 28 October 2026. This log records **open findings outside the current changes**. The findings identify workflows in which the code may produce an incorrect result, lose work, or fail; they do not establish that any existing project has been affected. Severity describes the possible impact, not the frequency. Existing project files must remain readable when any fix is made.
+Reviewed: 28 October 2026; updated 12 November 2026. This log records **open findings outside the current changes**. The findings identify workflows in which the code may produce an incorrect result, lose work, or fail; they do not establish that any existing project has been affected. Severity describes the possible impact, not the frequency. Existing project files must remain readable when any fix is made.
 
 ## Status of the five discussed items
 
@@ -210,6 +210,26 @@ Reviewed: 28 October 2026. This log records **open findings outside the current 
 **Recommended fix:** Offer a stronger source check before Continue, such as a saved content digest or a clear confirmation when a file timestamp changes. Hashing every multi-gigabyte LIF on every launch would be slow; record any digest once and compare only when needed. Starting a new run remains the safe choice after source files change.
 
 **Compatibility risk:** A strict new hash requirement would block historical runs with no digest. Keep the current legacy warning path and apply stronger checks only to runs that recorded them.
+
+### R22 — Nissl brightfield scans need an explicit input profile
+
+**Severity:** High for an unprepared 8-bit Nissl scan — a normal run can produce no cells despite visible stain.
+
+**Evidence and impact:** The 12 November 2026 Allen Brain Atlas Nissl trial used a grayscale image whose maximum was 204. The existing default `RAW_MEAN_MIN = 5000` in `cellmatchr/segmentation.py` rejected every one of 730 Micro-SAM candidates in a direct filter check. The default 1200-pixel minimum is also much larger than most Nissl cell bodies in these crops. The current `local_bg_subtract` preprocessing emphasizes bright structures; Nissl-stained cells are dark on a light background. RGB TIFF input is split into separate color channels rather than treated as one stain image. A configured run on an explicitly inverted grayscale TIFF with `raw_percentile`, 20-pixel minimum, and zero raw-mean threshold did complete and save 730 candidate masks. These counts are not an accuracy estimate.
+
+**Recommended fix:** When representative native scanner files arrive, add an opt-in brightfield/Nissl profile that makes the stain polarity and grayscale or optical-density conversion explicit, scales default filters to bit depth and cell size, and records those settings in run metadata. Compare with hand-validated cells before setting a default model. Keep fluorescence preprocessing and historical project interpretation unchanged.
+
+**Compatibility risk:** Automatically changing existing preprocessing or thresholds would change scientific counts on old 8-bit projects. The profile must be opt-in for new runs and must never rewrite old masks.
+
+### R23 — False-positive-only fields do not enter retraining
+
+**Severity:** Medium for model quality when many reviewed fields contain only rejected detections.
+
+**Evidence and impact:** `collect_examples` skips a sample with no YES cell. For a sample with YES cells, rejected labels are changed to background in the staged mask, but Micro-SAM's positive-instance sampler and random crops in other trainers do not guarantee that a distant rejected object is visited. The quick-editor eraser and validator NO/ARTIFACT decisions are preserved correctly; the limitation is how often those negative regions reach the training loss.
+
+**Recommended fix:** After collecting a representative human-reviewed batch, measure how many NO/ARTIFACT and erased regions are actually sampled. Add backend-specific hard-negative sampling or background-only training fields where supported, then compare against held-out manually labeled images. Keep the current conservative sample rule until that has been validated.
+
+**Compatibility risk:** Sampling changes model behavior but do not require changing project files. Keep old trained models and source masks untouched.
 
 ## Compatibility rule for future fixes
 

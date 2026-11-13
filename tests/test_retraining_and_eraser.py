@@ -12,12 +12,14 @@ from unittest.mock import Mock, patch
 import numpy as np
 import tifffile
 
-from cellmatchr.roi_editor import RoiEditorApp, _remove_touched_objects
+from cellmatchr.roi_editor import (RoiEditorApp, _merge_additions,
+                                  _remove_touched_objects)
 from cellmatchr.retraining import (available_channels, collect_examples,
                                   delete_managed_model, list_trained_models,
                                   train_model, validate_advanced,
-                                  _train_stardist)
-from cellmatchr.validation_state import get_change_state
+                                  _prepare_pair, _train_stardist)
+from cellmatchr.validation_state import (finalize_if_ready, get_change_state,
+                                         save_edited_mask, save_review_decision)
 
 
 class WholeObjectEraserTests(unittest.TestCase):
@@ -156,6 +158,64 @@ class ReviewedTrainingDataTests(unittest.TestCase):
         self.assertEqual(examples[0]["rejected_count"], 1)
         self.assertTrue(any("unfinished" in reason for reason in skipped))
         self.assertEqual(available_channels(str(self.run)), [1])
+
+    def test_uncertain_cells_are_not_trained_as_background(self):
+        self.sample("uncertain", decisions="1\tYES\n2\tMAYBE\n")
+        examples, skipped = collect_examples(str(self.run), 1)
+        self.assertEqual(examples, [])
+        self.assertTrue(any("resolve MAYBE" in reason for reason in skipped))
+
+    def test_rejected_cell_is_background_in_staged_pair_only(self):
+        sample = self.sample("reviewed", decisions="1\tYES\n2\tNO\n")
+        examples, skipped = collect_examples(str(self.run), 1)
+        self.assertEqual(skipped, [])
+        original_path = sample / "reviewed_predict_original_ch1_method.tif"
+        original = tifffile.imread(original_path).copy()
+        with tempfile.TemporaryDirectory() as stage:
+            _, label_path = _prepare_pair(examples[0], Path(stage), 0,
+                                          "raw_percentile")
+            staged = tifffile.imread(label_path)
+            self.assertEqual(set(np.unique(staged)), {0, 1})
+            self.assertEqual(int(staged[1, 1]), 1)
+            self.assertEqual(int(staged[5, 5]), 0)
+        np.testing.assert_array_equal(tifffile.imread(original_path), original)
+
+    def test_added_cell_enters_training_after_focused_review(self):
+        sample = self.sample("corrected")
+        mask_path = sample / "corrected_predict_original_ch1_method.tif"
+        original = tifffile.imread(mask_path)
+        additions = np.zeros_like(original)
+        additions[3:5, 3:5] = 1
+        edited, count, added_ids = _merge_additions(original, additions)
+        self.assertEqual((count, added_ids), (1, {3}))
+        state = save_edited_mask(str(mask_path), 1, original, edited)
+        self.assertEqual(state["status"], "pending")
+        self.assertEqual(state["pending_ids"], [3])
+        save_review_decision(str(sample), 1, str(mask_path), 3, "YES", "added by reviewer")
+        examples, skipped = collect_examples(str(self.run), 1)
+        self.assertEqual(skipped, [])
+        self.assertEqual(examples[0]["accepted_ids"], [1, 3])
+
+    def test_erased_false_prediction_is_background_after_review(self):
+        sample = self.sample("erased")
+        mask_path = sample / "erased_predict_original_ch1_method.tif"
+        original = tifffile.imread(mask_path)
+        strokes = np.zeros_like(original)
+        strokes[5, 5] = 1
+        edited, removed = _remove_touched_objects(original, original, strokes)
+        self.assertEqual(removed, {2})
+        state = save_edited_mask(str(mask_path), 1, original, edited)
+        self.assertEqual(state["pending_ids"], [])
+        self.assertEqual(finalize_if_ready(str(sample), 1, str(mask_path))["status"],
+                         "current")
+        examples, skipped = collect_examples(str(self.run), 1)
+        self.assertEqual(skipped, [])
+        with tempfile.TemporaryDirectory() as stage:
+            _, label_path = _prepare_pair(examples[0], Path(stage), 0,
+                                          "raw_percentile")
+            staged = tifffile.imread(label_path)
+            self.assertEqual(int(staged[5, 5]), 0)
+            self.assertEqual(int(staged[1, 1]), 1)
 
     def test_advanced_controls_reject_unsupported_loss(self):
         self.assertEqual(validate_advanced("stardist", {"loss": "mse",

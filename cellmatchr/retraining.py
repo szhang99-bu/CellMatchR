@@ -196,6 +196,9 @@ def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[st
                for v in present):
             skipped.append(f"{sample.name}: custom decision words need an explicit mapping")
             continue
+        if any(decisions[v] == "MAYBE" for v in present):
+            skipped.append(f"{sample.name}: resolve MAYBE cells as YES, NO, or ARTIFACT before training")
+            continue
         accepted = {v for v in present if decisions[v] == "YES"}
         if not accepted:
             skipped.append(f"{sample.name}: no accepted cells to train on")
@@ -363,6 +366,9 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         print(f"[SKIP] {reason}", flush=True)
     if len(examples) < 2:
         raise ValueError("At least two fully validated samples with YES cells are needed for training")
+    print(f"Reviewed targets: {sum(len(e['accepted_ids']) for e in examples)} YES; "
+          f"{sum(e['rejected_count'] for e in examples)} NO/ARTIFACT across "
+          f"{len(examples)} samples", flush=True)
 
     parent = None
     custom_base = bool(base_model and os.path.isabs(base_model))

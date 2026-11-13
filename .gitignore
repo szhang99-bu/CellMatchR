@@ -31,6 +31,9 @@ config.json
 *.tif
 *.tiff
 *.npy
+benchmark_data/CytoDArk0_subset/*.png
+benchmark_data/CytoDArk0_subset/*.tiff
+benchmark_data/CytoDArk0_subset/scores.json
 
 # Debug output folders (created next to data, not in repo)
 DEBUG_*/

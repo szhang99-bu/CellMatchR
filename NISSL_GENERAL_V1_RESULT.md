@@ -1,0 +1,44 @@
+# Nissl General v1: full CytoDArk0 fine-tuning
+
+13 November 2026. Cellpose-SAM was fine-tuned with all 69 original 20× Nissl fields from the [CytoDArk0 expert-annotated dataset](https://zenodo.org/records/13694738). The dataset labels both neurons and glia. This model is an additional, optional choice in CellMatchR; the built-in Cellpose-SAM and the earlier pilot model remain available.
+
+## Held-out validation
+
+Each 1024 × 1024 original field was divided into four 512 × 512 crops. All crops from a field stayed in one of four held-out folds (18, 17, 17, and 17 fields). The paired 40× views were excluded because they show the same tissue as 58 of the 20× fields. Every validation model started independently from the original `cpsam` weights, not the earlier pilot. After choosing the epoch count, a new model was trained on all 276 crops; that final checkpoint itself has no independent CytoDArk0 test set.
+
+Training used Cellpose 4.1.1 on Apple Metal, learning rate `1e-5`, batch size 1, and 256 × 256 training patches. Sampling was half natural frequency and half balanced equally across the six species/brain-area groups because 53 of the 69 fields are dolphin auditory cortex. Images were converted to grayscale and normalized between the 0.5th and 99.8th percentiles, matching CellMatchR's `raw_percentile` mode.
+
+Predictions were scored as raw cell instances before CellMatchR's object filters. Each proposed cell could match at most one human-labeled cell at intersection-over-union ≥ 0.5. The scores are patch-level instance F1; cells cut by a crop boundary can be counted in more than one crop.
+
+| Held-out fold | Source fields | Original Cellpose-SAM F1 | 6 epochs F1 | 11 epochs F1 |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 18 | 68.64% | **79.00%** | 78.77% |
+| 1 | 17 | 78.15% | 85.34% | **86.20%** |
+| 2 | 17 | 75.52% | **85.04%** | 84.73% |
+| 3 | 17 | 75.13% | 83.40% | **85.22%** |
+| **Pooled** | **69** | **74.30%** | **83.04%** | **83.63%** |
+
+The 11-epoch candidate had 89.62% precision and 78.39% recall, versus 82.81% and 67.37% for the original model. Its out-of-fold F1 improved on all 69 original fields. The median per-field gain was 11.0 percentage points (interquartile range 7.6–16.7); the smallest was 1.3 points. Eleven epochs was selected for the final all-image training.
+
+| Tissue group | Fields | Original F1 | 11-epoch F1 |
+| --- | ---: | ---: | ---: |
+| Dolphin auditory cortex | 53 | 67.99% | 81.93% |
+| Chimpanzee cerebellum | 3 | 89.08% | 91.55% |
+| Chimpanzee visual cortex | 4 | 80.98% | 89.66% |
+| Macaque visual cortex | 4 | 84.16% | 86.33% |
+| Mouse hippocampus | 4 | 78.60% | 86.29% |
+| Bovine cerebellum | 1 | 68.98% | 71.87% |
+
+![Held-out Nissl cell-instance F1 by tissue group](docs/Nissl_full_CytoDArk0_validation.png)
+
+[Vector PDF of the validation figure](docs/Nissl_full_CytoDArk0_validation.pdf)
+
+## Interpretation and limits
+
+This is a larger and more varied benchmark than the seven-field pilot, and the field-held-out result supports a useful improvement for the public Nissl images. The published metadata do not provide dependable animal IDs for every field, so these folds cannot establish generalization to a new animal. The dataset is dominated by dolphin auditory cortex; bovine cerebellum has only one original field. The human labels include glia as well as neurons, so the score should not be treated as a neuron-only counting result. Your incoming slides may differ in stain, scanner, and magnification and still need direct review against human annotations.
+
+The current CellMatchR image-processing methods were not changed. A native RGB brightfield slide-scanner route has not yet been validated for this model; the benchmark uses grayscale Nissl images. Object filters and downstream analysis can change the final counts relative to these raw-model scores.
+
+## Reproduction
+
+The [selective downloader](benchmark_data/download_cytodark_20x.py) extracts just the 69 20× image/mask pairs and author metadata from the public archive. The [training and scoring script](benchmark_data/train_full_cytodark.py) records the fold assignments, per-patch scores, and all-image training settings. The [figure script](benchmark_data/render_full_cytodark_results.py) produces the PNG and PDF above. The [compact validation audit](benchmark_data/cytodark_full_results/summary.json) and four fold files are included in Git; source images and large model checkpoints stay local.

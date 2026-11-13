@@ -261,14 +261,17 @@ separate segmentation run; review the masks before analysis. Step 7 currently
 fine-tunes Cellpose-SAM, Micro-SAM, and StarDist, but does not fine-tune these
 two legacy Cellpose models.
 
-For Nissl images, start with Cellpose-SAM: it was strongest on the small
-[expert-annotated public comparison](NISSL_MODEL_EVALUATION.md). This is not
-a ready-made brightfield profile. Set preprocessing and object filters for the
-actual image before running; the fluorescence defaults can remove small 8-bit
-Nissl cells. The local [gold-standard subset](benchmark_data/CytoDArk0_subset/README.md)
-contains 28 paired Nissl images and expert-reviewed cell masks for inspection.
-A separate [Nissl fine-tuning pilot](NISSL_FINETUNING_RESULT.md) is available
-by name in the shared model library on this computer; it is not the default.
+For grayscale Nissl images, compare **Nissl General v1** with built-in
+Cellpose-SAM in **Model for this run**. The [full 69-field training and held-out
+evaluation](NISSL_GENERAL_V1_RESULT.md) describes where the new model helped
+and its limits; the earlier [small model comparison](NISSL_MODEL_EVALUATION.md)
+and [fine-tuning pilot](NISSL_FINETUNING_RESULT.md) remain available. The new
+model is listed across projects but is not selected automatically. Set
+`raw_percentile` preprocessing and review object filters for the actual image:
+fluorescence defaults can remove small 8-bit Nissl cells. A native RGB
+brightfield slide-scanner route has not yet been validated. The local
+[gold-standard subset](benchmark_data/CytoDArk0_subset/README.md) contains 28
+paired Nissl images and expert-reviewed masks for inspection.
 
 ### Edit predictions and retrain a model
 

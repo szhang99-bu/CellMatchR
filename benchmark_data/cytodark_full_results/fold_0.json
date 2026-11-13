@@ -1,0 +1,2447 @@
+{
+  "fold": 0,
+  "training_sources": [
+    "ID1_Aud_Cortex_Tursiops",
+    "ID2_Aud_Cortex_Tursiops",
+    "ID3_Aud_Cortex_Tursiops",
+    "ID5_Aud_Cortex_Tursiops",
+    "ID7_Aud_Cortex_Tursiops",
+    "ID8_Aud_Cortex_Tursiops",
+    "ID11_Aud_Cortex_Tursiops",
+    "ID12_Aud_Cortex_Tursiops",
+    "ID15_Aud_Cortex_Tursiops",
+    "ID16_Aud_Cortex_Tursiops",
+    "ID17_Aud_Cortex_Tursiops",
+    "ID19_Aud_Cortex_Tursiops",
+    "ID20_Aud_Cortex_Tursiops",
+    "ID22_Aud_Cortex_Tursiops",
+    "ID23_Aud_Cortex_Tursiops",
+    "ID24_Aud_Cortex_Tursiops",
+    "ID27_Aud_Cortex_Tursiops",
+    "ID28_Aud_Cortex_Tursiops",
+    "ID29_Aud_Cortex_Tursiops",
+    "ID31_Aud_Cortex_Tursiops",
+    "ID32_Aud_Cortex_Tursiops",
+    "ID33_Aud_Cortex_Tursiops",
+    "ID34_Aud_Cortex_Tursiops",
+    "ID35_Aud_Cortex_Tursiops",
+    "ID37_Aud_Cortex_Tursiops",
+    "ID38_Aud_Cortex_Tursiops",
+    "ID39_Aud_Cortex_Tursiops",
+    "ID40_Aud_Cortex_Tursiops",
+    "ID41_Aud_Cortex_Tursiops",
+    "ID42_Aud_Cortex_Tursiops",
+    "ID43_Aud_Cortex_Tursiops",
+    "ID44_Aud_Cortex_Tursiops",
+    "ID46_Aud_Cortex_Tursiops",
+    "ID47_Aud_Cortex_Tursiops",
+    "ID48_Aud_Cortex_Tursiops",
+    "ID49_Aud_Cortex_Tursiops",
+    "ID51_Aud_Cortex_Tursiops",
+    "ID52_Aud_Cortex_Tursiops",
+    "ID53_Aud_Cortex_Tursiops",
+    "ID55_Cerebellum_Chimpanzee",
+    "ID56_Cerebellum_Chimpanzee",
+    "ID57_Cerebellum_Chimpanzee",
+    "ID58_Hippocampus_Mouse",
+    "ID60_Hippocampus_Mouse",
+    "ID61_Hippocampus_Mouse",
+    "ID63_Visual_Cortex_Chimpanzee",
+    "ID64_Visual_Cortex_Chimpanzee",
+    "ID65_Visual_Cortex_Chimpanzee",
+    "ID66_Visual_Cortex_Macaque",
+    "ID68_Visual_Cortex_Macaque",
+    "ID69_Visual_Cortex_Macaque"
+  ],
+  "held_out_sources": [
+    "ID4_Aud_Cortex_Tursiops",
+    "ID6_Aud_Cortex_Tursiops",
+    "ID9_Aud_Cortex_Tursiops",
+    "ID10_Aud_Cortex_Tursiops",
+    "ID13_Aud_Cortex_Tursiops",
+    "ID14_Aud_Cortex_Tursiops",
+    "ID18_Aud_Cortex_Tursiops",
+    "ID21_Aud_Cortex_Tursiops",
+    "ID25_Aud_Cortex_Tursiops",
+    "ID26_Aud_Cortex_Tursiops",
+    "ID30_Aud_Cortex_Tursiops",
+    "ID36_Aud_Cortex_Tursiops",
+    "ID45_Aud_Cortex_Tursiops",
+    "ID50_Aud_Cortex_Tursiops",
+    "ID54_Cerebellum_Bovine",
+    "ID59_Hippocampus_Mouse",
+    "ID62_Visual_Cortex_Chimpanzee",
+    "ID67_Visual_Cortex_Macaque"
+  ],
+  "losses": [
+    0.4204564821247647,
+    0.3436910651987646,
+    0.29359422840359733,
+    0.27797143217630504,
+    0.25435101973210894,
+    0.2586617161678832,
+    0.27629904882846085,
+    0.25874550180373396,
+    0.24243298723566822,
+    0.26825676000699766,
+    0.25842802789425706
+  ],
+  "baseline": {
+    "overall": {
+      "gt": 11327,
+      "pred": 8095,
+      "tp": 6666,
+      "fp": 1429,
+      "fn": 4661,
+      "precision": 0.8234712785670166,
+      "recall": 0.5885053412200936,
+      "f1": 0.6864380599320359
+    },
+    "by_group": {
+      "Bovine | Cerebellum": {
+        "gt": 3737,
+        "pred": 2558,
+        "tp": 2171,
+        "fp": 387,
+        "fn": 1566,
+        "precision": 0.8487099296325255,
+        "recall": 0.580947283917581,
+        "f1": 0.6897537728355838
+      },
+      "Chimpanzee | Visual Cortex": {
+        "gt": 207,
+        "pred": 250,
+        "tp": 176,
+        "fp": 74,
+        "fn": 31,
+        "precision": 0.704,
+        "recall": 0.8502415458937198,
+        "f1": 0.7702407002188184
+      },
+      "Macaque | Visual Cortex": {
+        "gt": 208,
+        "pred": 230,
+        "tp": 180,
+        "fp": 50,
+        "fn": 28,
+        "precision": 0.782608695652174,
+        "recall": 0.8653846153846154,
+        "f1": 0.821917808219178
+      },
+      "Mouse | Hippocampus": {
+        "gt": 830,
+        "pred": 706,
+        "tp": 608,
+        "fp": 98,
+        "fn": 222,
+        "precision": 0.8611898016997167,
+        "recall": 0.7325301204819277,
+        "f1": 0.7916666666666666
+      },
+      "Tursiops Truncatus | Auditory Cortex": {
+        "gt": 6345,
+        "pred": 4351,
+        "tp": 3531,
+        "fp": 820,
+        "fn": 2814,
+        "precision": 0.8115375775683751,
+        "recall": 0.556501182033097,
+        "f1": 0.6602468212415856
+      }
+    },
+    "patches": [
+      {
+        "gt": 122,
+        "pred": 96,
+        "tp": 87,
+        "fp": 9,
+        "fn": 35,
+        "name": "ID4_Aud_Cortex_Tursiops_0_0",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 114,
+        "pred": 94,
+        "tp": 76,
+        "fp": 18,
+        "fn": 38,
+        "name": "ID4_Aud_Cortex_Tursiops_0_1",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 101,
+        "pred": 112,
+        "tp": 86,
+        "fp": 26,
+        "fn": 15,
+        "name": "ID4_Aud_Cortex_Tursiops_1_0",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 116,
+        "tp": 99,
+        "fp": 17,
+        "fn": 30,
+        "name": "ID4_Aud_Cortex_Tursiops_1_1",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 147,
+        "pred": 111,
+        "tp": 94,
+        "fp": 17,
+        "fn": 53,
+        "name": "ID6_Aud_Cortex_Tursiops_0_0",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 154,
+        "pred": 124,
+        "tp": 106,
+        "fp": 18,
+        "fn": 48,
+        "name": "ID6_Aud_Cortex_Tursiops_0_1",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 156,
+        "pred": 118,
+        "tp": 99,
+        "fp": 19,
+        "fn": 57,
+        "name": "ID6_Aud_Cortex_Tursiops_1_0",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 150,
+        "pred": 87,
+        "tp": 76,
+        "fp": 11,
+        "fn": 74,
+        "name": "ID6_Aud_Cortex_Tursiops_1_1",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 206,
+        "pred": 186,
+        "tp": 143,
+        "fp": 43,
+        "fn": 63,
+        "name": "ID9_Aud_Cortex_Tursiops_0_0",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 186,
+        "pred": 146,
+        "tp": 124,
+        "fp": 22,
+        "fn": 62,
+        "name": "ID9_Aud_Cortex_Tursiops_0_1",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 213,
+        "pred": 161,
+        "tp": 125,
+        "fp": 36,
+        "fn": 88,
+        "name": "ID9_Aud_Cortex_Tursiops_1_0",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 235,
+        "pred": 188,
+        "tp": 134,
+        "fp": 54,
+        "fn": 101,
+        "name": "ID9_Aud_Cortex_Tursiops_1_1",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 107,
+        "pred": 46,
+        "tp": 41,
+        "fp": 5,
+        "fn": 66,
+        "name": "ID10_Aud_Cortex_Tursiops_0_0",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 33,
+        "tp": 28,
+        "fp": 5,
+        "fn": 88,
+        "name": "ID10_Aud_Cortex_Tursiops_0_1",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 110,
+        "pred": 85,
+        "tp": 69,
+        "fp": 16,
+        "fn": 41,
+        "name": "ID10_Aud_Cortex_Tursiops_1_0",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 73,
+        "tp": 62,
+        "fp": 11,
+        "fn": 54,
+        "name": "ID10_Aud_Cortex_Tursiops_1_1",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 79,
+        "pred": 33,
+        "tp": 26,
+        "fp": 7,
+        "fn": 53,
+        "name": "ID13_Aud_Cortex_Tursiops_0_0",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 96,
+        "pred": 72,
+        "tp": 52,
+        "fp": 20,
+        "fn": 44,
+        "name": "ID13_Aud_Cortex_Tursiops_0_1",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 94,
+        "pred": 78,
+        "tp": 56,
+        "fp": 22,
+        "fn": 38,
+        "name": "ID13_Aud_Cortex_Tursiops_1_0",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 85,
+        "tp": 57,
+        "fp": 28,
+        "fn": 26,
+        "name": "ID13_Aud_Cortex_Tursiops_1_1",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 159,
+        "pred": 130,
+        "tp": 105,
+        "fp": 25,
+        "fn": 54,
+        "name": "ID14_Aud_Cortex_Tursiops_0_0",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 151,
+        "pred": 108,
+        "tp": 97,
+        "fp": 11,
+        "fn": 54,
+        "name": "ID14_Aud_Cortex_Tursiops_0_1",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 134,
+        "pred": 79,
+        "tp": 68,
+        "fp": 11,
+        "fn": 66,
+        "name": "ID14_Aud_Cortex_Tursiops_1_0",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 151,
+        "pred": 73,
+        "tp": 66,
+        "fp": 7,
+        "fn": 85,
+        "name": "ID14_Aud_Cortex_Tursiops_1_1",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 107,
+        "pred": 36,
+        "tp": 33,
+        "fp": 3,
+        "fn": 74,
+        "name": "ID18_Aud_Cortex_Tursiops_0_0",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 100,
+        "pred": 16,
+        "tp": 15,
+        "fp": 1,
+        "fn": 85,
+        "name": "ID18_Aud_Cortex_Tursiops_0_1",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 42,
+        "tp": 40,
+        "fp": 2,
+        "fn": 76,
+        "name": "ID18_Aud_Cortex_Tursiops_1_0",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 114,
+        "pred": 31,
+        "tp": 29,
+        "fp": 2,
+        "fn": 85,
+        "name": "ID18_Aud_Cortex_Tursiops_1_1",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 109,
+        "tp": 80,
+        "fp": 29,
+        "fn": 49,
+        "name": "ID21_Aud_Cortex_Tursiops_0_0",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 123,
+        "pred": 110,
+        "tp": 86,
+        "fp": 24,
+        "fn": 37,
+        "name": "ID21_Aud_Cortex_Tursiops_0_1",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 134,
+        "pred": 111,
+        "tp": 94,
+        "fp": 17,
+        "fn": 40,
+        "name": "ID21_Aud_Cortex_Tursiops_1_0",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 121,
+        "pred": 98,
+        "tp": 72,
+        "fp": 26,
+        "fn": 49,
+        "name": "ID21_Aud_Cortex_Tursiops_1_1",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 92,
+        "pred": 85,
+        "tp": 71,
+        "fp": 14,
+        "fn": 21,
+        "name": "ID25_Aud_Cortex_Tursiops_0_0",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 111,
+        "pred": 63,
+        "tp": 54,
+        "fp": 9,
+        "fn": 57,
+        "name": "ID25_Aud_Cortex_Tursiops_0_1",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 99,
+        "pred": 97,
+        "tp": 58,
+        "fp": 39,
+        "fn": 41,
+        "name": "ID25_Aud_Cortex_Tursiops_1_0",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 128,
+        "pred": 108,
+        "tp": 97,
+        "fp": 11,
+        "fn": 31,
+        "name": "ID25_Aud_Cortex_Tursiops_1_1",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 62,
+        "tp": 48,
+        "fp": 14,
+        "fn": 35,
+        "name": "ID26_Aud_Cortex_Tursiops_0_0",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 101,
+        "pred": 64,
+        "tp": 55,
+        "fp": 9,
+        "fn": 46,
+        "name": "ID26_Aud_Cortex_Tursiops_0_1",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 76,
+        "pred": 36,
+        "tp": 27,
+        "fp": 9,
+        "fn": 49,
+        "name": "ID26_Aud_Cortex_Tursiops_1_0",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 109,
+        "pred": 72,
+        "tp": 57,
+        "fp": 15,
+        "fn": 52,
+        "name": "ID26_Aud_Cortex_Tursiops_1_1",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 63,
+        "pred": 50,
+        "tp": 37,
+        "fp": 13,
+        "fn": 26,
+        "name": "ID30_Aud_Cortex_Tursiops_0_0",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 75,
+        "tp": 53,
+        "fp": 22,
+        "fn": 30,
+        "name": "ID30_Aud_Cortex_Tursiops_0_1",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 51,
+        "pred": 28,
+        "tp": 23,
+        "fp": 5,
+        "fn": 28,
+        "name": "ID30_Aud_Cortex_Tursiops_1_0",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 70,
+        "pred": 37,
+        "tp": 27,
+        "fp": 10,
+        "fn": 43,
+        "name": "ID30_Aud_Cortex_Tursiops_1_1",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 50,
+        "pred": 37,
+        "tp": 31,
+        "fp": 6,
+        "fn": 19,
+        "name": "ID36_Aud_Cortex_Tursiops_0_0",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 65,
+        "pred": 52,
+        "tp": 45,
+        "fp": 7,
+        "fn": 20,
+        "name": "ID36_Aud_Cortex_Tursiops_0_1",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 73,
+        "pred": 24,
+        "tp": 18,
+        "fp": 6,
+        "fn": 55,
+        "name": "ID36_Aud_Cortex_Tursiops_1_0",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 61,
+        "pred": 40,
+        "tp": 34,
+        "fp": 6,
+        "fn": 27,
+        "name": "ID36_Aud_Cortex_Tursiops_1_1",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 69,
+        "pred": 21,
+        "tp": 14,
+        "fp": 7,
+        "fn": 55,
+        "name": "ID45_Aud_Cortex_Tursiops_0_0",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 76,
+        "pred": 28,
+        "tp": 22,
+        "fp": 6,
+        "fn": 54,
+        "name": "ID45_Aud_Cortex_Tursiops_0_1",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 82,
+        "pred": 31,
+        "tp": 29,
+        "fp": 2,
+        "fn": 53,
+        "name": "ID45_Aud_Cortex_Tursiops_1_0",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 72,
+        "pred": 18,
+        "tp": 16,
+        "fp": 2,
+        "fn": 56,
+        "name": "ID45_Aud_Cortex_Tursiops_1_1",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 122,
+        "pred": 98,
+        "tp": 86,
+        "fp": 12,
+        "fn": 36,
+        "name": "ID50_Aud_Cortex_Tursiops_0_0",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 105,
+        "pred": 52,
+        "tp": 43,
+        "fp": 9,
+        "fn": 62,
+        "name": "ID50_Aud_Cortex_Tursiops_0_1",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 92,
+        "tp": 83,
+        "fp": 9,
+        "fn": 46,
+        "name": "ID50_Aud_Cortex_Tursiops_1_0",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 122,
+        "pred": 94,
+        "tp": 78,
+        "fp": 16,
+        "fn": 44,
+        "name": "ID50_Aud_Cortex_Tursiops_1_1",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 1206,
+        "pred": 688,
+        "tp": 588,
+        "fp": 100,
+        "fn": 618,
+        "name": "ID54_Cerebellum_Bovine_0_0",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 880,
+        "pred": 647,
+        "tp": 542,
+        "fp": 105,
+        "fn": 338,
+        "name": "ID54_Cerebellum_Bovine_0_1",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 1300,
+        "pred": 916,
+        "tp": 789,
+        "fp": 127,
+        "fn": 511,
+        "name": "ID54_Cerebellum_Bovine_1_0",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 351,
+        "pred": 307,
+        "tp": 252,
+        "fp": 55,
+        "fn": 99,
+        "name": "ID54_Cerebellum_Bovine_1_1",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 242,
+        "pred": 193,
+        "tp": 172,
+        "fp": 21,
+        "fn": 70,
+        "name": "ID59_Hippocampus_Mouse_0_0",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 172,
+        "pred": 157,
+        "tp": 149,
+        "fp": 8,
+        "fn": 23,
+        "name": "ID59_Hippocampus_Mouse_0_1",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 117,
+        "pred": 127,
+        "tp": 92,
+        "fp": 35,
+        "fn": 25,
+        "name": "ID59_Hippocampus_Mouse_1_0",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 299,
+        "pred": 229,
+        "tp": 195,
+        "fp": 34,
+        "fn": 104,
+        "name": "ID59_Hippocampus_Mouse_1_1",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 48,
+        "pred": 70,
+        "tp": 42,
+        "fp": 28,
+        "fn": 6,
+        "name": "ID62_Visual_Cortex_Chimpanzee_0_0",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 71,
+        "pred": 75,
+        "tp": 61,
+        "fp": 14,
+        "fn": 10,
+        "name": "ID62_Visual_Cortex_Chimpanzee_0_1",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 50,
+        "pred": 62,
+        "tp": 40,
+        "fp": 22,
+        "fn": 10,
+        "name": "ID62_Visual_Cortex_Chimpanzee_1_0",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 38,
+        "pred": 43,
+        "tp": 33,
+        "fp": 10,
+        "fn": 5,
+        "name": "ID62_Visual_Cortex_Chimpanzee_1_1",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 54,
+        "pred": 67,
+        "tp": 51,
+        "fp": 16,
+        "fn": 3,
+        "name": "ID67_Visual_Cortex_Macaque_0_0",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 54,
+        "pred": 53,
+        "tp": 41,
+        "fp": 12,
+        "fn": 13,
+        "name": "ID67_Visual_Cortex_Macaque_0_1",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 58,
+        "pred": 57,
+        "tp": 53,
+        "fp": 4,
+        "fn": 5,
+        "name": "ID67_Visual_Cortex_Macaque_1_0",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 42,
+        "pred": 53,
+        "tp": 35,
+        "fp": 18,
+        "fn": 7,
+        "name": "ID67_Visual_Cortex_Macaque_1_1",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      }
+    ]
+  },
+  "epoch_6": {
+    "overall": {
+      "gt": 11327,
+      "pred": 9470,
+      "tp": 8215,
+      "fp": 1255,
+      "fn": 3112,
+      "precision": 0.8674762407602957,
+      "recall": 0.7252582325417145,
+      "f1": 0.7900177910275521
+    },
+    "by_group": {
+      "Bovine | Cerebellum": {
+        "gt": 3737,
+        "pred": 2594,
+        "tp": 2305,
+        "fp": 289,
+        "fn": 1432,
+        "precision": 0.8885890516576715,
+        "recall": 0.6168049237356168,
+        "f1": 0.7281630074237877
+      },
+      "Chimpanzee | Visual Cortex": {
+        "gt": 207,
+        "pred": 176,
+        "tp": 160,
+        "fp": 16,
+        "fn": 47,
+        "precision": 0.9090909090909091,
+        "recall": 0.7729468599033816,
+        "f1": 0.835509138381201
+      },
+      "Macaque | Visual Cortex": {
+        "gt": 208,
+        "pred": 171,
+        "tp": 163,
+        "fp": 8,
+        "fn": 45,
+        "precision": 0.9532163742690059,
+        "recall": 0.7836538461538461,
+        "f1": 0.8601583113456465
+      },
+      "Mouse | Hippocampus": {
+        "gt": 830,
+        "pred": 883,
+        "tp": 742,
+        "fp": 141,
+        "fn": 88,
+        "precision": 0.840317100792752,
+        "recall": 0.8939759036144578,
+        "f1": 0.8663164039696439
+      },
+      "Tursiops Truncatus | Auditory Cortex": {
+        "gt": 6345,
+        "pred": 5646,
+        "tp": 4845,
+        "fp": 801,
+        "fn": 1500,
+        "precision": 0.8581296493092455,
+        "recall": 0.7635933806146572,
+        "f1": 0.8081060795596697
+      }
+    },
+    "patches": [
+      {
+        "gt": 122,
+        "pred": 115,
+        "tp": 103,
+        "fp": 12,
+        "fn": 19,
+        "name": "ID4_Aud_Cortex_Tursiops_0_0",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 114,
+        "pred": 111,
+        "tp": 101,
+        "fp": 10,
+        "fn": 13,
+        "name": "ID4_Aud_Cortex_Tursiops_0_1",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 101,
+        "pred": 102,
+        "tp": 90,
+        "fp": 12,
+        "fn": 11,
+        "name": "ID4_Aud_Cortex_Tursiops_1_0",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 120,
+        "tp": 111,
+        "fp": 9,
+        "fn": 18,
+        "name": "ID4_Aud_Cortex_Tursiops_1_1",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 147,
+        "pred": 129,
+        "tp": 117,
+        "fp": 12,
+        "fn": 30,
+        "name": "ID6_Aud_Cortex_Tursiops_0_0",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 154,
+        "pred": 143,
+        "tp": 125,
+        "fp": 18,
+        "fn": 29,
+        "name": "ID6_Aud_Cortex_Tursiops_0_1",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 156,
+        "pred": 136,
+        "tp": 121,
+        "fp": 15,
+        "fn": 35,
+        "name": "ID6_Aud_Cortex_Tursiops_1_0",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 150,
+        "pred": 125,
+        "tp": 103,
+        "fp": 22,
+        "fn": 47,
+        "name": "ID6_Aud_Cortex_Tursiops_1_1",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 206,
+        "pred": 186,
+        "tp": 154,
+        "fp": 32,
+        "fn": 52,
+        "name": "ID9_Aud_Cortex_Tursiops_0_0",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 186,
+        "pred": 162,
+        "tp": 149,
+        "fp": 13,
+        "fn": 37,
+        "name": "ID9_Aud_Cortex_Tursiops_0_1",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 213,
+        "pred": 195,
+        "tp": 167,
+        "fp": 28,
+        "fn": 46,
+        "name": "ID9_Aud_Cortex_Tursiops_1_0",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 235,
+        "pred": 222,
+        "tp": 195,
+        "fp": 27,
+        "fn": 40,
+        "name": "ID9_Aud_Cortex_Tursiops_1_1",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 107,
+        "pred": 88,
+        "tp": 80,
+        "fp": 8,
+        "fn": 27,
+        "name": "ID10_Aud_Cortex_Tursiops_0_0",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 99,
+        "tp": 85,
+        "fp": 14,
+        "fn": 31,
+        "name": "ID10_Aud_Cortex_Tursiops_0_1",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 110,
+        "pred": 98,
+        "tp": 86,
+        "fp": 12,
+        "fn": 24,
+        "name": "ID10_Aud_Cortex_Tursiops_1_0",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 94,
+        "tp": 79,
+        "fp": 15,
+        "fn": 37,
+        "name": "ID10_Aud_Cortex_Tursiops_1_1",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 79,
+        "pred": 81,
+        "tp": 59,
+        "fp": 22,
+        "fn": 20,
+        "name": "ID13_Aud_Cortex_Tursiops_0_0",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 96,
+        "pred": 84,
+        "tp": 75,
+        "fp": 9,
+        "fn": 21,
+        "name": "ID13_Aud_Cortex_Tursiops_0_1",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 94,
+        "pred": 99,
+        "tp": 79,
+        "fp": 20,
+        "fn": 15,
+        "name": "ID13_Aud_Cortex_Tursiops_1_0",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 93,
+        "tp": 68,
+        "fp": 25,
+        "fn": 15,
+        "name": "ID13_Aud_Cortex_Tursiops_1_1",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 159,
+        "pred": 116,
+        "tp": 98,
+        "fp": 18,
+        "fn": 61,
+        "name": "ID14_Aud_Cortex_Tursiops_0_0",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 151,
+        "pred": 107,
+        "tp": 104,
+        "fp": 3,
+        "fn": 47,
+        "name": "ID14_Aud_Cortex_Tursiops_0_1",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 134,
+        "pred": 74,
+        "tp": 63,
+        "fp": 11,
+        "fn": 71,
+        "name": "ID14_Aud_Cortex_Tursiops_1_0",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 151,
+        "pred": 86,
+        "tp": 75,
+        "fp": 11,
+        "fn": 76,
+        "name": "ID14_Aud_Cortex_Tursiops_1_1",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 107,
+        "pred": 83,
+        "tp": 74,
+        "fp": 9,
+        "fn": 33,
+        "name": "ID18_Aud_Cortex_Tursiops_0_0",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 100,
+        "pred": 85,
+        "tp": 75,
+        "fp": 10,
+        "fn": 25,
+        "name": "ID18_Aud_Cortex_Tursiops_0_1",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 95,
+        "tp": 87,
+        "fp": 8,
+        "fn": 29,
+        "name": "ID18_Aud_Cortex_Tursiops_1_0",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 114,
+        "pred": 96,
+        "tp": 82,
+        "fp": 14,
+        "fn": 32,
+        "name": "ID18_Aud_Cortex_Tursiops_1_1",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 120,
+        "tp": 104,
+        "fp": 16,
+        "fn": 25,
+        "name": "ID21_Aud_Cortex_Tursiops_0_0",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 123,
+        "pred": 125,
+        "tp": 104,
+        "fp": 21,
+        "fn": 19,
+        "name": "ID21_Aud_Cortex_Tursiops_0_1",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 134,
+        "pred": 127,
+        "tp": 107,
+        "fp": 20,
+        "fn": 27,
+        "name": "ID21_Aud_Cortex_Tursiops_1_0",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 121,
+        "pred": 112,
+        "tp": 94,
+        "fp": 18,
+        "fn": 27,
+        "name": "ID21_Aud_Cortex_Tursiops_1_1",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 92,
+        "pred": 81,
+        "tp": 72,
+        "fp": 9,
+        "fn": 20,
+        "name": "ID25_Aud_Cortex_Tursiops_0_0",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 111,
+        "pred": 108,
+        "tp": 87,
+        "fp": 21,
+        "fn": 24,
+        "name": "ID25_Aud_Cortex_Tursiops_0_1",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 99,
+        "pred": 91,
+        "tp": 73,
+        "fp": 18,
+        "fn": 26,
+        "name": "ID25_Aud_Cortex_Tursiops_1_0",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 128,
+        "pred": 118,
+        "tp": 105,
+        "fp": 13,
+        "fn": 23,
+        "name": "ID25_Aud_Cortex_Tursiops_1_1",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 96,
+        "tp": 67,
+        "fp": 29,
+        "fn": 16,
+        "name": "ID26_Aud_Cortex_Tursiops_0_0",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 101,
+        "pred": 107,
+        "tp": 87,
+        "fp": 20,
+        "fn": 14,
+        "name": "ID26_Aud_Cortex_Tursiops_0_1",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 76,
+        "pred": 85,
+        "tp": 57,
+        "fp": 28,
+        "fn": 19,
+        "name": "ID26_Aud_Cortex_Tursiops_1_0",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 109,
+        "pred": 121,
+        "tp": 100,
+        "fp": 21,
+        "fn": 9,
+        "name": "ID26_Aud_Cortex_Tursiops_1_1",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 63,
+        "pred": 59,
+        "tp": 49,
+        "fp": 10,
+        "fn": 14,
+        "name": "ID30_Aud_Cortex_Tursiops_0_0",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 67,
+        "tp": 60,
+        "fp": 7,
+        "fn": 23,
+        "name": "ID30_Aud_Cortex_Tursiops_0_1",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 51,
+        "pred": 39,
+        "tp": 36,
+        "fp": 3,
+        "fn": 15,
+        "name": "ID30_Aud_Cortex_Tursiops_1_0",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 70,
+        "pred": 54,
+        "tp": 46,
+        "fp": 8,
+        "fn": 24,
+        "name": "ID30_Aud_Cortex_Tursiops_1_1",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 50,
+        "pred": 48,
+        "tp": 43,
+        "fp": 5,
+        "fn": 7,
+        "name": "ID36_Aud_Cortex_Tursiops_0_0",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 65,
+        "pred": 53,
+        "tp": 49,
+        "fp": 4,
+        "fn": 16,
+        "name": "ID36_Aud_Cortex_Tursiops_0_1",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 73,
+        "pred": 66,
+        "tp": 57,
+        "fp": 9,
+        "fn": 16,
+        "name": "ID36_Aud_Cortex_Tursiops_1_0",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 61,
+        "pred": 50,
+        "tp": 42,
+        "fp": 8,
+        "fn": 19,
+        "name": "ID36_Aud_Cortex_Tursiops_1_1",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 69,
+        "pred": 77,
+        "tp": 55,
+        "fp": 22,
+        "fn": 14,
+        "name": "ID45_Aud_Cortex_Tursiops_0_0",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 76,
+        "pred": 58,
+        "tp": 51,
+        "fp": 7,
+        "fn": 25,
+        "name": "ID45_Aud_Cortex_Tursiops_0_1",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 82,
+        "pred": 81,
+        "tp": 63,
+        "fp": 18,
+        "fn": 19,
+        "name": "ID45_Aud_Cortex_Tursiops_1_0",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 72,
+        "pred": 63,
+        "tp": 56,
+        "fp": 7,
+        "fn": 16,
+        "name": "ID45_Aud_Cortex_Tursiops_1_1",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 122,
+        "pred": 113,
+        "tp": 99,
+        "fp": 14,
+        "fn": 23,
+        "name": "ID50_Aud_Cortex_Tursiops_0_0",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 105,
+        "pred": 84,
+        "tp": 76,
+        "fp": 8,
+        "fn": 29,
+        "name": "ID50_Aud_Cortex_Tursiops_0_1",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 115,
+        "tp": 106,
+        "fp": 9,
+        "fn": 23,
+        "name": "ID50_Aud_Cortex_Tursiops_1_0",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 122,
+        "pred": 104,
+        "tp": 95,
+        "fp": 9,
+        "fn": 27,
+        "name": "ID50_Aud_Cortex_Tursiops_1_1",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 1206,
+        "pred": 830,
+        "tp": 754,
+        "fp": 76,
+        "fn": 452,
+        "name": "ID54_Cerebellum_Bovine_0_0",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 880,
+        "pred": 601,
+        "tp": 531,
+        "fp": 70,
+        "fn": 349,
+        "name": "ID54_Cerebellum_Bovine_0_1",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 1300,
+        "pred": 880,
+        "tp": 774,
+        "fp": 106,
+        "fn": 526,
+        "name": "ID54_Cerebellum_Bovine_1_0",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 351,
+        "pred": 283,
+        "tp": 246,
+        "fp": 37,
+        "fn": 105,
+        "name": "ID54_Cerebellum_Bovine_1_1",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 242,
+        "pred": 263,
+        "tp": 216,
+        "fp": 47,
+        "fn": 26,
+        "name": "ID59_Hippocampus_Mouse_0_0",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 172,
+        "pred": 167,
+        "tp": 160,
+        "fp": 7,
+        "fn": 12,
+        "name": "ID59_Hippocampus_Mouse_0_1",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 117,
+        "pred": 140,
+        "tp": 101,
+        "fp": 39,
+        "fn": 16,
+        "name": "ID59_Hippocampus_Mouse_1_0",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 299,
+        "pred": 313,
+        "tp": 265,
+        "fp": 48,
+        "fn": 34,
+        "name": "ID59_Hippocampus_Mouse_1_1",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 48,
+        "pred": 43,
+        "tp": 40,
+        "fp": 3,
+        "fn": 8,
+        "name": "ID62_Visual_Cortex_Chimpanzee_0_0",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 71,
+        "pred": 58,
+        "tp": 55,
+        "fp": 3,
+        "fn": 16,
+        "name": "ID62_Visual_Cortex_Chimpanzee_0_1",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 50,
+        "pred": 41,
+        "tp": 36,
+        "fp": 5,
+        "fn": 14,
+        "name": "ID62_Visual_Cortex_Chimpanzee_1_0",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 38,
+        "pred": 34,
+        "tp": 29,
+        "fp": 5,
+        "fn": 9,
+        "name": "ID62_Visual_Cortex_Chimpanzee_1_1",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 54,
+        "pred": 46,
+        "tp": 46,
+        "fp": 0,
+        "fn": 8,
+        "name": "ID67_Visual_Cortex_Macaque_0_0",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 54,
+        "pred": 39,
+        "tp": 38,
+        "fp": 1,
+        "fn": 16,
+        "name": "ID67_Visual_Cortex_Macaque_0_1",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 58,
+        "pred": 48,
+        "tp": 45,
+        "fp": 3,
+        "fn": 13,
+        "name": "ID67_Visual_Cortex_Macaque_1_0",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 42,
+        "pred": 38,
+        "tp": 34,
+        "fp": 4,
+        "fn": 8,
+        "name": "ID67_Visual_Cortex_Macaque_1_1",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      }
+    ]
+  },
+  "epoch_11": {
+    "overall": {
+      "gt": 11327,
+      "pred": 9024,
+      "tp": 8015,
+      "fp": 1009,
+      "fn": 3312,
+      "precision": 0.8881870567375887,
+      "recall": 0.7076013066125187,
+      "f1": 0.7876762812638199
+    },
+    "by_group": {
+      "Bovine | Cerebellum": {
+        "gt": 3737,
+        "pred": 2499,
+        "tp": 2241,
+        "fp": 258,
+        "fn": 1496,
+        "precision": 0.8967587034813925,
+        "recall": 0.5996788868075997,
+        "f1": 0.7187299550994227
+      },
+      "Chimpanzee | Visual Cortex": {
+        "gt": 207,
+        "pred": 183,
+        "tp": 165,
+        "fp": 18,
+        "fn": 42,
+        "precision": 0.9016393442622951,
+        "recall": 0.7971014492753623,
+        "f1": 0.8461538461538461
+      },
+      "Macaque | Visual Cortex": {
+        "gt": 208,
+        "pred": 173,
+        "tp": 164,
+        "fp": 9,
+        "fn": 44,
+        "precision": 0.9479768786127167,
+        "recall": 0.7884615384615384,
+        "f1": 0.8608923884514436
+      },
+      "Mouse | Hippocampus": {
+        "gt": 830,
+        "pred": 784,
+        "tp": 717,
+        "fp": 67,
+        "fn": 113,
+        "precision": 0.9145408163265306,
+        "recall": 0.863855421686747,
+        "f1": 0.8884758364312267
+      },
+      "Tursiops Truncatus | Auditory Cortex": {
+        "gt": 6345,
+        "pred": 5385,
+        "tp": 4728,
+        "fp": 657,
+        "fn": 1617,
+        "precision": 0.8779944289693593,
+        "recall": 0.7451536643026004,
+        "f1": 0.8061381074168797
+      }
+    },
+    "patches": [
+      {
+        "gt": 122,
+        "pred": 113,
+        "tp": 101,
+        "fp": 12,
+        "fn": 21,
+        "name": "ID4_Aud_Cortex_Tursiops_0_0",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 114,
+        "pred": 102,
+        "tp": 98,
+        "fp": 4,
+        "fn": 16,
+        "name": "ID4_Aud_Cortex_Tursiops_0_1",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 101,
+        "pred": 96,
+        "tp": 88,
+        "fp": 8,
+        "fn": 13,
+        "name": "ID4_Aud_Cortex_Tursiops_1_0",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 116,
+        "tp": 107,
+        "fp": 9,
+        "fn": 22,
+        "name": "ID4_Aud_Cortex_Tursiops_1_1",
+        "source": "ID4_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 147,
+        "pred": 126,
+        "tp": 115,
+        "fp": 11,
+        "fn": 32,
+        "name": "ID6_Aud_Cortex_Tursiops_0_0",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 154,
+        "pred": 139,
+        "tp": 121,
+        "fp": 18,
+        "fn": 33,
+        "name": "ID6_Aud_Cortex_Tursiops_0_1",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 156,
+        "pred": 127,
+        "tp": 116,
+        "fp": 11,
+        "fn": 40,
+        "name": "ID6_Aud_Cortex_Tursiops_1_0",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 150,
+        "pred": 120,
+        "tp": 104,
+        "fp": 16,
+        "fn": 46,
+        "name": "ID6_Aud_Cortex_Tursiops_1_1",
+        "source": "ID6_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 206,
+        "pred": 187,
+        "tp": 158,
+        "fp": 29,
+        "fn": 48,
+        "name": "ID9_Aud_Cortex_Tursiops_0_0",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 186,
+        "pred": 163,
+        "tp": 149,
+        "fp": 14,
+        "fn": 37,
+        "name": "ID9_Aud_Cortex_Tursiops_0_1",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 213,
+        "pred": 200,
+        "tp": 172,
+        "fp": 28,
+        "fn": 41,
+        "name": "ID9_Aud_Cortex_Tursiops_1_0",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 235,
+        "pred": 221,
+        "tp": 190,
+        "fp": 31,
+        "fn": 45,
+        "name": "ID9_Aud_Cortex_Tursiops_1_1",
+        "source": "ID9_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 107,
+        "pred": 79,
+        "tp": 73,
+        "fp": 6,
+        "fn": 34,
+        "name": "ID10_Aud_Cortex_Tursiops_0_0",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 91,
+        "tp": 80,
+        "fp": 11,
+        "fn": 36,
+        "name": "ID10_Aud_Cortex_Tursiops_0_1",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 110,
+        "pred": 87,
+        "tp": 80,
+        "fp": 7,
+        "fn": 30,
+        "name": "ID10_Aud_Cortex_Tursiops_1_0",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 80,
+        "tp": 76,
+        "fp": 4,
+        "fn": 40,
+        "name": "ID10_Aud_Cortex_Tursiops_1_1",
+        "source": "ID10_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 79,
+        "pred": 66,
+        "tp": 52,
+        "fp": 14,
+        "fn": 27,
+        "name": "ID13_Aud_Cortex_Tursiops_0_0",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 96,
+        "pred": 73,
+        "tp": 67,
+        "fp": 6,
+        "fn": 29,
+        "name": "ID13_Aud_Cortex_Tursiops_0_1",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 94,
+        "pred": 97,
+        "tp": 81,
+        "fp": 16,
+        "fn": 13,
+        "name": "ID13_Aud_Cortex_Tursiops_1_0",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 89,
+        "tp": 63,
+        "fp": 26,
+        "fn": 20,
+        "name": "ID13_Aud_Cortex_Tursiops_1_1",
+        "source": "ID13_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 159,
+        "pred": 107,
+        "tp": 97,
+        "fp": 10,
+        "fn": 62,
+        "name": "ID14_Aud_Cortex_Tursiops_0_0",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 151,
+        "pred": 101,
+        "tp": 99,
+        "fp": 2,
+        "fn": 52,
+        "name": "ID14_Aud_Cortex_Tursiops_0_1",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 134,
+        "pred": 76,
+        "tp": 71,
+        "fp": 5,
+        "fn": 63,
+        "name": "ID14_Aud_Cortex_Tursiops_1_0",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 151,
+        "pred": 77,
+        "tp": 69,
+        "fp": 8,
+        "fn": 82,
+        "name": "ID14_Aud_Cortex_Tursiops_1_1",
+        "source": "ID14_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 107,
+        "pred": 81,
+        "tp": 73,
+        "fp": 8,
+        "fn": 34,
+        "name": "ID18_Aud_Cortex_Tursiops_0_0",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 100,
+        "pred": 80,
+        "tp": 75,
+        "fp": 5,
+        "fn": 25,
+        "name": "ID18_Aud_Cortex_Tursiops_0_1",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 116,
+        "pred": 97,
+        "tp": 88,
+        "fp": 9,
+        "fn": 28,
+        "name": "ID18_Aud_Cortex_Tursiops_1_0",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 114,
+        "pred": 93,
+        "tp": 81,
+        "fp": 12,
+        "fn": 33,
+        "name": "ID18_Aud_Cortex_Tursiops_1_1",
+        "source": "ID18_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 110,
+        "tp": 100,
+        "fp": 10,
+        "fn": 29,
+        "name": "ID21_Aud_Cortex_Tursiops_0_0",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 123,
+        "pred": 111,
+        "tp": 96,
+        "fp": 15,
+        "fn": 27,
+        "name": "ID21_Aud_Cortex_Tursiops_0_1",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 134,
+        "pred": 118,
+        "tp": 100,
+        "fp": 18,
+        "fn": 34,
+        "name": "ID21_Aud_Cortex_Tursiops_1_0",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 121,
+        "pred": 107,
+        "tp": 90,
+        "fp": 17,
+        "fn": 31,
+        "name": "ID21_Aud_Cortex_Tursiops_1_1",
+        "source": "ID21_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 92,
+        "pred": 72,
+        "tp": 69,
+        "fp": 3,
+        "fn": 23,
+        "name": "ID25_Aud_Cortex_Tursiops_0_0",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 111,
+        "pred": 94,
+        "tp": 82,
+        "fp": 12,
+        "fn": 29,
+        "name": "ID25_Aud_Cortex_Tursiops_0_1",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 99,
+        "pred": 81,
+        "tp": 68,
+        "fp": 13,
+        "fn": 31,
+        "name": "ID25_Aud_Cortex_Tursiops_1_0",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 128,
+        "pred": 113,
+        "tp": 107,
+        "fp": 6,
+        "fn": 21,
+        "name": "ID25_Aud_Cortex_Tursiops_1_1",
+        "source": "ID25_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 99,
+        "tp": 75,
+        "fp": 24,
+        "fn": 8,
+        "name": "ID26_Aud_Cortex_Tursiops_0_0",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 101,
+        "pred": 111,
+        "tp": 88,
+        "fp": 23,
+        "fn": 13,
+        "name": "ID26_Aud_Cortex_Tursiops_0_1",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 76,
+        "pred": 85,
+        "tp": 65,
+        "fp": 20,
+        "fn": 11,
+        "name": "ID26_Aud_Cortex_Tursiops_1_0",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 109,
+        "pred": 122,
+        "tp": 98,
+        "fp": 24,
+        "fn": 11,
+        "name": "ID26_Aud_Cortex_Tursiops_1_1",
+        "source": "ID26_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 63,
+        "pred": 52,
+        "tp": 46,
+        "fp": 6,
+        "fn": 17,
+        "name": "ID30_Aud_Cortex_Tursiops_0_0",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 83,
+        "pred": 59,
+        "tp": 57,
+        "fp": 2,
+        "fn": 26,
+        "name": "ID30_Aud_Cortex_Tursiops_0_1",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 51,
+        "pred": 37,
+        "tp": 36,
+        "fp": 1,
+        "fn": 15,
+        "name": "ID30_Aud_Cortex_Tursiops_1_0",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 70,
+        "pred": 44,
+        "tp": 40,
+        "fp": 4,
+        "fn": 30,
+        "name": "ID30_Aud_Cortex_Tursiops_1_1",
+        "source": "ID30_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 50,
+        "pred": 50,
+        "tp": 43,
+        "fp": 7,
+        "fn": 7,
+        "name": "ID36_Aud_Cortex_Tursiops_0_0",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 65,
+        "pred": 51,
+        "tp": 47,
+        "fp": 4,
+        "fn": 18,
+        "name": "ID36_Aud_Cortex_Tursiops_0_1",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 73,
+        "pred": 63,
+        "tp": 58,
+        "fp": 5,
+        "fn": 15,
+        "name": "ID36_Aud_Cortex_Tursiops_1_0",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 61,
+        "pred": 46,
+        "tp": 41,
+        "fp": 5,
+        "fn": 20,
+        "name": "ID36_Aud_Cortex_Tursiops_1_1",
+        "source": "ID36_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 69,
+        "pred": 63,
+        "tp": 45,
+        "fp": 18,
+        "fn": 24,
+        "name": "ID45_Aud_Cortex_Tursiops_0_0",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 76,
+        "pred": 64,
+        "tp": 51,
+        "fp": 13,
+        "fn": 25,
+        "name": "ID45_Aud_Cortex_Tursiops_0_1",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 82,
+        "pred": 80,
+        "tp": 63,
+        "fp": 17,
+        "fn": 19,
+        "name": "ID45_Aud_Cortex_Tursiops_1_0",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 72,
+        "pred": 56,
+        "tp": 49,
+        "fp": 7,
+        "fn": 23,
+        "name": "ID45_Aud_Cortex_Tursiops_1_1",
+        "source": "ID45_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 122,
+        "pred": 109,
+        "tp": 98,
+        "fp": 11,
+        "fn": 24,
+        "name": "ID50_Aud_Cortex_Tursiops_0_0",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 105,
+        "pred": 83,
+        "tp": 73,
+        "fp": 10,
+        "fn": 32,
+        "name": "ID50_Aud_Cortex_Tursiops_0_1",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 129,
+        "pred": 114,
+        "tp": 107,
+        "fp": 7,
+        "fn": 22,
+        "name": "ID50_Aud_Cortex_Tursiops_1_0",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 122,
+        "pred": 107,
+        "tp": 92,
+        "fp": 15,
+        "fn": 30,
+        "name": "ID50_Aud_Cortex_Tursiops_1_1",
+        "source": "ID50_Aud_Cortex_Tursiops",
+        "group": "Tursiops Truncatus | Auditory Cortex"
+      },
+      {
+        "gt": 1206,
+        "pred": 817,
+        "tp": 745,
+        "fp": 72,
+        "fn": 461,
+        "name": "ID54_Cerebellum_Bovine_0_0",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 880,
+        "pred": 568,
+        "tp": 502,
+        "fp": 66,
+        "fn": 378,
+        "name": "ID54_Cerebellum_Bovine_0_1",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 1300,
+        "pred": 839,
+        "tp": 751,
+        "fp": 88,
+        "fn": 549,
+        "name": "ID54_Cerebellum_Bovine_1_0",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 351,
+        "pred": 275,
+        "tp": 243,
+        "fp": 32,
+        "fn": 108,
+        "name": "ID54_Cerebellum_Bovine_1_1",
+        "source": "ID54_Cerebellum_Bovine",
+        "group": "Bovine | Cerebellum"
+      },
+      {
+        "gt": 242,
+        "pred": 230,
+        "tp": 204,
+        "fp": 26,
+        "fn": 38,
+        "name": "ID59_Hippocampus_Mouse_0_0",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 172,
+        "pred": 163,
+        "tp": 159,
+        "fp": 4,
+        "fn": 13,
+        "name": "ID59_Hippocampus_Mouse_0_1",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 117,
+        "pred": 122,
+        "tp": 100,
+        "fp": 22,
+        "fn": 17,
+        "name": "ID59_Hippocampus_Mouse_1_0",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 299,
+        "pred": 269,
+        "tp": 254,
+        "fp": 15,
+        "fn": 45,
+        "name": "ID59_Hippocampus_Mouse_1_1",
+        "source": "ID59_Hippocampus_Mouse",
+        "group": "Mouse | Hippocampus"
+      },
+      {
+        "gt": 48,
+        "pred": 46,
+        "tp": 43,
+        "fp": 3,
+        "fn": 5,
+        "name": "ID62_Visual_Cortex_Chimpanzee_0_0",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 71,
+        "pred": 59,
+        "tp": 54,
+        "fp": 5,
+        "fn": 17,
+        "name": "ID62_Visual_Cortex_Chimpanzee_0_1",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 50,
+        "pred": 41,
+        "tp": 36,
+        "fp": 5,
+        "fn": 14,
+        "name": "ID62_Visual_Cortex_Chimpanzee_1_0",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 38,
+        "pred": 37,
+        "tp": 32,
+        "fp": 5,
+        "fn": 6,
+        "name": "ID62_Visual_Cortex_Chimpanzee_1_1",
+        "source": "ID62_Visual_Cortex_Chimpanzee",
+        "group": "Chimpanzee | Visual Cortex"
+      },
+      {
+        "gt": 54,
+        "pred": 48,
+        "tp": 46,
+        "fp": 2,
+        "fn": 8,
+        "name": "ID67_Visual_Cortex_Macaque_0_0",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 54,
+        "pred": 39,
+        "tp": 38,
+        "fp": 1,
+        "fn": 16,
+        "name": "ID67_Visual_Cortex_Macaque_0_1",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 58,
+        "pred": 50,
+        "tp": 47,
+        "fp": 3,
+        "fn": 11,
+        "name": "ID67_Visual_Cortex_Macaque_1_0",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      },
+      {
+        "gt": 42,
+        "pred": 36,
+        "tp": 33,
+        "fp": 3,
+        "fn": 9,
+        "name": "ID67_Visual_Cortex_Macaque_1_1",
+        "source": "ID67_Visual_Cortex_Macaque",
+        "group": "Macaque | Visual Cortex"
+      }
+    ]
+  }
+}

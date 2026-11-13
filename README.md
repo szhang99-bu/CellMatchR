@@ -267,6 +267,8 @@ a ready-made brightfield profile. Set preprocessing and object filters for the
 actual image before running; the fluorescence defaults can remove small 8-bit
 Nissl cells. The local [gold-standard subset](benchmark_data/CytoDArk0_subset/README.md)
 contains 28 paired Nissl images and expert-reviewed cell masks for inspection.
+A separate [Nissl fine-tuning pilot](NISSL_FINETUNING_RESULT.md) is available
+by name in the shared model library on this computer; it is not the default.
 
 ### Edit predictions and retrain a model
 

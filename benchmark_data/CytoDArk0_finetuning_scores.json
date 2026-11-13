@@ -1,0 +1,168 @@
+{
+  "benchmark": "CytoDArk0 20x 512 subset",
+  "matching_iou": 0.5,
+  "source_image_split": {
+    "train": [
+      1,
+      54,
+      55,
+      66
+    ],
+    "validation": [
+      28
+    ],
+    "test": [
+      58,
+      62
+    ]
+  },
+  "preprocessing": "native grayscale, 0.5-99.8 percentile normalization",
+  "model_name": "Nissl CytoDArk0 pilot (6 epochs)",
+  "checkpoint_sha256": "6be1bc9dcf5574a80b0b4667a707c4ace8d8b462e12c6d6c6ddc9b9b7d050f15",
+  "validation": {
+    "split": "validation",
+    "baseline": {
+      "gt": 404,
+      "pred": 370,
+      "tp": 300,
+      "fp": 70,
+      "fn": 104,
+      "precision": 0.8108108108108109,
+      "recall": 0.7425742574257426,
+      "f1": 0.7751937984496124
+    },
+    "fine_tuned": {
+      "gt": 404,
+      "pred": 369,
+      "tp": 315,
+      "fp": 54,
+      "fn": 89,
+      "precision": 0.8536585365853658,
+      "recall": 0.7797029702970297,
+      "f1": 0.815006468305304
+    },
+    "samples": [
+      {
+        "gt": 105,
+        "pred": 102,
+        "tp": 82,
+        "fp": 20,
+        "fn": 23,
+        "sample": "ID28_Aud_Cortex_Tursiops_1"
+      },
+      {
+        "gt": 103,
+        "pred": 89,
+        "tp": 83,
+        "fp": 6,
+        "fn": 20,
+        "sample": "ID28_Aud_Cortex_Tursiops_2"
+      },
+      {
+        "gt": 104,
+        "pred": 91,
+        "tp": 74,
+        "fp": 17,
+        "fn": 30,
+        "sample": "ID28_Aud_Cortex_Tursiops_3"
+      },
+      {
+        "gt": 92,
+        "pred": 87,
+        "tp": 76,
+        "fp": 11,
+        "fn": 16,
+        "sample": "ID28_Aud_Cortex_Tursiops_4"
+      }
+    ]
+  },
+  "test": {
+    "split": "test",
+    "baseline": {
+      "gt": 1592,
+      "pred": 1285,
+      "tp": 1065,
+      "fp": 220,
+      "fn": 527,
+      "precision": 0.8287937743190662,
+      "recall": 0.6689698492462312,
+      "f1": 0.7403545359749739
+    },
+    "fine_tuned": {
+      "gt": 1592,
+      "pred": 1263,
+      "tp": 1082,
+      "fp": 181,
+      "fn": 510,
+      "precision": 0.8566904196357878,
+      "recall": 0.6796482412060302,
+      "f1": 0.7579684763572679
+    },
+    "samples": [
+      {
+        "gt": 383,
+        "pred": 280,
+        "tp": 243,
+        "fp": 37,
+        "fn": 140,
+        "sample": "ID58_Hippocampus_Mouse_1"
+      },
+      {
+        "gt": 188,
+        "pred": 148,
+        "tp": 137,
+        "fp": 11,
+        "fn": 51,
+        "sample": "ID58_Hippocampus_Mouse_2"
+      },
+      {
+        "gt": 352,
+        "pred": 273,
+        "tp": 225,
+        "fp": 48,
+        "fn": 127,
+        "sample": "ID58_Hippocampus_Mouse_3"
+      },
+      {
+        "gt": 462,
+        "pred": 352,
+        "tp": 306,
+        "fp": 46,
+        "fn": 156,
+        "sample": "ID58_Hippocampus_Mouse_4"
+      },
+      {
+        "gt": 48,
+        "pred": 55,
+        "tp": 43,
+        "fp": 12,
+        "fn": 5,
+        "sample": "ID62_Visual_Cortex_Chimpanzee_1"
+      },
+      {
+        "gt": 71,
+        "pred": 62,
+        "tp": 57,
+        "fp": 5,
+        "fn": 14,
+        "sample": "ID62_Visual_Cortex_Chimpanzee_2"
+      },
+      {
+        "gt": 50,
+        "pred": 55,
+        "tp": 40,
+        "fp": 15,
+        "fn": 10,
+        "sample": "ID62_Visual_Cortex_Chimpanzee_3"
+      },
+      {
+        "gt": 38,
+        "pred": 38,
+        "tp": 31,
+        "fp": 7,
+        "fn": 7,
+        "sample": "ID62_Visual_Cortex_Chimpanzee_4"
+      }
+    ]
+  }
+}

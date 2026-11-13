@@ -276,18 +276,18 @@ and [fine-tuning pilot](NISSL_FINETUNING_RESULT.md) remain available. The new
 model is listed across projects but is not selected automatically. Set
 `raw_percentile` preprocessing and review object filters for the actual image:
 fluorescence defaults can remove small 8-bit Nissl cells. A native RGB
-brightfield slide-scanner route has not yet been validated. The local
+brightfield crop has passed through the slide-scanner segmentation path;
+whole-slide performance still needs review. The local
 [gold-standard subset](benchmark_data/CytoDArk0_subset/README.md) contains 28
 paired Nissl images and expert-reviewed masks for inspection.
 
-The shared model library also includes **Nissl LM Recall v1**, a gently
-fine-tuned Micro-SAM light-microscopy model for brightfield Nissl images.
-Choose **Micro-SAM → Nissl LM Recall v1** in Step 3 to use its tested
+On workstations where **Nissl LM Recall v1** is installed in the shared model
+library, choose **Micro-SAM → Nissl LM Recall v1** in Step 3 to use its tested
 high-recall proposal setting; the original built-in light-microscopy model
 remains available. See the [source-separated macaque comparison](benchmark_data/NISSL_MICROSAM_LM_RETRAINING.md)
 before choosing between them: the new model improves the full comparison
 field but the original does better on one of its crops. Raw proposals can be
-reviewed with the intensity wizard.
+reviewed with the intensity wizard. Model weights are kept outside Git.
 
 ### Edit predictions and retrain a model
 

@@ -63,6 +63,26 @@ available to select and fine-tune again. The trained model is not chosen
 automatically for a project. App object-size and intensity filters remain
 user controlled, so changing them can change these raw-proposal counts.
 
+Both a 512 × 512 RGB macaque crop and the full 1024 × 1024 RGB source passed
+through CellMatchR's real brightfield slide-scanner segmentation path on the
+lab PC. The log confirmed threshold 0.2 for the registered model. The crop
+saved 81 proposals. With the app's default 2048-pixel tile setting, the full
+source gave the following raw results before filtering:
+
+| Full-field app run | Found | Missed | Extra |
+| --- | ---: | ---: | ---: |
+| Original built-in LM | 157/190 | 33 | 128 |
+| Nissl LM Recall v1 | 181/190 | 9 | 224 |
+
+The full-field annotation has 190 unique cells rather than the sum of 204
+from four independent crop scores: crop boundaries split some annotated
+objects and change how they are counted. Full-field inference also differs
+from 512-pixel inference because normalization and the model context cover a
+larger area. The new model's full-field gain in recall costs 96 extra raw
+proposals. The intensity wizard may help review extras, but these results do
+not establish that filtering can remove them without losing true cells. Both
+temporary test projects were removed.
+
 The full lab experiment, checkpoints, score JSON, and masks are in
 `~/CellMatchR/Experiments/Nissl_MicroSAM_LM_20261113` on the lab PC.
 `render_microsam_lm_heldout.py` makes before/after PNG and PDF figures for

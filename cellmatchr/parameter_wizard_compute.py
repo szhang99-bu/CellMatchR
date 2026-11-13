@@ -176,6 +176,15 @@ def main() -> None:
     seg.CELLPOSE_DIAMETER = float(cfg.get("seg_cellpose_diameter", 0) or 0)
     seg.CELLPOSE_FLOW_THRESHOLD = float(cfg.get("seg_cellpose_flow_threshold", 0.4))
     seg.CELLPOSE_CELLPROB_THRESHOLD = float(cfg.get("seg_cellpose_cellprob_threshold", 0.0))
+    microsam_generate_kwargs = {}
+    if seg.SEG_BACKEND == "microsam" and cfg.get("seg_custom_model_path"):
+        from cellmatchr.retraining import registered_microsam_foreground_threshold
+        tested_threshold = registered_microsam_foreground_threshold(
+            str(cfg["seg_custom_model_path"]),
+            str(cfg.get("project_output_folder") or ""))
+        if tested_threshold is not None:
+            microsam_generate_kwargs["foreground_threshold"] = tested_threshold
+            print(f"[parameter_wizard_compute] Micro-SAM tested foreground threshold: {tested_threshold:g}")
     seg.TILE_SHAPE_2D = (int(cfg.get("seg_tile_h", 2048)), int(cfg.get("seg_tile_w", 2048)))
     seg.HALO_2D = (int(cfg.get("seg_halo_h", 256)), int(cfg.get("seg_halo_w", 256)))
     seg.MIN_OBJECT_SIZE = 0
@@ -203,6 +212,7 @@ def main() -> None:
             debug_folder=None, cellpose_model=cellpose_model,
             stardist_model=stardist_model,
             min_size=0,
+            **microsam_generate_kwargs,
         )
         n_objects = int(len(np.unique(labels[labels > 0])))
         print(f"[parameter_wizard_compute] Channel {ch}: {n_objects} unfiltered object(s) detected.")

@@ -280,6 +280,15 @@ brightfield slide-scanner route has not yet been validated. The local
 [gold-standard subset](benchmark_data/CytoDArk0_subset/README.md) contains 28
 paired Nissl images and expert-reviewed masks for inspection.
 
+The shared model library also includes **Nissl LM Recall v1**, a gently
+fine-tuned Micro-SAM light-microscopy model for brightfield Nissl images.
+Choose **Micro-SAM → Nissl LM Recall v1** in Step 3 to use its tested
+high-recall proposal setting; the original built-in light-microscopy model
+remains available. See the [source-separated macaque comparison](benchmark_data/NISSL_MICROSAM_LM_RETRAINING.md)
+before choosing between them: the new model improves the full comparison
+field but the original does better on one of its crops. Raw proposals can be
+reviewed with the intensity wizard.
+
 ### Edit predictions and retrain a model
 
 1. In **Step 4**, open the ROI editor for a segmentation run and channel. Paint

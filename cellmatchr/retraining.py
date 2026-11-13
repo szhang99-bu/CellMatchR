@@ -122,6 +122,26 @@ def list_trained_models(project: str, backend: str | None = None,
     return found
 
 
+def registered_microsam_foreground_threshold(model_path: str,
+                                              project: str = "") -> float | None:
+    """Return a tested proposal setting only for its registered Micro-SAM model."""
+    if not model_path:
+        return None
+    selected = os.path.normcase(os.path.realpath(model_path))
+    for record in list_trained_models(project, "microsam"):
+        if os.path.normcase(os.path.realpath(record["model_path"])) != selected:
+            continue
+        suggestion = record.get("suggested_inference")
+        if not isinstance(suggestion, dict):
+            return None
+        try:
+            threshold = float(suggestion["foreground_threshold"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return threshold if 0.0 <= threshold <= 1.0 else None
+    return None
+
+
 def delete_managed_model(record_dir: str, project: str) -> None:
     """Remove one registered model folder after the UI's two confirmations."""
     folder = Path(record_dir)

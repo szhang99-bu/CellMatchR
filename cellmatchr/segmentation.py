@@ -44,6 +44,7 @@ def _free_memory():
 
 ROOT_INPUT_FOLDER = "/run/user/1000/gvfs/smb-share:server=rstore.it.tufts.edu,share=tusm_bygravelab01$/Confocal data archive/Matt/20260413 RO ENS Trim 2Male"
 MAIN_OUTPUT_FOLDER = "/run/user/1000/gvfs/smb-share:server=rstore.it.tufts.edu,share=tusm_bygravelab01$/Confocal data archive/Matt/Micro_SAM/ENS_Trim_BG_Deletion_2"
+PROJECT_OUTPUT_FOLDER = ""
 INPUT_TYPE = "czi"  # input routing metadata only; image processing is unchanged
 
 DRY_RUN = False
@@ -1975,6 +1976,13 @@ def main():
     generate_kwargs = {
         "min_size": MIN_OBJECT_SIZE,
     }
+    if SEG_BACKEND == "microsam" and CUSTOM_MODEL_PATH:
+        from .retraining import registered_microsam_foreground_threshold
+        tested_threshold = registered_microsam_foreground_threshold(
+            CUSTOM_MODEL_PATH, PROJECT_OUTPUT_FOLDER)
+        if tested_threshold is not None:
+            generate_kwargs["foreground_threshold"] = tested_threshold
+            print(f"Micro-SAM tested foreground threshold: {tested_threshold:g}")
 
     # Track run progress so the GUI can detect an unfinished run and offer to
     # continue it. Persisted to <output>/_run_progress.json after every image.
@@ -2149,7 +2157,7 @@ def main():
 def _apply_config(config_path: str) -> None:
     """Override module-level settings from a CellMatchr config file."""
     import json
-    global ROOT_INPUT_FOLDER, MAIN_OUTPUT_FOLDER, CHANNELS_TO_PREDICT
+    global ROOT_INPUT_FOLDER, MAIN_OUTPUT_FOLDER, CHANNELS_TO_PREDICT, PROJECT_OUTPUT_FOLDER
     global INPUT_TYPE, SLIDE_SIGNAL_TYPE
     global MODEL_TYPE, PREPROCESS_MODE
     global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX
@@ -2161,6 +2169,8 @@ def _apply_config(config_path: str) -> None:
 
     with open(config_path) as f:
         cfg = json.load(f)
+
+    PROJECT_OUTPUT_FOLDER = str(cfg.get("project_output_folder") or "")
 
     if cfg.get("input_type") in ("czi", "vsi"):
         INPUT_TYPE = cfg["input_type"]

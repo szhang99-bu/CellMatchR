@@ -1,0 +1,24 @@
+{
+  "model_name": "Nissl General v1",
+  "model_library_folder": "cellpose_ch0_nissl_general_v1_20261113_095825",
+  "checkpoint_name": "models/trained_model",
+  "checkpoint_sha256": "e152654196016dd8c0b0d02cf8b7f6e430dfc12b0685a1268fd45d07546514c4",
+  "starting_model": "cpsam",
+  "selected_epochs": 11,
+  "training_source_fields": 69,
+  "training_crops": 276,
+  "training_device": "NVIDIA GeForce RTX 3090 CUDA",
+  "losses": [
+    0.5026178843197194,
+    0.4203316293966146,
+    0.37446010802680835,
+    0.34469531397822745,
+    0.34042453641006354,
+    0.311732840485575,
+    0.29817268701223154,
+    0.3122434605835283,
+    0.3404815538453496,
+    0.3316093458783971,
+    0.2965962981758135
+  ]
+}

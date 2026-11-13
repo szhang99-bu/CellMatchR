@@ -68,6 +68,21 @@ SUBFOLDER = {
 }
 
 
+def _brightfield_preprocess_for_model(backend: str, variant: str,
+                                      model_path: str, project: str) -> str:
+    """Use a registered model's training input; invert built-in bright-signal models."""
+    if model_path:
+        from .retraining import PREPROCESS_MODES, list_trained_models
+        for record in list_trained_models(project, backend):
+            if os.path.normpath(record["model_path"]) == os.path.normpath(model_path):
+                recorded = str(record.get("preprocess") or "")
+                if recorded in PREPROCESS_MODES:
+                    return recorded
+    if backend == "cellpose" and variant == "rat_nissl_v2":
+        return "raw_percentile"
+    return "brightfield_invert"
+
+
 def _scanned_input_files(folder: str, extensions: tuple[str, ...],
                          skip_subdirs: bool = False) -> list[str]:
     """List the files segmentation scans: root and, optionally, one level down."""
@@ -420,7 +435,7 @@ class CellMatchrLauncher:
     def _build_vars(self) -> None:
         str_fields = [
             "project_name", "project_output_folder",
-            "input_type", "input_root_folder",
+            "input_type", "input_root_folder", "slide_signal_type",
             "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
             "seg_custom_model_path", "seg_cellpose_model_path", "seg_cellpose_variant",
             "seg_stardist_model_path",
@@ -432,6 +447,7 @@ class CellMatchrLauncher:
             "seg_min_object_size", "seg_max_object_size",
             "seg_tile_h", "seg_tile_w", "seg_halo_h", "seg_halo_w",
             "seg_qc_downsample", "seg_max_ratio", "seg_raw_mean_min",
+            "seg_raw_mean_max",
             "seg_cellpose_diameter", "seg_cellpose_flow_threshold",
             "seg_cellpose_cellprob_threshold",
         ]
@@ -1954,6 +1970,26 @@ class CellMatchrLauncher:
         # ── VSI section (shown when input_type == "vsi") ─────────────
         self._vsi_section = tk.Frame(parent, bg=BG)
 
+        signal_card = self._card(self._vsi_section, "Slide Scanner Signal")
+        tk.Label(signal_card,
+                 text="What kind of signal is on this slide?",
+                 bg=CARD, fg=FG, font=FONT_BOLD).pack(anchor="w", pady=(0, 5))
+        for value, label in [
+            ("fluorescence", "Laser fluorescence — bright labeled cells"),
+            ("brightfield", "Brightfield stain — dark cells, such as Nissl"),
+        ]:
+            tk.Radiobutton(
+                signal_card, text=label, variable=self._vars["slide_signal_type"],
+                value=value, command=self._on_slide_signal_choice,
+                bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD,
+                font=FONT,
+            ).pack(anchor="w", pady=2)
+        tk.Label(signal_card,
+                 text="Brightfield keeps the visible stain image unchanged. "
+                      "Model input and the Parameter Wizard adapt automatically.",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 9),
+                 wraplength=700, justify="left").pack(anchor="w", pady=(4, 0))
+
         vsi_card = self._card(self._vsi_section, "Slide Scanner Converter  (Olympus VSI · Leica LIF)")
         tk.Label(vsi_card,
                  text="Draw one ROI per region on the slide scan and export each as a "
@@ -2079,6 +2115,57 @@ class CellMatchrLauncher:
         except (tk.TclError, AttributeError):
             pass
 
+    def _on_slide_signal_choice(self) -> None:
+        """Apply a reversible starting profile when the user changes slide signal."""
+        choice = self._vars["slide_signal_type"].get()
+        previous = self.config.get("slide_signal_type", "fluorescence")
+        if choice == previous:
+            return
+        profile_keys = (
+            "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
+            "seg_custom_model_path", "seg_cellpose_model_path",
+            "seg_cellpose_variant", "seg_stardist_model_path",
+            "seg_min_object_size", "seg_max_object_size", "seg_max_ratio",
+            "seg_raw_mean_min", "seg_raw_mean_max",
+        )
+        if choice == "brightfield":
+            self.config["slide_fluorescence_settings"] = {
+                key: self._vars[key].get() for key in profile_keys
+            }
+            self.config["slide_fluorescence_settings"]["per_channel_enabled"] = bool(
+                self.config.get("seg_per_channel_filters_enabled", False))
+            self.config["slide_fluorescence_settings"]["per_channel_filters"] = str(
+                self.config.get("seg_per_channel_filters", "{}"))
+            self._vars["seg_channels"].set("0")
+            backend = self._vars["seg_backend"].get()
+            model_key = {"microsam": "seg_custom_model_path",
+                         "cellpose": "seg_cellpose_model_path",
+                         "stardist": "seg_stardist_model_path"}.get(backend, "")
+            model_path = self._vars[model_key].get().strip() if model_key else ""
+            mode = _brightfield_preprocess_for_model(
+                backend, self._vars["seg_cellpose_variant"].get(), model_path,
+                self.config.get("project_output_folder", ""))
+            self._vars["seg_preprocess_mode"].set(mode)
+            for key in ("seg_min_object_size", "seg_max_object_size",
+                        "seg_max_ratio", "seg_raw_mean_min", "seg_raw_mean_max"):
+                self._vars[key].set("0")
+            self.config["seg_per_channel_filters_enabled"] = False
+        else:
+            saved = self.config.get("slide_fluorescence_settings")
+            if isinstance(saved, dict):
+                for key in profile_keys:
+                    if key in saved:
+                        self._vars[key].set(saved[key])
+                self.config["seg_per_channel_filters_enabled"] = bool(
+                    saved.get("per_channel_enabled", False))
+                self.config["seg_per_channel_filters"] = str(
+                    saved.get("per_channel_filters", "{}"))
+            elif self._vars["seg_preprocess_mode"].get() == "brightfield_invert":
+                self._vars["seg_preprocess_mode"].set("local_bg_subtract")
+        self._sync_vars_to_config()
+        save_config(self.config)
+        save_project_config(self.config)
+
     def _confirm_input_folder(self) -> None:
         self._sync_vars_to_config()
         folder = self.config.get("input_root_folder", "").strip()
@@ -2095,6 +2182,8 @@ class CellMatchrLauncher:
     # ==================================================================
 
     def _build_segmentation_step(self, parent) -> None:
+        is_brightfield = (self._vars["input_type"].get() == "vsi"
+                          and self._vars["slide_signal_type"].get() == "brightfield")
         self._section_header(
             parent,
             "Step 3 — Segmentation",
@@ -2285,7 +2374,9 @@ class CellMatchrLauncher:
         tk.Entry(ch_entry_frame, textvariable=self._vars["seg_channels"],
                  bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=16).pack(side="left")
 
-        tk.Label(g, text="0-based IDs, comma-separated  (e.g.  0  or  0,2)",
+        tk.Label(g, text=("Brightfield RGB is combined into one cell signal: channel 0."
+                          if is_brightfield else
+                          "0-based IDs, comma-separated  (e.g.  0  or  0,2)"),
                  bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(0, 4))
 
@@ -2341,6 +2432,11 @@ class CellMatchrLauncher:
             if (self._vars["seg_backend"].get() == "cellpose"
                     and custom_path.get().strip()):
                 self._vars["seg_cellpose_variant"].set("cpsam")
+            if is_brightfield:
+                self._vars["seg_preprocess_mode"].set(_brightfield_preprocess_for_model(
+                    self._vars["seg_backend"].get(),
+                    self._vars["seg_cellpose_variant"].get(), custom_path.get().strip(),
+                    self.config.get("project_output_folder", "")))
             refresh_model_choices(self._vars["seg_backend"].get())
         custom_path.trace_add("write", _model_path_changed)
 
@@ -2373,6 +2469,10 @@ class CellMatchrLauncher:
             if self._vars["seg_backend"].get() == "cellpose":
                 self._vars["seg_cellpose_variant"].set(variant)
             custom_path.set(path)
+            if is_brightfield:
+                self._vars["seg_preprocess_mode"].set(_brightfield_preprocess_for_model(
+                    self._vars["seg_backend"].get(), variant, path,
+                    self.config.get("project_output_folder", "")))
         model_choice_box.bind("<<ComboboxSelected>>", choose_model)
 
         tk.Label(g, text="Preprocessing mode:", bg=CARD, fg=FG, font=FONT).grid(
@@ -2380,11 +2480,18 @@ class CellMatchrLauncher:
         _cb_prep = ttk.Combobox(
             g, textvariable=self._vars["seg_preprocess_mode"],
             values=["local_bg_subtract", "local_bg_subtract_mild",
-                    "raw_percentile", "tile_clahe_mild", "tile_clahe"],
+                    "raw_percentile", "tile_clahe_mild", "tile_clahe"]
+                   + (["brightfield_invert"] if is_brightfield else []),
             state="readonly", width=24,
         )
         _cb_prep.grid(row=3, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_prep)
+        if is_brightfield:
+            tk.Label(g, text=("Preprocessing changes model input only. Images and the "
+                              "Parameter Wizard retain the original stain brightness."),
+                     bg=CARD, fg=MUTED, font=("Segoe UI", 8),
+                     wraplength=650, justify="left").grid(
+                         row=4, column=0, columnspan=2, sticky="w", pady=(2, 5))
 
         # ── Cellpose parameters (shown only when that backend is chosen) ────
         self._cellpose_frame = tk.Frame(model_card, bg=CARD)
@@ -2443,6 +2550,11 @@ class CellMatchrLauncher:
             selected_key[0] = model_keys[bk]
             custom_path.set(self._vars[selected_key[0]].get())
             refresh_model_choices(bk)
+            if is_brightfield:
+                self._vars["seg_preprocess_mode"].set(_brightfield_preprocess_for_model(
+                    bk, self._vars["seg_cellpose_variant"].get(),
+                    custom_path.get().strip(),
+                    self.config.get("project_output_folder", "")))
         self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
         _on_seg_backend_changed()   # apply initial state
 
@@ -2486,7 +2598,9 @@ class CellMatchrLauncher:
             ("Min object size (pixels):",     "seg_min_object_size", "e.g. 1200"),
             ("Max object size (pixels):",     "seg_max_object_size", "e.g. 30000"),
             ("Max major / minor axis ratio:", "seg_max_ratio",       "e.g. 15"),
-            ("Min mean raw intensity:",       "seg_raw_mean_min",    "e.g. 5000"),
+            (("Max mean raw brightness:", "seg_raw_mean_max", "0 = off; darker cells kept")
+             if is_brightfield else
+             ("Min mean raw intensity:", "seg_raw_mean_min", "e.g. 5000")),
         ]
         self._global_filt_entries = []
         self._global_filt_labels  = []
@@ -2505,13 +2619,16 @@ class CellMatchrLauncher:
         self._per_ch_filt_enabled = tk.BooleanVar(
             value=bool(self.config.get("seg_per_channel_filters_enabled", False))
         )
-        tk.Checkbutton(
+        per_channel_check = tk.Checkbutton(
             filt_card,
             text="Set individual filter thresholds per channel",
             variable=self._per_ch_filt_enabled,
             command=self._toggle_per_ch_filters,
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
-        ).pack(anchor="w", pady=(12, 2))
+        )
+        per_channel_check.pack(anchor="w", pady=(12, 2))
+        if is_brightfield:
+            per_channel_check.config(state="disabled")
         self._per_ch_filt_frame = tk.Frame(filt_card, bg=CARD)
         self._per_ch_filter_vars: dict = {}
         # Rebuild rows whenever the channel list changes
@@ -3386,6 +3503,13 @@ class CellMatchrLauncher:
         if not channels:
             self._seg_status.config(text="⚠  Channels to predict is required (red ✱).", fg=RED)
             return
+        if (self.config.get("input_type") == "vsi"
+                and self.config.get("slide_signal_type") == "brightfield"
+                and channels != "0"):
+            self._seg_status.config(
+                text="Brightfield stain uses one combined signal. Set Channels to predict to 0.",
+                fg=RED)
+            return
 
         # A named model is trained from one channel. Keep multi-channel runs
         # possible, but make cross-channel reuse an explicit choice.
@@ -3597,9 +3721,9 @@ class CellMatchrLauncher:
             except tk.TclError:
                 pass
 
-        def _run_and_stream(cmd: list) -> int:
+        def _run_and_stream(cmd: list, environment: dict | None = None) -> int:
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                cmd, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
             self._track_proc(proc, "Parameter Wizard")
@@ -3613,10 +3737,9 @@ class CellMatchrLauncher:
                 self.root.after(0, _log_line, f"\n{'─'*60}")
                 self.root.after(0, _log_line, "▶  Parameter Wizard — Stage 1: unfiltered segmentation")
                 self.root.after(0, _log_line, f"{'─'*60}")
-                rc = _run_and_stream([
-                    sys.executable, self._script("parameter_wizard_compute.py"),
-                    "--config", CONFIG_PATH, "--out-dir", out_dir,
-                ])
+                command, environment = segmentation_command(
+                    self._script("parameter_wizard_compute.py"), CONFIG_PATH, self.config)
+                rc = _run_and_stream(command + ["--out-dir", out_dir], environment)
                 if rc != 0:
                     self.root.after(0, _log_line, f"\n✗  Stage 1 failed (exit {rc}).")
                     self.root.after(0, _restore, f"✗  Segmentation failed (exit {rc}).", RED)
@@ -3635,8 +3758,17 @@ class CellMatchrLauncher:
                 def _done():
                     if rc == 0:
                         self.config = load_config()
-                        self._per_ch_filt_enabled.set(True)
-                        self._toggle_per_ch_filters()
+                        if (self.config.get("input_type") == "vsi"
+                                and self.config.get("slide_signal_type") == "brightfield"):
+                            self._per_ch_filt_enabled.set(False)
+                            for key in ("seg_min_object_size", "seg_max_object_size",
+                                        "seg_max_ratio", "seg_raw_mean_min",
+                                        "seg_raw_mean_max"):
+                                self._vars[key].set(str(self.config[key]))
+                            self._toggle_per_ch_filters()
+                        else:
+                            self._per_ch_filt_enabled.set(True)
+                            self._toggle_per_ch_filters()
                         _restore("✔  Filter values updated below.", GREEN)
                         _log_line("\n✔  Parameter Wizard finished — filter values updated.")
                     else:
@@ -4950,7 +5082,8 @@ class CellMatchrLauncher:
         row(4, "Preprocessing:", ttk.Combobox(
             grid, textvariable=preprocess_var,
             values=("local_bg_subtract", "local_bg_subtract_mild",
-                    "raw_percentile", "tile_clahe_mild", "tile_clahe"),
+                    "raw_percentile", "tile_clahe_mild", "tile_clahe",
+                    "brightfield_invert"),
             state="readonly"))
         starting_choice = tk.StringVar()
         starting_options = {}
@@ -5012,6 +5145,37 @@ class CellMatchrLauncher:
         advanced_vars = {key: tk.StringVar(value="") for key in
                          ("learning_rate", "batch_size", "patch_size",
                           "validation_percent")}
+        sampling_focus_var = tk.StringVar(value="none")
+        from .retraining import TRAINING_PRESETS
+        preset_var = tk.StringVar(value="Default training")
+        preset_card = tk.Frame(card, bg=CARD)
+        tk.Label(preset_card, text="Training preset", bg=CARD, fg=FG,
+                 font=FONT_BOLD).pack(anchor="w", pady=(0, 3))
+        for preset_name, recipe in TRAINING_PRESETS.items():
+            choice = tk.Frame(preset_card, bg=CARD)
+            choice.pack(fill="x", pady=2)
+            tk.Radiobutton(choice, text=preset_name, variable=preset_var,
+                           value=preset_name, command=lambda: apply_preset(),
+                           bg=CARD, fg=FG, selectcolor=BG,
+                           activebackground=CARD, font=FONT).pack(anchor="w")
+            tk.Label(choice, text=recipe["description"], bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 8), wraplength=730,
+                     justify="left").pack(anchor="w", padx=(22, 0))
+        preset_card.pack(fill="x", pady=(12, 3))
+
+        def apply_preset(*_):
+            recipe = TRAINING_PRESETS[preset_var.get()]
+            epochs_var.set(str(recipe["epochs"]))
+            rate = recipe["learning_rate"]
+            if backend_var.get() == "stardist":
+                rate = 1e-4 if preset_var.get() == "Gentle follow-up" else ""
+            advanced_vars["learning_rate"].set(str(rate) if rate != "" else "")
+            advanced_vars["validation_percent"].set(
+                str(recipe["validation_percent"]))
+            sampling_focus_var.set(recipe["sampling_focus"])
+
+        backend_var.trace_add("write", apply_preset)
+        apply_preset()
         advanced_labels = (
             ("Learning rate:", "learning_rate", "default: Cellpose/Micro-SAM 1e-5; StarDist model default"),
             ("Batch size:", "batch_size", "blank = model default"),
@@ -5030,6 +5194,17 @@ class CellMatchrLauncher:
                      insertbackground=FG, relief="flat", width=14).pack(side="left")
             tk.Label(field, text=hint, bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8)).pack(side="left", padx=8)
+        focus_row = tk.Frame(advanced_card, bg=CARD)
+        focus_row.pack(fill="x", pady=(5, 0))
+        tk.Label(focus_row, text="Training sample focus:", bg=CARD, fg=FG,
+                 font=FONT, width=22, anchor="w").pack(side="left")
+        ttk.Combobox(focus_row, textvariable=sampling_focus_var,
+                     values=("none", "missed_cells", "rejected_cells"),
+                     state="readonly", width=18).pack(side="left", padx=8)
+        tk.Label(advanced_card,
+                 text="Focus repeats only matching training samples; validation samples remain separate.",
+                 bg=CARD, fg=MUTED, font=("Segoe UI", 8),
+                 wraplength=720, justify="left").pack(anchor="w", padx=(22, 0))
         manual_path_var = tk.StringVar(value="")
         updating_starting = [False]
         manual_row = tk.Frame(advanced_card, bg=CARD)
@@ -5246,7 +5421,7 @@ class CellMatchrLauncher:
         def refresh_starting_models(*_args, prefer_path=None):
             from .retraining import list_trained_models
             backend = backend_var.get()
-            builtins = ({"microsam": ("vit_b_lm", "vit_l_lm", "vit_h_lm",
+            builtins = ({"microsam": ("vit_b_lm", "vit_b_histopathology", "vit_l_lm", "vit_h_lm",
                                      "vit_b", "vit_l", "vit_h"),
                          "cellpose": ("cpsam",),
                          "stardist": ("2D_versatile_fluo",)})[backend]
@@ -5397,6 +5572,7 @@ class CellMatchrLauncher:
                     advanced["loss"] = loss_var.get()
                 if backend == "microsam" and not freeze_var.get():
                     advanced["freeze_encoder"] = False
+                advanced["sampling_focus"] = sampling_focus_var.get()
                 advanced = validate_advanced(backend, advanced)
             except ValueError as exc:
                 status.config(text=f"Check training settings: {exc}", fg=RED)

@@ -26,7 +26,35 @@ from .validation_state import get_change_state, get_validation_tsv_path
 
 BACKENDS = ("microsam", "cellpose", "stardist")
 PREPROCESS_MODES = ("local_bg_subtract", "local_bg_subtract_mild",
-                    "raw_percentile", "tile_clahe_mild", "tile_clahe")
+                    "raw_percentile", "tile_clahe_mild", "tile_clahe",
+                    "brightfield_invert")
+TRAINING_PRESETS = {
+    "High recall": {
+        "description": "Repeat samples with human-added missed cells. Compare permissive prediction settings on held-out images before use.",
+        "epochs": 20, "learning_rate": 1e-5, "validation_percent": 25,
+        "sampling_focus": "missed_cells",
+    },
+    "Default training": {
+        "description": "Use every reviewed sample once with the standard learning rate and a separate validation set.",
+        "epochs": 20, "learning_rate": 1e-5, "validation_percent": 20,
+        "sampling_focus": "none",
+    },
+    "High precision": {
+        "description": "Repeat samples with rejected false predictions. Check held-out recall so real cells are still found.",
+        "epochs": 20, "learning_rate": 1e-5, "validation_percent": 25,
+        "sampling_focus": "rejected_cells",
+    },
+    "Gentle follow-up": {
+        "description": "Continue training a saved model with a smaller learning rate and fewer epochs to limit large changes.",
+        "epochs": 8, "learning_rate": 3e-6, "validation_percent": 20,
+        "sampling_focus": "none",
+    },
+    "Short trial": {
+        "description": "Run five epochs to check data and training behavior before committing to a longer run.",
+        "epochs": 5, "learning_rate": 1e-5, "validation_percent": 20,
+        "sampling_focus": "none",
+    },
+}
 
 
 def model_library_root() -> Path:
@@ -100,7 +128,7 @@ def validate_advanced(backend: str, advanced: dict | None) -> dict:
     """Validate optional overrides before creating a model output folder."""
     settings = dict(advanced or {})
     allowed = {"learning_rate", "batch_size", "patch_size", "validation_percent",
-               "loss", "freeze_encoder"}
+               "loss", "freeze_encoder", "sampling_focus"}
     unknown = settings.keys() - allowed
     if unknown:
         raise ValueError(f"Unknown advanced training setting: {', '.join(sorted(unknown))}")
@@ -129,6 +157,9 @@ def validate_advanced(backend: str, advanced: dict | None) -> dict:
     if "freeze_encoder" in settings:
         if backend != "microsam" or not isinstance(settings["freeze_encoder"], bool):
             raise ValueError("Freeze image encoder is only available for Micro-SAM")
+    if "sampling_focus" in settings and settings["sampling_focus"] not in (
+            "none", "missed_cells", "rejected_cells"):
+        raise ValueError("Sampling focus must be none, missed cells, or rejected cells")
     return settings
 
 
@@ -205,8 +236,37 @@ def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[st
             continue
         examples.append({"sample": sample.name, "raw": raw, "mask": mask,
                          "accepted_ids": sorted(accepted),
-                         "rejected_count": len(present - accepted)})
+                         "rejected_count": len(present - accepted),
+                         "manual_added_count": _accepted_manual_additions(
+                             sample, channel, accepted)})
     return examples, skipped
+
+
+def _accepted_manual_additions(sample: Path, channel: int,
+                               accepted: set[int]) -> int:
+    """Count reviewed YES cells that the editor recorded as manual additions."""
+    path = sample / f"_manual_additions_ch{channel}.tsv"
+    if not path.is_file():
+        return 0
+    try:
+        with path.open(newline="", encoding="utf-8") as source:
+            return len({int(row["label_id"]) for row in csv.DictReader(
+                source, delimiter="\t") if int(row["label_id"]) in accepted})
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
+def _focus_training_pairs(pairs: list[tuple[str, str]], examples: list[dict],
+                          focus: str) -> list[tuple[str, str]]:
+    """Repeat difficult training samples only; validation samples stay untouched."""
+    if focus == "none":
+        return pairs
+    count_key = ("manual_added_count" if focus == "missed_cells"
+                 else "rejected_count")
+    weighted = []
+    for pair, example in zip(pairs, examples):
+        weighted.extend([pair] * (2 if example.get(count_key, 0) > 0 else 1))
+    return weighted
 
 
 def _prepare_pair(example: dict, destination: Path, index: int,
@@ -269,7 +329,7 @@ def _train_microsam(train_pairs, val_pairs, output: Path, epochs: int,
             batch_size=settings.get("batch_size", 1), num_workers=0,
             n_samples=max(4, 4 * len(pairs)),
             is_train=is_train, min_size=5,
-            sampler=MinInstanceSampler(1, min_size=5, exclude_ids=[0]),
+            sampler=MinInstanceSampler(2, min_size=5),
             max_sampling_attempts=1000,
         )
 
@@ -403,7 +463,10 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         n_val = max(1, len(pairs) // 5) if "validation_percent" not in advanced else max(
             1, round(len(pairs) * advanced["validation_percent"] / 100))
         train_pairs, val_pairs = pairs[:-n_val], pairs[-n_val:]
-        print(f"Training {backend}: {len(train_pairs)} samples; "
+        focus = advanced.get("sampling_focus", "none")
+        train_pairs = _focus_training_pairs(train_pairs, examples[:-n_val], focus)
+        print(f"Training {backend}: {len(examples) - n_val} training samples "
+              f"({len(train_pairs)} presentations; focus={focus}); "
               f"validation: {len(val_pairs)}; channel {channel}", flush=True)
         path = TRAINERS[backend](train_pairs, val_pairs, output, epochs, base_model, advanced)
         result = {"backend": backend, "model_path": path, "channel": channel,
@@ -444,9 +507,11 @@ def main() -> None:
     parser.add_argument("--validation-percent", type=int)
     parser.add_argument("--loss", choices=("mae", "mse"))
     parser.add_argument("--freeze-encoder", choices=("yes", "no"))
+    parser.add_argument("--sampling-focus", choices=("none", "missed_cells", "rejected_cells"))
     args = parser.parse_args()
     advanced = {key: getattr(args, key) for key in
-                ("learning_rate", "batch_size", "patch_size", "validation_percent", "loss")
+                ("learning_rate", "batch_size", "patch_size", "validation_percent",
+                 "loss", "sampling_focus")
                 if getattr(args, key) is not None}
     if args.freeze_encoder is not None:
         advanced["freeze_encoder"] = args.freeze_encoder == "yes"

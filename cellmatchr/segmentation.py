@@ -80,6 +80,7 @@ CUSTOM_MODEL_PATH = ""
 CELLPOSE_MODEL_PATH = ""
 CELLPOSE_VARIANT = "cpsam"
 STARDIST_MODEL_PATH = ""
+SLIDE_SIGNAL_TYPE = "fluorescence"
 
 # Cellpose-SAM parameters (only used when SEG_BACKEND == "cellpose").
 CELLPOSE_DIAMETER          = 0.0   # cell diameter in px; 0 = let Cellpose estimate
@@ -94,6 +95,7 @@ MODEL_TYPE = "vit_b_lm"
 
 # Options:
 # "raw_percentile"
+# "brightfield_invert" (native stain remains visible; only the model input is inverted)
 # "local_bg_subtract"
 # "local_bg_subtract_mild"
 # "tile_clahe_mild"
@@ -109,6 +111,7 @@ MAX_MAJOR_MINOR_RATIO = 15.0
 
 # Mean intensity filter only
 RAW_MEAN_MIN = 5000
+RAW_MEAN_MAX = 0
 
 # Per-channel filter overrides (populated from config)
 PER_CHANNEL_FILTERS_ENABLED = False
@@ -184,12 +187,14 @@ def apply_tile_clahe_uint8(tile_uint8, clip_limit=1.5, grid_size=(8, 8)):
 
 
 def preprocess_tile_for_sam(tile_data, mode="raw_percentile"):
-    if mode == "raw_percentile":
+    if mode in ("raw_percentile", "brightfield_invert"):
         tile_uint8 = robust_percentile_normalize_to_uint8(
             tile_data,
             p_low=0.5,
             p_high=99.8
         )
+        if mode == "brightfield_invert":
+            tile_uint8 = 255 - tile_uint8
 
     elif mode == "local_bg_subtract":
         img = tile_data.astype(np.float32)
@@ -373,10 +378,10 @@ def filter_labeled_tile_by_raw_mean_and_shape(labeled_tile, raw_tile):
     """
     Post-filter SAM masks using:
     - area
-    - raw mean intensity
+    - minimum or maximum raw mean intensity
     - shape
 
-    No max-intensity filter.
+    Both intensity limits default to zero (disabled).
     """
     if labeled_tile.max() == 0:
         return labeled_tile.astype(np.uint32)
@@ -413,6 +418,9 @@ def filter_labeled_tile_by_raw_mean_and_shape(labeled_tile, raw_tile):
             continue
 
         if RAW_MEAN_MIN > 0 and mean_intensity < RAW_MEAN_MIN:
+            continue
+
+        if RAW_MEAN_MAX > 0 and mean_intensity > RAW_MEAN_MAX:
             continue
 
         if MAX_MAJOR_MINOR_RATIO > 0 and ratio > MAX_MAJOR_MINOR_RATIO:
@@ -763,7 +771,10 @@ def segment_by_tiling(
     # Empty-tile skipping is an optimisation for large, mostly-blank slide
     # scans. For a single-tile image (e.g. a 1024×1024 63× confocal field)
     # skipping the only tile would mean no prediction at all — so disable it.
-    do_skip_empty = SKIP_EMPTY_TILES and len(coords) > 1
+    # Brightfield background is bright, so a fluorescence-style bright-pixel
+    # check cannot identify empty tiles. Process every tile to avoid misses.
+    do_skip_empty = (SKIP_EMPTY_TILES and len(coords) > 1
+                     and SLIDE_SIGNAL_TYPE != "brightfield")
 
     # The default signal thresholds assume 16-bit data. Scale them to the
     # image's actual intensity range so 8-bit (max 255) confocal tiles are not
@@ -1332,7 +1343,37 @@ def _plan_work_items(input_files, input_root, return_collisions=False):
     return planned
 
 
-def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None):
+def _brightfield_gray(data: np.ndarray, axes_meta: str = "") -> np.ndarray:
+    """Return native-brightness grayscale from a slide-scanner RGB or gray TIFF."""
+    if data.ndim == 2:
+        return data
+    if data.ndim != 3:
+        raise ValueError("Brightfield slide-scanner input must be a 2D grayscale or RGB TIFF")
+    axes = axes_meta.upper()
+    if "C" in axes and data.shape[axes.index("C")] in (1, 3, 4):
+        channel_axis = axes.index("C")
+    elif "S" in axes and data.shape[axes.index("S")] in (1, 3, 4):
+        channel_axis = axes.index("S")
+    elif data.shape[0] in (1, 3, 4):
+        channel_axis = 0
+    elif data.shape[-1] in (1, 3, 4):
+        channel_axis = 2
+    else:
+        raise ValueError("Brightfield slide-scanner input needs one gray or three RGB channels")
+    channels = np.moveaxis(data, channel_axis, -1)
+    if channels.shape[-1] == 1:
+        return channels[..., 0]
+    # Limit temporary memory for full-resolution ROI exports. The original
+    # color TIFF is retained; only this single-channel working copy is gray.
+    gray = np.empty(channels.shape[:2], dtype=data.dtype)
+    for row in range(0, gray.shape[0], 1024):
+        rgb = np.ascontiguousarray(channels[row:row + 1024, :, :3])
+        gray[row:row + 1024] = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    return gray
+
+
+def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None,
+                         brightfield=False):
     """
     Split a multi-channel (and optionally multi-Z) microscopy file into
     one 2D TIFF per channel.  Z-stacks are collapsed via max intensity
@@ -1441,6 +1482,14 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None)
             axes_meta = (tif.series[0].axes if tif.series else "").upper()
 
         print(f"    TIFF shape: {data.shape}, axes metadata: '{axes_meta or 'none'}'")
+
+        if brightfield:
+            native_gray = _brightfield_gray(data, axes_meta)
+            print("    Brightfield: combining native RGB into one visible gray channel; "
+                  "model inversion happens only during prediction")
+            _save_split_tiff(native_gray.astype(np.uint16), 0,
+                             output_subfolder, base_name, split_tiff_paths)
+            return split_tiff_paths
 
         if data.ndim == 2:
             # (Y, X) — single channel, no Z
@@ -1661,6 +1710,8 @@ def _run_identity() -> dict:
         "preprocess": PREPROCESS_MODE,
         "channels": list(CHANNELS_TO_PREDICT),
     }
+    if SLIDE_SIGNAL_TYPE == "brightfield":
+        identity["slide_signal_type"] = "brightfield"
     chosen = {"microsam": CUSTOM_MODEL_PATH,
               "cellpose": CELLPOSE_MODEL_PATH,
               "stardist": STARDIST_MODEL_PATH}[SEG_BACKEND]
@@ -1823,7 +1874,7 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None,
 # =============================================================================
 
 def main():
-    global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN
+    global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX
     is_dry_run = DRY_RUN and not TEST_RUN
 
     if not is_dry_run:
@@ -1966,6 +2017,7 @@ def main():
                 output_subfolder,
                 base_name,
                 lif_scene=lif_scene,
+                brightfield=(INPUT_TYPE == "vsi" and SLIDE_SIGNAL_TYPE == "brightfield"),
             )
 
             if is_dry_run:
@@ -1982,16 +2034,18 @@ def main():
 
                 # Apply per-channel filter overrides if configured
                 _saved_filters = (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
-                                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN)
+                                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX)
                 if PER_CHANNEL_FILTERS_ENABLED and ch_to_predict in PER_CHANNEL_FILTERS:
                     pcf = PER_CHANNEL_FILTERS[ch_to_predict]
                     MIN_OBJECT_SIZE      = int(pcf.get("min_size",     MIN_OBJECT_SIZE))
                     MAX_OBJECT_SIZE      = int(pcf.get("max_size",     MAX_OBJECT_SIZE))
                     MAX_MAJOR_MINOR_RATIO = float(pcf.get("max_ratio", MAX_MAJOR_MINOR_RATIO))
                     RAW_MEAN_MIN         = float(pcf.get("min_intensity", RAW_MEAN_MIN))
+                    RAW_MEAN_MAX         = float(pcf.get("max_intensity", RAW_MEAN_MAX))
                     print(f"  Per-channel filters ch{ch_to_predict}: "
                           f"min={MIN_OBJECT_SIZE}, max={MAX_OBJECT_SIZE}, "
-                          f"ratio={MAX_MAJOR_MINOR_RATIO}, intensity={RAW_MEAN_MIN}")
+                          f"ratio={MAX_MAJOR_MINOR_RATIO}, "
+                          f"intensity={RAW_MEAN_MIN}–{RAW_MEAN_MAX or 'unlimited'}")
 
                 print(f"\n  - Predicting on Channel {ch_to_predict}...")
 
@@ -2065,7 +2119,7 @@ def main():
 
                 # Restore global filter values for the next channel
                 (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
-                 MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN) = _saved_filters
+                 MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX) = _saved_filters
 
         except Exception as e:
             print(f"  [ERROR] Failed: {e}")
@@ -2096,9 +2150,9 @@ def _apply_config(config_path: str) -> None:
     """Override module-level settings from a CellMatchr config file."""
     import json
     global ROOT_INPUT_FOLDER, MAIN_OUTPUT_FOLDER, CHANNELS_TO_PREDICT
-    global INPUT_TYPE
+    global INPUT_TYPE, SLIDE_SIGNAL_TYPE
     global MODEL_TYPE, PREPROCESS_MODE
-    global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN
+    global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX
     global TILE_SHAPE_2D, HALO_2D, FINAL_QC_DOWNSAMPLE
     global DRY_RUN, TEST_RUN, SKIP_SUBDIRS
     global PER_CHANNEL_FILTERS_ENABLED, PER_CHANNEL_FILTERS
@@ -2110,6 +2164,9 @@ def _apply_config(config_path: str) -> None:
 
     if cfg.get("input_type") in ("czi", "vsi"):
         INPUT_TYPE = cfg["input_type"]
+    SLIDE_SIGNAL_TYPE = (
+        "brightfield" if INPUT_TYPE == "vsi"
+        and cfg.get("slide_signal_type") == "brightfield" else "fluorescence")
 
     if cfg.get("input_root_folder"):
         ROOT_INPUT_FOLDER = cfg["input_root_folder"]
@@ -2157,6 +2214,7 @@ def _apply_config(config_path: str) -> None:
     for src, dst in [
         ("seg_max_ratio",    "MAX_MAJOR_MINOR_RATIO"),
         ("seg_raw_mean_min", "RAW_MEAN_MIN"),
+        ("seg_raw_mean_max", "RAW_MEAN_MAX"),
     ]:
         if cfg.get(src) is not None:
             globals()[dst] = float(cfg[src])

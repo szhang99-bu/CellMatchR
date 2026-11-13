@@ -2,7 +2,7 @@
 
 <img src="CellMatchr_Logo.png" width="320" alt="CellMatchR Logo"/>
 
-Neuronal confocal image segmentation, manual validation, and colocalization analysis pipeline.
+Confocal and slide-scanner cell segmentation, manual validation, and colocalization analysis pipeline.
 
 Reads images directly from most major microscope brands, plus **Olympus `.vsi`**
 slide-scanner files via the built-in VSI Converter.
@@ -23,11 +23,15 @@ and published rat Nissl model choices), or the optional
 | `.vsi` | Olympus slide scanner | ✅ tested (via VSI Converter) |
 | `.oir` | Olympus FV3000 | ❌ not supported — convert to `.tif` in [Fiji/ImageJ](https://imagej.net/software/fiji/) first |
 
-**Brightfield Nissl slides:** the input format may be readable, but a native
-Nissl workflow is still under evaluation. The current fluorescence defaults can
-remove all candidates from an 8-bit stain image; RGB TIFFs are split into color
-channels. See the [public-image model comparison](NISSL_MODEL_EVALUATION.md)
-before using these scans for analysis. Existing fluorescence settings are unchanged.
+**Brightfield Nissl slides:** In Step 2 choose **Slide scanner → Brightfield
+stain**. Export a scan region as an RGB or grayscale TIFF. Step 3 combines RGB
+into one native-brightness channel 0 and chooses model-specific preparation;
+generic bright-signal models receive an inverted input internally. The original
+stain remains visible in the Parameter Wizard. Its brightness pick keeps dark
+cells by setting a *maximum* mean raw brightness; leave that filter at 0 to
+keep all model proposals. Review masks against human annotations before relying
+on counts. See the [public-image model comparison](NISSL_MODEL_EVALUATION.md).
+Existing fluorescence projects keep their previous defaults.
 
 > Leica writes both confocal and slide-scanner data as `.lif`. CellMatchR detects
 > the difference automatically: each confocal acquisition becomes its own sample,
@@ -76,6 +80,7 @@ Large stitched slide scans may need substantial memory during ROI conversion.
 │    • Direct read → CZI / LIF / ND2 / OIB-OIF / TIF              │
 │    • Slide scanner → Olympus VSI or Leica LIF: draw ROIs in     │
 │                    the converter, export full-res TIFFs         │
+│    • Choose fluorescence or brightfield stain for slide scans   │
 ├─────────────────────────────────────────────────────────────────┤
 │  Step 3  — Segmentation                                         │
 │    • Tiled Micro-SAM, Cellpose-SAM, or StarDist 2D              │
@@ -294,7 +299,8 @@ paired Nissl images and expert-reviewed masks for inspection.
    then select one available channel from the dropdown. A training run makes
    one model for one channel; repeat with another channel if needed. Choose
    Cellpose, Micro-SAM, or StarDist, enter a name for the new model, and use
-   **Check Training Data** to see how many samples are ready. Set the epochs
+   **Check Training Data** to see how many samples are ready. Choose a visible
+   training preset, then adjust the epochs
    and, if needed, the **starting model to fine-tune** from its dropdown.
    It lists built-in models and previous trained models by name. This starting
    model supplies initial weights; it is not the save location and is not replaced.
@@ -304,12 +310,20 @@ paired Nissl images and expert-reviewed masks for inspection.
    A completed model appears immediately in the starting-model dropdown, so
    another training run can continue fine-tuning it without locating its file.
    Temporary training images are removed when training ends.
+   **High recall** repeats training samples containing manually added YES cells;
+   **High precision** repeats samples with rejected predictions. **Default
+   training** uses each sample once. **Gentle follow-up** uses a smaller
+   learning rate and eight epochs for continuing a saved model. **Short trial**
+   uses five epochs to check the workflow. All presets hold out whole samples
+   for validation. A preset sets a training recipe; it does not guarantee a
+   particular recall or precision on new images.
 4. **Show advanced settings** exposes optional overrides for learning rate,
    batch size, and the percentage of samples held out for validation. Patch
    size is available for Micro-SAM and StarDist; Cellpose-SAM requires a fixed
    256-pixel patch. Leave a field blank to keep its backend default. StarDist also
    offers MAE or MSE distance loss; Micro-SAM can unfreeze its image encoder.
-   Cellpose and Micro-SAM retain their built-in loss functions. **Other starting
+   Sample focus can also be set directly to none, missed cells, or rejected
+   cells. Cellpose and Micro-SAM retain their built-in loss functions. **Other starting
    model** in this section allows a model file or StarDist folder outside the
    model list.
    **Model Manager** in Advanced settings lists the saved date, backend,
@@ -335,7 +349,10 @@ record (`_manual_deletions_chN.tsv`) is extra information for the user and is
 ignored by older versions. Older versions cannot run the new StarDist backend
 or retraining menu. They also ignore the new Cellpose model choice and would
 use Cellpose-SAM for a new run; use this version to reproduce a Cellpose 2 or
-rat Nissl run. Existing segmentation masks remain in their separate folders.
+rat Nissl run. Older versions can read the masks from a brightfield project but
+cannot reproduce its new brightfield preprocessing or brightness filter, so
+run new brightfield segmentation with this version. Existing segmentation masks
+remain in their separate folders.
 
 ### Optional StarDist backend
 

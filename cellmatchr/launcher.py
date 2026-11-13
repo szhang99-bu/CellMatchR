@@ -83,6 +83,18 @@ def _brightfield_preprocess_for_model(backend: str, variant: str,
     return "brightfield_invert"
 
 
+def _registered_cellpose_inference(model_path: str, project: str) -> dict:
+    """Return tested prediction settings attached to a saved Cellpose model."""
+    if not model_path:
+        return {}
+    from .retraining import list_trained_models
+    for record in list_trained_models(project, "cellpose"):
+        if os.path.normpath(record["model_path"]) == os.path.normpath(model_path):
+            settings = record.get("suggested_inference")
+            return settings if isinstance(settings, dict) else {}
+    return {}
+
+
 def _scanned_input_files(folder: str, extensions: tuple[str, ...],
                          skip_subdirs: bool = False) -> list[str]:
     """List the files segmentation scans: root and, optionally, one level down."""
@@ -2469,6 +2481,15 @@ class CellMatchrLauncher:
             if self._vars["seg_backend"].get() == "cellpose":
                 self._vars["seg_cellpose_variant"].set(variant)
             custom_path.set(path)
+            if self._vars["seg_backend"].get() == "cellpose":
+                suggested = _registered_cellpose_inference(
+                    path, self.config.get("project_output_folder", ""))
+                self._vars["seg_cellpose_cellprob_threshold"].set("0.0")
+                self._vars["seg_cellpose_flow_threshold"].set("0.4")
+                for setting, key in (("cellprob_threshold", "seg_cellpose_cellprob_threshold"),
+                                     ("flow_threshold", "seg_cellpose_flow_threshold")):
+                    if setting in suggested:
+                        self._vars[key].set(str(suggested[setting]))
             if is_brightfield:
                 self._vars["seg_preprocess_mode"].set(_brightfield_preprocess_for_model(
                     self._vars["seg_backend"].get(), variant, path,
@@ -2533,7 +2554,8 @@ class CellMatchrLauncher:
         tk.Label(self._cellpose_frame,
                  text="Cellpose-SAM is the current default. Cellpose 2 and Rat Nissl v2 use a separate "
                       "legacy runtime prepared automatically on first use; the rat model was trained on "
-                      "juvenile rat cresyl-violet images. Preprocessing and object filters still apply.",
+                      "juvenile rat cresyl-violet images. Preprocessing and object filters still apply. "
+                      "Selecting a saved model applies its recorded tested thresholds when available.",
                  bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=700, justify="left").pack(anchor="w", pady=(6, 0))
 
         def _on_seg_backend_changed(*_):
@@ -5168,7 +5190,7 @@ class CellMatchrLauncher:
             epochs_var.set(str(recipe["epochs"]))
             rate = recipe["learning_rate"]
             if backend_var.get() == "stardist":
-                rate = 1e-4 if preset_var.get() == "Gentle follow-up" else ""
+                rate = 1e-4 if preset_var.get().endswith("follow-up") else ""
             advanced_vars["learning_rate"].set(str(rate) if rate != "" else "")
             advanced_vars["validation_percent"].set(
                 str(recipe["validation_percent"]))

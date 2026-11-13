@@ -12,8 +12,10 @@ import tifffile
 
 from cellmatchr import segmentation as seg
 from cellmatchr.config import load_project_config
-from cellmatchr.launcher import _brightfield_preprocess_for_model
-from cellmatchr.parameter_wizard import _apply_margin, _original_color_view
+from cellmatchr.launcher import (_brightfield_preprocess_for_model,
+                                 _registered_cellpose_inference)
+from cellmatchr.parameter_wizard import (ParameterWizardApp, _apply_margin,
+                                         _original_color_view)
 from cellmatchr.retraining import (TRAINING_PRESETS, _focus_training_pairs,
                                    _accepted_manual_additions, validate_advanced)
 
@@ -70,14 +72,36 @@ class BrightfieldCompatibilityTests(unittest.TestCase):
 
     def test_known_nissl_model_retains_its_training_preprocess(self):
         model_path = "/tmp/example-nissl-model"
-        record = {"model_path": model_path, "preprocess": "raw_percentile"}
+        record = {"model_path": model_path, "preprocess": "raw_percentile",
+                  "suggested_inference": {"cellprob_threshold": -2.0,
+                                          "flow_threshold": 1.0}}
         with patch("cellmatchr.retraining.list_trained_models", return_value=[record]):
             self.assertEqual(_brightfield_preprocess_for_model(
                 "cellpose", "cpsam", model_path, "/tmp/example"), "raw_percentile")
+            self.assertEqual(_registered_cellpose_inference(
+                model_path, "/tmp/example"), record["suggested_inference"])
         self.assertEqual(_brightfield_preprocess_for_model(
             "cellpose", "cpsam", "", ""), "brightfield_invert")
         self.assertEqual(_brightfield_preprocess_for_model(
             "cellpose", "rat_nissl_v2", "", ""), "raw_percentile")
+
+    def test_brightfield_wizard_writes_visible_global_brightness_filter(self):
+        wizard = object.__new__(ParameterWizardApp)
+        wizard.cfg = {"seg_per_channel_filters": "{}"}
+        wizard.brightfield = True
+        wizard.channels = [0]
+        wizard.pick_order = ["min_size", "max_size", "max_ratio", "max_intensity"]
+        wizard.results = {0: {"min_size": 40, "max_size": None,
+                              "max_ratio": None, "max_intensity": 100}}
+        wizard._finished = False
+        wizard.viewer = None
+        with patch("cellmatchr.parameter_wizard.save_config"), \
+             patch("cellmatchr.parameter_wizard.save_project_config"):
+            wizard._finish()
+        self.assertFalse(wizard.cfg["seg_per_channel_filters_enabled"])
+        self.assertGreater(wizard.cfg["seg_raw_mean_max"], 100)
+        self.assertEqual(wizard.cfg["seg_raw_mean_min"], 0)
+        self.assertEqual(wizard.cfg["seg_per_channel_filters"], "{}")
 
 
 class TrainingPresetTests(unittest.TestCase):
@@ -90,6 +114,13 @@ class TrainingPresetTests(unittest.TestCase):
                         TRAINING_PRESETS["Default training"]["learning_rate"])
         self.assertLess(TRAINING_PRESETS["Short trial"]["epochs"],
                         TRAINING_PRESETS["Default training"]["epochs"])
+        for name, focus in (("Recall follow-up", "missed_cells"),
+                            ("Precision follow-up", "rejected_cells")):
+            self.assertEqual(TRAINING_PRESETS[name]["sampling_focus"], focus)
+            self.assertEqual(TRAINING_PRESETS[name]["epochs"],
+                             TRAINING_PRESETS["Gentle follow-up"]["epochs"])
+            self.assertEqual(TRAINING_PRESETS[name]["learning_rate"],
+                             TRAINING_PRESETS["Gentle follow-up"]["learning_rate"])
 
     def test_focus_repeats_only_matching_training_pairs(self):
         pairs = [("a", "A"), ("b", "B"), ("c", "C")]

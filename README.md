@@ -306,7 +306,11 @@ paired Nissl images and expert-reviewed masks for inspection.
    and, if needed, the **starting model to fine-tune** from its dropdown.
    It lists built-in models and previous trained models by name. This starting
    model supplies initial weights; it is not the save location and is not replaced.
-   Select **Start Retraining**. Training can take considerable time and memory.
+   Select **Start Retraining**. For retraining, we recommend at least **16 GB of
+   GPU memory** on a dedicated GPU, or **16 GB of unified memory** on a MacBook.
+   This is a practical recommendation rather than a tested guarantee: larger
+   datasets and Micro-SAM may need more, and 8 GB Macs have not been validated
+   for retraining. Training can take considerable time.
    The new model is saved separately in the shared `~/CellMatchR/Models` library.
    **Open Model Library** in Step 7 opens that folder in the file manager.
    A completed model appears immediately in the starting-model dropdown, so

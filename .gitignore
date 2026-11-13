@@ -34,7 +34,7 @@ config.json
 benchmark_data/CytoDArk0_subset/*.png
 benchmark_data/CytoDArk0_subset/*.tiff
 benchmark_data/CytoDArk0_subset/scores.json
-benchmark_data/CytoDArk0_full20x/
+benchmark_data/CytoDArk0_full20x
 benchmark_data/cytodark_full_results/fold_*_temporary/
 benchmark_data/cytodark_training.log
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,7 +18,9 @@ from cellmatchr.launcher import (_brightfield_preprocess_for_model,
 from cellmatchr.parameter_wizard import (ParameterWizardApp, _apply_margin,
                                          _original_color_view)
 from cellmatchr.retraining import (TRAINING_PRESETS, _focus_training_pairs,
-                                   _accepted_manual_additions, validate_advanced)
+                                   _accepted_manual_additions,
+                                   registered_microsam_foreground_threshold,
+                                   validate_advanced)
 
 
 class BrightfieldCompatibilityTests(unittest.TestCase):
@@ -84,6 +87,26 @@ class BrightfieldCompatibilityTests(unittest.TestCase):
             "cellpose", "cpsam", "", ""), "brightfield_invert")
         self.assertEqual(_brightfield_preprocess_for_model(
             "cellpose", "rat_nissl_v2", "", ""), "raw_percentile")
+
+    def test_microsam_recall_setting_is_bound_to_its_registered_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            library = Path(directory)
+            model_dir = library / "lm_recall"
+            model_dir.mkdir()
+            weights = model_dir / "model.pth"
+            weights.touch()
+            record = {"backend": "microsam", "model_path": str(weights),
+                      "suggested_inference": {"foreground_threshold": 0.2}}
+            (model_dir / "model.json").write_text(json.dumps(record))
+            with patch.dict(os.environ, {"CELLMATCHR_MODEL_LIBRARY": directory}):
+                self.assertEqual(registered_microsam_foreground_threshold(
+                    str(weights)), 0.2)
+                self.assertIsNone(registered_microsam_foreground_threshold(
+                    str(library / "older_model.pth")))
+                record["suggested_inference"]["foreground_threshold"] = 1.5
+                (model_dir / "model.json").write_text(json.dumps(record))
+                self.assertIsNone(registered_microsam_foreground_threshold(
+                    str(weights)))
 
     def test_brightfield_wizard_writes_visible_global_brightness_filter(self):
         wizard = object.__new__(ParameterWizardApp)

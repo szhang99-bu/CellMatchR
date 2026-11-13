@@ -49,6 +49,16 @@ TRAINING_PRESETS = {
         "epochs": 8, "learning_rate": 3e-6, "validation_percent": 20,
         "sampling_focus": "none",
     },
+    "Recall follow-up": {
+        "description": "Continue a saved model gently while repeating reviewed samples with manually added cells.",
+        "epochs": 8, "learning_rate": 3e-6, "validation_percent": 25,
+        "sampling_focus": "missed_cells",
+    },
+    "Precision follow-up": {
+        "description": "Continue a saved model gently while repeating samples with rejected predictions; check missed cells afterward.",
+        "epochs": 8, "learning_rate": 3e-6, "validation_percent": 25,
+        "sampling_focus": "rejected_cells",
+    },
     "Short trial": {
         "description": "Run five epochs to check data and training behavior before committing to a longer run.",
         "epochs": 5, "learning_rate": 1e-5, "validation_percent": 20,

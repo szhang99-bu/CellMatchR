@@ -30,7 +30,9 @@ generic bright-signal models receive an inverted input internally. The original
 stain remains visible in the Parameter Wizard. Its brightness pick keeps dark
 cells by setting a *maximum* mean raw brightness; leave that filter at 0 to
 keep all model proposals. Review masks against human annotations before relying
-on counts. See the [public-image model comparison](NISSL_MODEL_EVALUATION.md).
+on counts. Brightfield segmentation checks every tile to avoid skipping dark
+cells, so large scans can take longer. See the
+[public-image model comparison](NISSL_MODEL_EVALUATION.md).
 Existing fluorescence projects keep their previous defaults.
 
 > Leica writes both confocal and slide-scanner data as `.lif`. CellMatchR detects
@@ -314,7 +316,9 @@ paired Nissl images and expert-reviewed masks for inspection.
    **High precision** repeats samples with rejected predictions. **Default
    training** uses each sample once. **Gentle follow-up** uses a smaller
    learning rate and eight epochs for continuing a saved model. **Short trial**
-   uses five epochs to check the workflow. All presets hold out whole samples
+   uses five epochs to check the workflow. **Recall follow-up** and **Precision
+   follow-up** combine gentle continued training with emphasis on missed cells
+   or rejected predictions, respectively. All presets hold out whole samples
    for validation. A preset sets a training recipe; it does not guarantee a
    particular recall or precision on new images.
 4. **Show advanced settings** exposes optional overrides for learning rate,
@@ -335,7 +339,9 @@ paired Nissl images and expert-reviewed masks for inspection.
    Step 3 for every project, alongside the built-in model. Tick **Select the new
    model for this project's next segmentation runs** to select it automatically
    when training completes; unticked models remain available in every project's
-   dropdown. Older saved models are kept. Models saved by an earlier version in
+   dropdown. If a model records tested Cellpose thresholds, selecting it also
+   fills those two Step 3 settings, which you can still edit. Older saved models
+   are kept. Models saved by an earlier version in
    a project's `Trained_Models` folder remain selectable for that project.
    When moving a project to another computer, also copy any shared model it
    uses and select the copied model from **Other starting model** or Step 3.

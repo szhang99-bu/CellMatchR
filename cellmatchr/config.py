@@ -17,6 +17,7 @@ DEFAULT_CONFIG: dict = {
     "input_type": "czi",           # "czi" (CZI/LIF/ND2/OIB-OIF/TIF direct) | "vsi"
     "input_root_folder": "",       # where raw CZI/LIF/ND2/OIB-OIF/TIF files live
     "vsi_output_dir": "",          # Slide Scanner Converter output folder (vsi_converter.py)
+    "slide_signal_type": "fluorescence",  # slide scanner: fluorescence | brightfield
 
     # --- Segmentation ---
     "seg_channels": "",
@@ -34,6 +35,7 @@ DEFAULT_CONFIG: dict = {
     "seg_max_object_size": 0,
     "seg_max_ratio": 0.0,
     "seg_raw_mean_min": 0.0,
+    "seg_raw_mean_max": 0.0,
     "seg_tile_h": 2048,
     "seg_tile_w": 2048,
     "seg_halo_h": 256,
@@ -44,7 +46,7 @@ DEFAULT_CONFIG: dict = {
     "seg_resume": False,                # skip files already segmented (resume after a crash)
     "seg_skip_subdirs": False,
     "seg_per_channel_filters_enabled": False,
-    "seg_per_channel_filters": "{}",    # JSON: {channel_int: {"min_size","max_size","max_ratio","min_intensity"}}
+    "seg_per_channel_filters": "{}",    # JSON: {channel_int: size/shape/intensity bounds}
     "seg_input_subfolder": "",          # launcher-internal: which converter output Steps 3/4/5 currently point at
 
     # --- Validation ---

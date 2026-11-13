@@ -83,9 +83,9 @@ def ensure_runtime(variant: str) -> tuple[str, str]:
 
 
 def segmentation_command(script: str, config_path: str, config: dict) -> tuple[list[str], dict]:
-    """Select the existing runtime unless a legacy Cellpose model is requested."""
+    """Use the isolated runtime for legacy Cellpose prediction and wizard runs."""
     variant = str(config.get("seg_cellpose_variant") or "cpsam").strip().lower()
-    if (Path(script).name != "segmentation.py"
+    if (Path(script).name not in {"segmentation.py", "parameter_wizard_compute.py"}
             or str(config.get("seg_backend") or "").lower() != "cellpose"
             or variant == "cpsam"):
         return [sys.executable, script, "--config", config_path], os.environ.copy()

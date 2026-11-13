@@ -19,7 +19,8 @@ segmentation itself.
 What it does
 ------------
 For each channel in the manifest, opens a napari window showing:
-  - the raw channel image, unadjusted (no percentile stretch, no gamma)
+  - the raw channel image, unadjusted (no percentile stretch, no gamma);
+    brightfield shows the original RGB stain when it can be memory-mapped
     -- napari's own contrast slider is there if you want to look closer,
     but every picked statistic always comes from the true raw pixel
     values, never the display adjustment
@@ -31,7 +32,8 @@ matching object's outline in the image:
   - Smallest valid cell                      -> minimum object size
   - Biggest valid cell                       -> maximum object size
   - Least round (most elongated) valid cell  -> max major/minor ratio
-  - Faintest valid cell                      -> minimum mean intensity
+  - Faintest valid cell                      -> minimum mean intensity for fluorescence
+  - Faintest valid dark-stained cell         -> maximum mean brightness for brightfield
 Leaving any of the four unset means "no filter" for that criterion --
 matches CellMatchR's existing "0 = disabled" convention.
 
@@ -40,10 +42,10 @@ the 2nd- or 3rd-most-extreme object instead of the literal extreme still
 keeps the true extreme inside the kept range.
 
 Closing the window (or clicking "Save & Next Channel" / "Save & Finish")
-writes the results into seg_per_channel_filters for every channel
-actually visited, and enables per-channel filtering. Channels never
-reached (if you close early) are left alone -- they fall back to
-whatever the plain global filter fields already say.
+writes fluorescence results into seg_per_channel_filters for every channel
+actually visited and enables per-channel filtering. Brightfield has one
+combined channel, so its picks update Step 3's global fields instead.
+Channels never reached (if you close early) are left alone.
 
 Launched from the CellMatchR launcher (Step 3 -> "Parameter Wizard"),
 after parameter_wizard_compute.py has produced a manifest. Can also be
@@ -82,12 +84,14 @@ PICK_LABELS = {
     "max_size":      "Biggest valid cell",
     "max_ratio":     "Least round (most elongated) valid cell",
     "min_intensity": "Faintest valid cell",
+    "max_intensity": "Faintest valid dark-stained cell",
 }
 FILTER_NAMES = {
     "min_size":      "minimum object size",
     "max_size":      "maximum object size",
     "max_ratio":     "maximum major/minor axis ratio",
     "min_intensity": "minimum mean raw intensity",
+    "max_intensity": "maximum mean raw intensity",
 }
 # Each pick gets its own persistent marker color, both on the canvas (a
 # rectangle drawn around the picked object) and on its label in the dock
@@ -98,6 +102,7 @@ PICK_COLORS = {
     "max_size":      "yellow",
     "max_ratio":     "cyan",
     "min_intensity": "magenta",
+    "max_intensity": "magenta",
 }
 # A little breathing room around the picked object's bounding box so the
 # marker rectangle doesn't hug the outline too tightly.
@@ -120,6 +125,8 @@ def _apply_margin(key, value):
         return max(0.01, round(value * (1 + MARGIN_FRACTION), 2))
     if key == "min_intensity":
         return max(0.1, round(value * (1 - MARGIN_FRACTION), 1))
+    if key == "max_intensity":
+        return max(0.1, round(value * (1 + MARGIN_FRACTION), 1))
     raise ValueError(key)
 
 
@@ -157,6 +164,23 @@ def _object_stats(label_image: np.ndarray, raw_image: np.ndarray) -> dict:
     return stats
 
 
+def _original_color_view(path: str, image_shape: tuple[int, int]):
+    """Memory-map the unchanged source stain for display without another full copy."""
+    if not path:
+        return None
+    try:
+        original = tifffile.memmap(path, mode="r")
+        if original.ndim != 3:
+            return None
+        if original.shape[:2] == image_shape and original.shape[2] in (3, 4):
+            return original[..., :3]
+        if original.shape[1:] == image_shape and original.shape[0] in (3, 4):
+            return np.moveaxis(original[:3], 0, -1)
+    except (OSError, ValueError, TypeError):
+        return None
+    return None
+
+
 def _rect_from_bbox(bbox, image_shape) -> np.ndarray:
     """Pad a regionprops (min_row, min_col, max_row, max_col) bbox by
     BBOX_PAD and return it as 4 corner points for a napari Shapes rectangle."""
@@ -175,6 +199,9 @@ class ParameterWizardApp:
         self.manifest = manifest
         self.channel_entries = manifest["channels"]
         self.channels = [c["channel"] for c in self.channel_entries]
+        self.brightfield = manifest.get("slide_signal_type") == "brightfield"
+        self.pick_order = ["min_size", "max_size", "max_ratio",
+                           "max_intensity" if self.brightfield else "min_intensity"]
 
         self.results: dict = {}          # {channel: {key: raw_picked_value_or_None}}
         self._current_picks: dict = {}   # in-progress picks for the channel on screen (values)
@@ -182,6 +209,7 @@ class ParameterWizardApp:
         self._pick_shape_boxes: dict = {}  # in-progress picks' marker rectangles (display only)
         self._stats: dict = {}
         self._raw_image = None
+        self._display_image = None
         self._labels = None
         self._pick_target = None
         self._pick_btns: dict = {}
@@ -206,7 +234,7 @@ class ParameterWizardApp:
         ch = entry["channel"]
         if not entry.get("raw") or not entry.get("labels"):
             print(f"[parameter_wizard] Channel {ch}: not present in this file -- skipping.")
-            self.results[ch] = {k: None for k in PICK_ORDER}
+            self.results[ch] = {k: None for k in self.pick_order}
             self._advance()
             return
 
@@ -216,6 +244,8 @@ class ParameterWizardApp:
         labels = tifffile.imread(entry["labels"]).astype(np.int32)
 
         self._raw_image = image
+        self._display_image = (_original_color_view(entry.get("source_rgb"), image.shape)
+                               if self.brightfield else None)
         self._labels = labels
         self._stats = _object_stats(labels, image)
         self._show_channel(ch)
@@ -224,9 +254,9 @@ class ParameterWizardApp:
 
     def _show_channel(self, ch: int) -> None:
         import napari
-        self._current_picks = {k: None for k in PICK_ORDER}
-        self._current_pick_ids = {k: None for k in PICK_ORDER}
-        self._pick_shape_boxes = {k: None for k in PICK_ORDER}
+        self._current_picks = {k: None for k in self.pick_order}
+        self._current_pick_ids = {k: None for k in self.pick_order}
+        self._pick_shape_boxes = {k: None for k in self.pick_order}
         self._pick_target = None
         title = (f"CellMatchR — Parameter Wizard — Channel {ch}  "
                  f"({len(self._stats)} unfiltered objects)")
@@ -246,7 +276,13 @@ class ParameterWizardApp:
         # ranges contrast_limits to the data's actual min/max, which is
         # just a display convenience; picked statistics always come from
         # this same unmodified array.
-        self.viewer.add_image(self._raw_image, name=f"Ch {ch} raw (unadjusted)", colormap="gray")
+        if self._display_image is not None:
+            self.viewer.add_image(self._display_image, rgb=True,
+                                  name=f"Ch {ch} original color stain")
+        else:
+            visible_name = (f"Ch {ch} original stain (not inverted)" if self.brightfield
+                            else f"Ch {ch} raw (unadjusted)")
+            self.viewer.add_image(self._raw_image, name=visible_name, colormap="gray")
 
         self._label_lyr = self.viewer.add_labels(self._labels, name=f"Ch {ch} unfiltered objects")
         self._label_lyr.contour = 2   # outline only, never filled
@@ -281,6 +317,7 @@ class ParameterWizardApp:
         raw_value = {
             "min_size": stats["area"], "max_size": stats["area"],
             "max_ratio": stats["ratio"], "min_intensity": stats["mean_intensity"],
+            "max_intensity": stats["mean_intensity"],
         }[key]
         self._current_picks[key] = raw_value
         self._current_pick_ids[key] = int(value)
@@ -288,7 +325,7 @@ class ParameterWizardApp:
         self._refresh_pick_shapes()
 
         self._pick_target = None
-        for k in PICK_ORDER:
+        for k in self.pick_order:
             self._pick_btns[k].setStyleSheet("")
             self._refresh_pick_label(k)
         self.viewer.status = f"Picked object {int(value)} as '{PICK_LABELS[key]}'."
@@ -306,7 +343,7 @@ class ParameterWizardApp:
                 pass
             self._pick_shapes_lyr = None
         data, colors = [], []
-        for key in PICK_ORDER:
+        for key in self.pick_order:
             box = self._pick_shape_boxes.get(key)
             if box is not None:
                 data.append(box)
@@ -342,7 +379,7 @@ class ParameterWizardApp:
         armed); clicking a DIFFERENT button switches to it. Neither ever
         disarms picking on its own -- only a successful pick does that."""
         self._pick_target = key
-        for k in PICK_ORDER:
+        for k in self.pick_order:
             self._pick_btns[k].setStyleSheet(ARMED_BTN_STYLE if k == key else "")
             self._refresh_pick_label(k)
         if self.viewer is not None:
@@ -391,7 +428,7 @@ class ParameterWizardApp:
 
         self._pick_btns = {}
         self._pick_value_lbls = {}
-        for key in PICK_ORDER:
+        for key in self.pick_order:
             box = QGroupBox(PICK_LABELS[key])
             box_layout = QVBoxLayout(box)
 
@@ -414,7 +451,7 @@ class ParameterWizardApp:
             box_layout.addWidget(val_lbl)
             layout.addWidget(box)
 
-        for key in PICK_ORDER:
+        for key in self.pick_order:
             self._refresh_pick_label(key)
 
         clear_btn = QPushButton("Clear all picks for this channel")
@@ -429,7 +466,7 @@ class ParameterWizardApp:
 
     def _clear_picks(self) -> None:
         self._pick_target = None
-        for key in PICK_ORDER:
+        for key in self.pick_order:
             self._current_picks[key] = None
             self._current_pick_ids[key] = None
             self._pick_shape_boxes[key] = None
@@ -477,16 +514,29 @@ class ParameterWizardApp:
                 print(f"[parameter_wizard] Channel {ch} was never opened -- left unchanged.")
                 continue
             picks = self.results[ch]
-            entry = {key: _apply_margin(key, picks.get(key)) for key in PICK_ORDER}
-            existing[str(ch)] = entry
+            entry = {key: _apply_margin(key, picks.get(key)) for key in self.pick_order}
+            entry["min_intensity" if self.brightfield else "max_intensity"] = 0
+            if self.brightfield:
+                # Brightfield has one combined signal; expose the picked
+                # thresholds in Step 3's ordinary fields for easy adjustment.
+                self.cfg["seg_min_object_size"] = entry["min_size"]
+                self.cfg["seg_max_object_size"] = entry["max_size"]
+                self.cfg["seg_max_ratio"] = entry["max_ratio"]
+                self.cfg["seg_raw_mean_min"] = 0
+                self.cfg["seg_raw_mean_max"] = entry["max_intensity"]
+            else:
+                existing[str(ch)] = entry
             summary = ", ".join(
                 f"{FILTER_NAMES[k]}={entry[k]}" if entry[k] else f"{FILTER_NAMES[k]}=disabled"
-                for k in PICK_ORDER
+                for k in self.pick_order
             )
             print(f"[parameter_wizard] Channel {ch}: {summary}")
 
-        self.cfg["seg_per_channel_filters"] = json.dumps(existing)
-        self.cfg["seg_per_channel_filters_enabled"] = True
+        if not self.brightfield:
+            self.cfg["seg_per_channel_filters"] = json.dumps(existing)
+            self.cfg["seg_per_channel_filters_enabled"] = True
+        else:
+            self.cfg["seg_per_channel_filters_enabled"] = False
         save_config(self.cfg)
         save_project_config(self.cfg)
         print("[parameter_wizard] Saved to config. Done.")

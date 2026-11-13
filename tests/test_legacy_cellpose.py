@@ -25,7 +25,7 @@ class LegacyCellposeTests(unittest.TestCase):
             self.assertEqual(launcher._segmentation_identity_from_config()["model"],
                              "cpsam")
 
-    def test_legacy_choice_uses_separate_runtime_only_for_segmentation(self):
+    def test_legacy_choice_uses_separate_runtime_for_prediction_and_wizard(self):
         settings = {"seg_backend": "cellpose", "seg_cellpose_variant": "cyto2"}
         with patch("cellmatchr.legacy_cellpose.ensure_runtime",
                    return_value=("/separate/python", "/models/cyto2")) as prepare:
@@ -34,11 +34,16 @@ class LegacyCellposeTests(unittest.TestCase):
             self.assertEqual(command[0], "/separate/python")
             self.assertEqual(environment["CELLMATCHR_LEGACY_CELLPOSE_MODEL_PATH"],
                              "/models/cyto2")
+            wizard, wizard_env = segmentation_command(
+                "/app/parameter_wizard_compute.py", "/config.json", settings)
+            self.assertEqual(wizard[0], "/separate/python")
+            self.assertEqual(wizard_env["CELLMATCHR_LEGACY_CELLPOSE_MODEL_PATH"],
+                             "/models/cyto2")
             ordinary, ordinary_env = segmentation_command(
                 "/app/analysis.py", "/config.json", settings)
             self.assertNotEqual(ordinary[0], "/separate/python")
             self.assertNotIn("CELLMATCHR_LEGACY_CELLPOSE_MODEL_PATH", ordinary_env)
-            prepare.assert_called_once_with("cyto2")
+            self.assertEqual(prepare.call_count, 2)
 
     def test_unknown_legacy_model_is_rejected_before_run(self):
         with self.assertRaises(ValueError):

@@ -83,8 +83,31 @@ def _setup_backend(cfg: dict):
 
     if cfg.get("seg_backend") == "cellpose":
         from cellpose import models as cp_models
-        print("[parameter_wizard_compute] Backend: Cellpose-SAM")
-        return None, None, cp_models.CellposeModel(gpu=(device != "cpu"))
+        variant = str(cfg.get("seg_cellpose_variant") or "cpsam")
+        checkpoint = str(cfg.get("seg_cellpose_model_path") or "").strip()
+        if variant != "cpsam" and checkpoint:
+            raise ValueError("Choose either a legacy Cellpose model or a custom "
+                             "Cellpose-SAM checkpoint in Step 3")
+        if variant != "cpsam" and not checkpoint:
+            checkpoint = os.environ.get("CELLMATCHR_LEGACY_CELLPOSE_MODEL_PATH", "")
+            if not os.path.isfile(checkpoint):
+                raise RuntimeError("The selected legacy Cellpose model is not prepared "
+                                   "for the Parameter Wizard. Start from the CellMatchR app.")
+        print(f"[parameter_wizard_compute] Backend: Cellpose {variant}")
+        return (None, None, cp_models.CellposeModel(
+            gpu=(device != "cpu"), pretrained_model=checkpoint or "cpsam"), None)
+
+    if cfg.get("seg_backend") == "stardist":
+        from stardist.models import StarDist2D
+        checkpoint = str(cfg.get("seg_stardist_model_path") or "").strip()
+        if checkpoint:
+            source = os.path.abspath(checkpoint)
+            model = StarDist2D(None, name=os.path.basename(source),
+                               basedir=os.path.dirname(source))
+        else:
+            model = StarDist2D.from_pretrained("2D_versatile_fluo")
+        print("[parameter_wizard_compute] Backend: StarDist 2D")
+        return None, None, None, model
 
     import micro_sam.automatic_segmentation
     model_type = cfg.get("seg_model_type", "vit_b_lm")
@@ -99,8 +122,10 @@ def _setup_backend(cfg: dict):
     for attempt in range(1, 4):
         try:
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
-                model_type=model_type, device=device)
-            return predictor, segmenter, None
+                model_type="vit_b" if cfg.get("seg_custom_model_path") else model_type,
+                device=device,
+                checkpoint=str(cfg.get("seg_custom_model_path") or "").strip() or None)
+            return predictor, segmenter, None, None
         except Exception as exc:
             last_exc = exc
             print(f"[parameter_wizard_compute] Model load attempt {attempt}/3 failed: {exc}")
@@ -131,19 +156,23 @@ def main() -> None:
 
     os.makedirs(args.out_dir, exist_ok=True)
     print("[parameter_wizard_compute] Splitting channels...")
-    split_paths = seg.save_raw_split_tiffs(image_path, args.out_dir, base_name, lif_scene=lif_scene)
+    brightfield = (cfg.get("input_type") == "vsi"
+                   and cfg.get("slide_signal_type") == "brightfield")
+    split_paths = seg.save_raw_split_tiffs(
+        image_path, args.out_dir, base_name, lif_scene=lif_scene,
+        brightfield=brightfield)
 
-    predictor, segmenter, cellpose_model = _setup_backend(cfg)
+    predictor, segmenter, cellpose_model, stardist_model = _setup_backend(cfg)
 
     # Match the configured tiling/preprocessing exactly, and disable every
     # post-filter (size/ratio/intensity) so the user sees every object the
     # backend detects and can decide where to draw the line themselves.
-    # SKIP_EMPTY_TILES is deliberately left at its default (True): a real
-    # Run Segmentation would skip the same blank/background tiles, so
-    # leaving this on keeps the wizard's preview an accurate match for
-    # what production actually produces -- and skips the same needless
-    # work on large images with a lot of background.
+    # Match production tile behavior. Brightfield runs process every tile
+    # because the fluorescence-style empty-tile rule would miss dark cells.
     seg.PREPROCESS_MODE = cfg.get("seg_preprocess_mode", "local_bg_subtract")
+    seg.SLIDE_SIGNAL_TYPE = "brightfield" if brightfield else "fluorescence"
+    seg.SEG_BACKEND = str(cfg.get("seg_backend") or "microsam")
+    seg.CELLPOSE_VARIANT = str(cfg.get("seg_cellpose_variant") or "cpsam")
     seg.CELLPOSE_DIAMETER = float(cfg.get("seg_cellpose_diameter", 0) or 0)
     seg.CELLPOSE_FLOW_THRESHOLD = float(cfg.get("seg_cellpose_flow_threshold", 0.4))
     seg.CELLPOSE_CELLPROB_THRESHOLD = float(cfg.get("seg_cellpose_cellprob_threshold", 0.0))
@@ -153,8 +182,10 @@ def main() -> None:
     seg.MAX_OBJECT_SIZE = 0
     seg.MAX_MAJOR_MINOR_RATIO = 0
     seg.RAW_MEAN_MIN = 0
+    seg.RAW_MEAN_MAX = 0
 
-    manifest = {"base_name": base_name, "channels": []}
+    manifest = {"base_name": base_name, "channels": [],
+                "slide_signal_type": seg.SLIDE_SIGNAL_TYPE}
     for ch in channels:
         tiff_path = split_paths.get(ch)
         if tiff_path is None:
@@ -170,6 +201,7 @@ def main() -> None:
             predictor, segmenter, image,
             seg.TILE_SHAPE_2D, seg.HALO_2D, seg.NDIM,
             debug_folder=None, cellpose_model=cellpose_model,
+            stardist_model=stardist_model,
             min_size=0,
         )
         n_objects = int(len(np.unique(labels[labels > 0])))
@@ -180,6 +212,7 @@ def main() -> None:
 
         manifest["channels"].append({
             "channel": ch, "raw": tiff_path, "labels": labels_path, "n_objects": n_objects,
+            "source_rgb": image_path if brightfield else None,
         })
         seg._free_memory()
 

@@ -36,8 +36,10 @@ from skimage.measure import label as connected_components
 
 if __package__:
     from .validation_state import finalize_if_ready, save_edited_mask
+    from .sidecar_input import install_sidecar_controls
 else:
     from validation_state import finalize_if_ready, save_edited_mask
+    from sidecar_input import install_sidecar_controls
 
 # ── Display resolution cap ───────────────────────────────────────────────────
 # Large TIFFs freeze napari on the first brush stroke because it must upload
@@ -305,6 +307,7 @@ class RoiEditorApp:
         self._skip_btn   = None     # stored so we can disable after all reviewed
         self._colour_btns: dict = {}  # label_value → QPushButton
         self._erase_btn = None
+        self._sidecar_controls = None
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -326,6 +329,12 @@ class RoiEditorApp:
         # We paint one pixel, force a render, then clear it — this
         # runs 800 ms after the window opens so it's fully visible first.
         self._setup_right_click_pan()
+        try:
+            self._sidecar_controls = install_sidecar_controls(
+                self.viewer, self._toggle_sidecar_tool
+            )
+        except (ImportError, AttributeError, TypeError, RuntimeError) as exc:
+            print(f"[roi_editor] Sidecar controls unavailable: {exc}")
         print("[roi_editor] Window ready — pre-warming renderer in background...")
         QTimer.singleShot(800, self._prewarm_renderer)
         napari.run()
@@ -500,6 +509,11 @@ class RoiEditorApp:
         lay.addWidget(self._hr())
 
         # ── Instructions ──
+        sidecar_hint = (
+            " On iPad Sidecar: Pencil draws, one finger pans, Pencil "
+            "double-tap switches Add/Erase."
+            if sys.platform == "darwin" else ""
+        )
         instr = QLabel(
             "<b>How to add missed cells:</b><br><br>"
             "1. Make sure <i>Add ROIs here</i> layer is selected<br>"
@@ -512,7 +526,7 @@ class RoiEditorApp:
             "and paint any part of it<br>"
             "6. Press <b>Ctrl+Z</b> to undo a brush stroke before saving<br>"
             "7. Press Save when done<br><br>"
-            "<i>[ and ] keys adjust brush size</i>"
+            f"<i>[ and ] keys adjust brush size.{sidecar_hint}</i>"
         )
         instr.setWordWrap(True)
         instr.setTextFormat(Qt.RichText)
@@ -735,6 +749,15 @@ class RoiEditorApp:
             btn.setChecked(False)
         self._erase_btn.setChecked(True)
         self._set_status("Paint any part of a predicted object to remove it on Save. Ctrl+Z undoes a stroke.")
+
+    def _toggle_sidecar_tool(self) -> None:
+        """Switch correction brushes only for a Sidecar Pencil double-tap."""
+        if self._erase_lyr in self.viewer.layers.selection:
+            label = self._add_lyr.selected_label if self._add_lyr is not None else 1
+            self._set_brush_colour(label)
+            self._set_status("Pencil: Add missed cells")
+        else:
+            self._select_eraser()
 
     def _update_erasure_preview(self, event=None) -> None:
         if self._erase_lyr is None or self._base_display_mask is None:

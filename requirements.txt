@@ -18,6 +18,7 @@ slideio
 napari
 PyQt5
 qtpy
+pyobjc-framework-Cocoa==13.0; sys_platform == "darwin"  # Sidecar touch/Pencil controls on Mac only
 
 # Segmentation — install torch first following https://pytorch.org/get-started/locally/
 # torch  (install separately for your CUDA version)

@@ -15,8 +15,10 @@ import slideio
 
 try:
     from .lif_classify import classify_lif_image
+    from .sidecar_input import install_sidecar_controls
 except ImportError:  # This file can also be launched directly as a script.
     from lif_classify import classify_lif_image
+    from sidecar_input import install_sidecar_controls
 
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox, QGroupBox,
@@ -583,6 +585,8 @@ class VSINapariROIApp:
 
         self.viewer = None
         self.shapes = None
+        self._sidecar_controls = None
+        self._sidecar_select_mode = False
 
         # Header UI
         self.lbl_file = None
@@ -724,6 +728,13 @@ class VSINapariROIApp:
         self._tools_panel_ref = tools
         self.viewer.window.add_dock_widget(self._tools_panel_ref, name="ROI Editor", area="left")
 
+        try:
+            self._sidecar_controls = install_sidecar_controls(
+                self.viewer, self._toggle_sidecar_shape_tool
+            )
+        except (ImportError, AttributeError, TypeError, RuntimeError) as exc:
+            debug(f"Sidecar controls unavailable: {exc}")
+
         debug("Dock widgets added.")
         debug("Napari launched.")
 
@@ -732,9 +743,24 @@ class VSINapariROIApp:
             self.viewer.layers.selection.active = self.shapes
             self.shapes.mode = "add_polygon"
             self.shapes.current_shape_type = "polygon"
+            self._sidecar_select_mode = False
             debug("ROI layer set to Add Polygon mode by default.")
         except Exception:
             debug("Failed to force polygon mode (non-fatal).")
+
+    def _toggle_sidecar_shape_tool(self):
+        """Pencil double-tap switches between drawing and selecting ROIs."""
+        if self.shapes is None:
+            return
+        self.viewer.layers.selection.active = self.shapes
+        self.shapes.mode = (
+            "select" if self.shapes.mode == "add_polygon" else "add_polygon"
+        )
+        self._sidecar_select_mode = self.shapes.mode == "select"
+        self.viewer.status = (
+            "Pencil: Select/edit ROIs" if self.shapes.mode == "select"
+            else "Pencil: Draw ROI polygons"
+        )
 
     def _ensure_roi_on_top(self, force_later: bool = False):
         def do_move():
@@ -1029,6 +1055,15 @@ class VSINapariROIApp:
         )
         layout.addWidget(name_hint)
 
+        if sys.platform == "darwin":
+            sidecar_hint = QLabel(
+                "iPad Sidecar: draw ROIs with Pencil, drag one finger to pan, "
+                "double-tap Pencil to switch Draw/Select."
+            )
+            sidecar_hint.setWordWrap(True)
+            sidecar_hint.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+            layout.addWidget(sidecar_hint)
+
         proc_box = QGroupBox("Processing")
         proc_layout = QVBoxLayout(proc_box)
 
@@ -1203,7 +1238,8 @@ class VSINapariROIApp:
         debug(f"Shapes changed. ROI count now = {len(self.shapes.data)}")
         self._sync_roi_ui()
         self._ensure_roi_on_top(force_later=True)
-        self._force_polygon_mode()
+        if not self._sidecar_select_mode or self.shapes.mode != "select":
+            self._force_polygon_mode()
 
     # ---------- ROI geometry ----------
     def _get_polygon_by_index(self, idx: int):

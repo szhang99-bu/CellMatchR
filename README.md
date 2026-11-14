@@ -478,6 +478,27 @@ installation, and runs the wizard.
 > chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR" "CellMatchR (macOS 27+).app/Contents/MacOS/applet"
 > ```
 
+### Apple Pencil with iPad Sidecar
+
+When an iPad is connected as a **Sidecar display**, the Napari correction editor
+accepts Pencil strokes for adding missed cells or marking predicted cells for
+removal. Drag with **one finger** to pan while keeping the drawing tool selected;
+**double-tap the Pencil** to switch between Add and Erase. In the slide scanner
+ROI editor, double-tap switches between drawing and selecting polygons. The
+parameter wizard supports one-finger panning while picking example objects.
+Mouse, trackpad, keyboard, and Napari's normal tools continue to work as before.
+
+New macOS environments created from `environment.yml` include the native bridge.
+For an existing CellMatchR environment, install it once with:
+
+```bash
+conda activate cellmatchr
+python -m pip install "pyobjc-framework-Cocoa==13.0"
+```
+
+This package is used only on macOS. If it is missing, the standard Napari
+controls still work; Sidecar finger pan and Pencil double-tap are unavailable.
+
 ### Option B — double-click the `.command` (macOS, shows a Terminal/log window)
 
 Double-click **`scripts/launch_cellmatchr.command`** in Finder (first time:

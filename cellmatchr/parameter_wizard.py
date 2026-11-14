@@ -72,6 +72,7 @@ import tifffile
 from skimage.measure import regionprops_table
 
 from cellmatchr.config import DEFAULT_CONFIG, save_config, save_project_config, CONFIG_PATH
+from cellmatchr.sidecar_input import install_sidecar_controls
 
 # Every picked threshold is padded by this fraction so a by-eye pick of the
 # 2nd/3rd-most-extreme object doesn't accidentally cut off the actual
@@ -218,6 +219,7 @@ class ParameterWizardApp:
         self._finished = False
 
         self.viewer = None
+        self._sidecar_controls = None
         self._label_lyr = None
         self._pick_shapes_lyr = None
         self._dock_layout = None
@@ -266,6 +268,10 @@ class ParameterWizardApp:
             self.viewer = napari.Viewer(title=title)
             self.viewer.mouse_drag_callbacks.append(self._on_click)
             self.viewer.window._qt_window.destroyed.connect(self._on_window_closed)
+            try:
+                self._sidecar_controls = install_sidecar_controls(self.viewer)
+            except (ImportError, AttributeError, TypeError, RuntimeError) as exc:
+                print(f"[parameter_wizard] Sidecar finger pan unavailable: {exc}")
         else:
             self.viewer.title = title
             for lyr in list(self.viewer.layers):

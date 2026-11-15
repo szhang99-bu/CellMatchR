@@ -56,6 +56,19 @@ STEPS = [
     ("7", "Retrain Models"),
 ]
 
+
+def _popen_logged(command: list[str], *, env: dict | None = None,
+                  cwd: str | None = None) -> subprocess.Popen:
+    """Stream Python subprocess output consistently on Windows and Unix."""
+    environment = dict(os.environ if env is None else env)
+    if sys.platform == "win32":
+        environment["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.Popen(
+        command, cwd=cwd, env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+
 # Spinner frames
 _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -1689,11 +1702,7 @@ class CellMatchrLauncher:
                                     "Preparing the selected Cellpose model; first use "
                                     "downloads its weights and separate runtime…")
                 command, environment = segmentation_command(script, CONFIG_PATH, self.config)
-                proc = subprocess.Popen(
-                    command, env=environment,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
-                )
+                proc = _popen_logged(command, env=environment)
                 self._track_proc(proc, label)
                 for line in proc.stdout:
                     self.root.after(0, self._log, line.rstrip())
@@ -3640,11 +3649,7 @@ class CellMatchrLauncher:
                                     "Preparing the selected Cellpose model; first use "
                                     "downloads its weights and separate runtime…")
                 command, environment = segmentation_command(script, CONFIG_PATH, self.config)
-                proc = subprocess.Popen(
-                    command, env=environment,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
-                )
+                proc = _popen_logged(command, env=environment)
                 self._track_proc(proc, "Segmentation")
                 for line in proc.stdout:
                     self.root.after(0, _seg_log_line, line.rstrip())
@@ -3744,10 +3749,7 @@ class CellMatchrLauncher:
                 pass
 
         def _run_and_stream(cmd: list, environment: dict | None = None) -> int:
-            proc = subprocess.Popen(
-                cmd, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
+            proc = _popen_logged(cmd, env=environment)
             self._track_proc(proc, "Parameter Wizard")
             for line in proc.stdout:
                 self.root.after(0, _log_line, line.rstrip())
@@ -4795,11 +4797,8 @@ class CellMatchrLauncher:
 
         def _thread():
             try:
-                proc = subprocess.Popen(
-                    [sys.executable, script, "--config", CONFIG_PATH],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1,
-                )
+                proc = _popen_logged(
+                    [sys.executable, script, "--config", CONFIG_PATH])
                 self._track_proc(proc, "Analysis")
                 for line in proc.stdout:
                     self.root.after(0, _ana_log_line, line.rstrip())
@@ -5628,10 +5627,8 @@ class CellMatchrLauncher:
             def worker():
                 model_path = ""
                 try:
-                    proc = subprocess.Popen(
-                        cmd, cwd=os.path.dirname(os.path.dirname(self._script("retraining.py"))),
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, bufsize=1)
+                    proc = _popen_logged(
+                        cmd, cwd=os.path.dirname(os.path.dirname(self._script("retraining.py"))))
                     self._track_proc(proc, "Model Retraining")
                     for line in proc.stdout:
                         clean = line.rstrip()
@@ -5730,12 +5727,8 @@ class CellMatchrLauncher:
         self._vsi_log.delete("1.0", "end")
         self._vsi_log.config(state="disabled")
 
-        proc = subprocess.Popen(
-            [sys.executable, self._script("vsi_converter.py"), "--config", CONFIG_PATH],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,   # merge stderr into stdout so we capture everything
-            text=True, bufsize=1,
-        )
+        proc = _popen_logged(
+            [sys.executable, self._script("vsi_converter.py"), "--config", CONFIG_PATH])
         self._track_proc(proc, "VSI Converter window")
 
         def _watch():
@@ -6031,11 +6024,7 @@ class CellMatchrLauncher:
                                         "downloads its weights and separate runtime…")
                     command, environment = segmentation_command(
                         seg_script, CONFIG_PATH, self.config)
-                    proc1 = subprocess.Popen(
-                        command, env=environment,
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, bufsize=1,
-                    )
+                    proc1 = _popen_logged(command, env=environment)
                     self._track_proc(proc1, "Segmentation")
                     for line in proc1.stdout:
                         self.root.after(0, self._log, line.rstrip())
@@ -6065,11 +6054,8 @@ class CellMatchrLauncher:
                     self.root.after(0, self._set_run_status,
                                     "Analysis running…", ACCENT)
 
-                    proc2 = subprocess.Popen(
-                        [sys.executable, ana_script, "--config", CONFIG_PATH],
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        text=True, bufsize=1,
-                    )
+                    proc2 = _popen_logged(
+                        [sys.executable, ana_script, "--config", CONFIG_PATH])
                     self._track_proc(proc2, "Analysis")
                     for line in proc2.stdout:
                         self.root.after(0, self._log, line.rstrip())
@@ -6112,6 +6098,9 @@ class CellMatchrLauncher:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    if sys.platform == "win32":
+        os.environ.setdefault("QT_API", "pyqt5")
+        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     root = tk.Tk()
     CellMatchrLauncher(root)
     root.mainloop()

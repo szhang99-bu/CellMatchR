@@ -1,0 +1,2 @@
+# Keep pip packages in the NumPy 1.x environment used by CellMatchR.
+numpy==1.26.4

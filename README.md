@@ -1,5 +1,9 @@
 # CellMatchR
 
+**Windows preview:** For a separate native Windows installation from Git, use
+the [`feature/windows-preview` branch and Windows setup guide](WINDOWS_PREVIEW.md).
+This does not replace the macOS or Linux installation.
+
 <img src="CellMatchr_Logo.png" width="320" alt="CellMatchR Logo"/>
 
 Confocal and slide-scanner cell segmentation, manual validation, and colocalization analysis pipeline.

@@ -2,7 +2,6 @@
 CellMatchr Launcher — step-by-step wizard UI.
 """
 
-import glob
 import json
 import os
 import re
@@ -17,6 +16,7 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 from .config import (load_config, save_config, save_project_config,
                      load_project_config, CONFIG_PATH, DEFAULT_CONFIG)
 from .legacy_cellpose import segmentation_command
+from .file_paths import filesystem_path, matching_paths, prediction_channel
 
 # Optional PIL for logo
 try:
@@ -1389,7 +1389,7 @@ class CellMatchrLauncher:
             "analysis_run_summary.json", "analysis_errors.log",
         ):
             path = os.path.join(output_dir, filename)
-            if os.path.isfile(path):
+            if os.path.isfile(filesystem_path(path)):
                 files.append(path)
 
         proj = self.config.get("project_output_folder", "").strip()
@@ -1397,13 +1397,13 @@ class CellMatchrLauncher:
         configured = str(self.config.get("ana_subfolder_name") or
                          "analysis_results").strip()
         subfolders = {configured, "analysis_results", "colocalization_analysis"}
-        if not os.path.isdir(seg_root):
+        if not os.path.isdir(filesystem_path(seg_root)):
             return files
-        for sample in os.listdir(seg_root):
+        for sample in os.listdir(filesystem_path(seg_root)):
             if sample.startswith((".", "DEBUG")):
                 continue
             sample_dir = os.path.join(seg_root, sample)
-            if not os.path.isdir(sample_dir):
+            if not os.path.isdir(filesystem_path(sample_dir)):
                 continue
             output_pattern = re.compile(
                 rf"^{re.escape(sample)}_(?:summary\.csv|"
@@ -1413,27 +1413,38 @@ class CellMatchrLauncher:
             )
             for subfolder in subfolders:
                 results_dir = os.path.join(sample_dir, subfolder)
-                if not os.path.isdir(results_dir):
+                if not os.path.isdir(filesystem_path(results_dir)):
                     continue
-                for filename in os.listdir(results_dir):
+                for filename in os.listdir(filesystem_path(results_dir)):
                     path = os.path.join(results_dir, filename)
-                    if output_pattern.fullmatch(filename) and os.path.isfile(path):
+                    if output_pattern.fullmatch(filename) and os.path.isfile(filesystem_path(path)):
                         files.append(path)
         return sorted(set(files))
+
+    @staticmethod
+    def _analysis_realpath(path: str) -> str:
+        """Resolve the actual target while keeping paths comparable on Windows."""
+        resolved = os.path.realpath(filesystem_path(path))
+        if os.name == "nt":
+            if resolved.startswith("\\\\?\\UNC\\"):
+                resolved = "\\\\" + resolved[8:]
+            elif resolved.startswith("\\\\?\\"):
+                resolved = resolved[4:]
+        return os.path.normcase(resolved)
 
     @staticmethod
     def _write_analysis_backup_manifest(backup_dir: str, manifest: dict) -> None:
         """Persist recovery instructions before moving any result file."""
         path = os.path.join(backup_dir, "backup_manifest.json")
         pending = path + ".tmp"
-        with open(pending, "w") as f:
+        with open(filesystem_path(pending), "w") as f:
             json.dump(manifest, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(pending, path)
+        os.replace(filesystem_path(pending), filesystem_path(path))
 
     def _set_analysis_backup_state(self, backup_dir: str, state: str) -> None:
-        with open(os.path.join(backup_dir, "backup_manifest.json")) as f:
+        with open(filesystem_path(os.path.join(backup_dir, "backup_manifest.json"))) as f:
             manifest = json.load(f)
         manifest["state"] = state
         self._write_analysis_backup_manifest(backup_dir, manifest)
@@ -1443,18 +1454,18 @@ class CellMatchrLauncher:
         proj = os.path.abspath(
             self.config.get("project_output_folder", "").strip())
         backup_root = os.path.join(proj, ".analysis_backups")
-        if not os.path.isdir(backup_root):
+        if not os.path.isdir(filesystem_path(backup_root)):
             return 0
-        if os.path.commonpath((
-                os.path.realpath(proj), os.path.realpath(backup_root))) != os.path.realpath(proj):
+        proj_real = self._analysis_realpath(proj)
+        if os.path.commonpath((proj_real, self._analysis_realpath(backup_root))) != proj_real:
             raise ValueError(f"Backup folder points outside the project: {backup_root}")
         recovered = 0
-        for name in sorted(os.listdir(backup_root)):
+        for name in sorted(os.listdir(filesystem_path(backup_root))):
             backup_dir = os.path.join(backup_root, name)
             manifest_path = os.path.join(backup_dir, "backup_manifest.json")
-            if not os.path.isfile(manifest_path):
+            if not os.path.isfile(filesystem_path(manifest_path)):
                 continue
-            with open(manifest_path) as f:
+            with open(filesystem_path(manifest_path)) as f:
                 manifest = json.load(f)
             if manifest.get("segmentation_run") != segmentation_run:
                 continue
@@ -1475,18 +1486,18 @@ class CellMatchrLauncher:
         """Recover unfinished replacements when an existing project is opened."""
         proj = self.config.get("project_output_folder", "").strip()
         backup_root = os.path.join(proj, ".analysis_backups")
-        if not os.path.isdir(backup_root):
+        if not os.path.isdir(filesystem_path(backup_root)):
             return 0
-        if os.path.commonpath((
-                os.path.realpath(proj), os.path.realpath(backup_root))) != os.path.realpath(proj):
+        proj_real = self._analysis_realpath(proj)
+        if os.path.commonpath((proj_real, self._analysis_realpath(backup_root))) != proj_real:
             raise ValueError(f"Backup folder points outside the project: {backup_root}")
         runs = set()
-        for name in os.listdir(backup_root):
+        for name in os.listdir(filesystem_path(backup_root)):
             manifest_path = os.path.join(backup_root, name,
                                          "backup_manifest.json")
-            if not os.path.isfile(manifest_path):
+            if not os.path.isfile(filesystem_path(manifest_path)):
                 continue
-            with open(manifest_path) as f:
+            with open(filesystem_path(manifest_path)) as f:
                 manifest = json.load(f)
             if manifest.get("state") in ("preparing", "ready", "restoring"):
                 runs.add(manifest["segmentation_run"])
@@ -1528,7 +1539,7 @@ class CellMatchrLauncher:
 
         proj = os.path.abspath(
             self.config.get("project_output_folder", "").strip())
-        proj_real = os.path.realpath(proj)
+        proj_real = self._analysis_realpath(proj)
         backup_dir = os.path.join(
             proj, ".analysis_backups",
             f"{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}",
@@ -1537,13 +1548,13 @@ class CellMatchrLauncher:
         try:
             originals = [os.path.abspath(path) for path in existing]
             for original in originals:
-                if os.path.commonpath((proj_real, os.path.realpath(original))) != proj_real:
+                if os.path.commonpath((proj_real, self._analysis_realpath(original))) != proj_real:
                     raise ValueError(
                         f"Analysis output is outside the project: {original}")
             if os.path.commonpath((
-                    proj_real, os.path.realpath(os.path.dirname(backup_dir)))) != proj_real:
+                    proj_real, self._analysis_realpath(os.path.dirname(backup_dir)))) != proj_real:
                 raise ValueError("Analysis backup folder points outside the project")
-            os.makedirs(backup_dir, exist_ok=False)
+            os.makedirs(filesystem_path(backup_dir), exist_ok=False)
             manifest = {
                 "state": "preparing",
                 "segmentation_run": segmentation_run,
@@ -1554,16 +1565,16 @@ class CellMatchrLauncher:
             for original in originals:
                 relative = os.path.relpath(original, proj)
                 saved = os.path.join(backup_dir, relative)
-                os.makedirs(os.path.dirname(saved), exist_ok=True)
-                os.replace(original, saved)
+                os.makedirs(filesystem_path(os.path.dirname(saved)), exist_ok=True)
+                os.replace(filesystem_path(original), filesystem_path(saved))
                 moved.append((original, saved))
             manifest["state"] = "ready"
             self._write_analysis_backup_manifest(backup_dir, manifest)
         except Exception as exc:
             for original, saved in reversed(moved):
                 try:
-                    os.makedirs(os.path.dirname(original), exist_ok=True)
-                    os.replace(saved, original)
+                    os.makedirs(filesystem_path(os.path.dirname(original)), exist_ok=True)
+                    os.replace(filesystem_path(saved), filesystem_path(original))
                 except OSError:
                     pass
             messagebox.showerror(
@@ -1582,8 +1593,8 @@ class CellMatchrLauncher:
         """Restore previous results if the replacement run fails fatally."""
         proj = os.path.abspath(
             self.config.get("project_output_folder", "").strip())
-        proj_real = os.path.realpath(proj)
-        with open(os.path.join(backup_dir, "backup_manifest.json")) as f:
+        proj_real = self._analysis_realpath(proj)
+        with open(filesystem_path(os.path.join(backup_dir, "backup_manifest.json"))) as f:
             manifest = json.load(f)
         state = manifest.get("state")
         if state not in ("preparing", "ready", "restoring"):
@@ -1597,20 +1608,20 @@ class CellMatchrLauncher:
             os.path.join(proj, relative) for relative in manifest["original_files"]
         }
         for generated in self._analysis_generated_files(segmentation_run, output_dir):
-            if os.path.commonpath((proj_real, os.path.realpath(generated))) != proj_real:
+            if os.path.commonpath((proj_real, self._analysis_realpath(generated))) != proj_real:
                 raise ValueError(f"Analysis output is outside the project: {generated}")
             if generated not in original_paths:
-                os.remove(generated)
+                os.remove(filesystem_path(generated))
         for relative in manifest["original_files"]:
             original = os.path.join(proj, relative)
             saved = os.path.join(backup_dir, relative)
             if os.path.commonpath((
-                    proj_real, os.path.realpath(os.path.dirname(original)))) != proj_real:
+                    proj_real, self._analysis_realpath(os.path.dirname(original)))) != proj_real:
                 raise ValueError(f"Cannot restore outside the project: {original}")
-            if os.path.isfile(saved):
-                os.makedirs(os.path.dirname(original), exist_ok=True)
-                os.replace(saved, original)
-            elif not os.path.isfile(original):
+            if os.path.isfile(filesystem_path(saved)):
+                os.makedirs(filesystem_path(os.path.dirname(original)), exist_ok=True)
+                os.replace(filesystem_path(saved), filesystem_path(original))
+            elif not os.path.isfile(filesystem_path(original)):
                 raise FileNotFoundError(
                     f"Neither original nor backup is available: {original}")
         manifest["state"] = "restored"
@@ -1621,10 +1632,10 @@ class CellMatchrLauncher:
     def _analysis_workbook_written(output_dir: str) -> bool:
         """A zero exit alone does not mean the new workbook was saved."""
         try:
-            with open(os.path.join(output_dir, "analysis_run_summary.json")) as f:
+            with open(filesystem_path(os.path.join(output_dir, "analysis_run_summary.json"))) as f:
                 written = bool(json.load(f)["workbook_written"])
-            return written and os.path.isfile(os.path.join(
-                output_dir, "combined_analysis_summary.xlsx"))
+            return written and os.path.isfile(filesystem_path(os.path.join(
+                output_dir, "combined_analysis_summary.xlsx")))
         except (OSError, ValueError, KeyError, TypeError):
             return False
 
@@ -1976,6 +1987,8 @@ class CellMatchrLauncher:
             (".vsi", "Olympus slide scanner", "tested", None),
             (".lif", "Leica (slide scanner)", "tested",
              "a confocal .lif placed in this folder is detected automatically and skipped"),
+            (".tif / .tiff", "TIFF or BigTIFF slide", "tested",
+             "draw regions on a large TIFF or a previously converted scan"),
         ]:
             self._format_status_row(self._fmt_slide_frame, ext, brand, status, note)
 
@@ -2002,7 +2015,7 @@ class CellMatchrLauncher:
                  bg=CARD, fg=MUTED, font=("Segoe UI", 9),
                  wraplength=700, justify="left").pack(anchor="w", pady=(4, 0))
 
-        vsi_card = self._card(self._vsi_section, "Slide Scanner Converter  (Olympus VSI · Leica LIF)")
+        vsi_card = self._card(self._vsi_section, "Slide Scanner Converter  (VSI · LIF · TIFF)")
         tk.Label(vsi_card,
                  text="Draw one ROI per region on the slide scan and export each as a "
                       "full-resolution TIFF.\nOutput auto-saves to: Project folder / VSI_Converted_TIFF/",
@@ -3890,7 +3903,9 @@ class CellMatchrLauncher:
         if self._val_channel_var:
             ch_label = self._val_channel_var.get()
             ch = ch_label.replace("Channel ", "").strip()
-            self.config["val_mask_pattern"] = f"*_predict_original_ch{ch}*.tif"
+            pattern = f"*_predict_original_ch{ch}*.tif"
+            self.config["val_mask_pattern"] = pattern
+            self._vars["val_mask_pattern"].set(pattern)
 
         # Use the selected segmentation input (set in Step 4 input selector)
         if self._val_input_var and self._val_input_var.get():
@@ -3928,7 +3943,7 @@ class CellMatchrLauncher:
             except tk.TclError:
                 pass
 
-        def _done():
+        def _done(process=None):
             if self._val_spin_job:
                 self.root.after_cancel(self._val_spin_job)
                 self._val_spin_job = None
@@ -3940,17 +3955,24 @@ class CellMatchrLauncher:
                     pass
             if hasattr(self, "_val_status"):
                 try:
-                    self._val_status.config(text="✔  Validation window opened.", fg=GREEN)
+                    code = process.poll() if process is not None else None
+                    if code is None:
+                        self._val_status.config(text="✔  Validation window opened.", fg=GREEN)
+                    elif code == 0:
+                        self._val_status.config(text="Validation window closed.", fg=MUTED)
+                    else:
+                        self._val_status.config(text=f"✗  Validator exited with code {code}.", fg=RED)
                 except tk.TclError:
                     pass
 
         try:
-            self._track_proc(subprocess.Popen(
+            process = subprocess.Popen(
                 [sys.executable, self._script("validator.py"), "--config", CONFIG_PATH]
-            ), "Validation window")
+            )
+            self._track_proc(process, "Validation window")
             _spin()
             # Re-enable after 5 s — enough time for the window to appear
-            self.root.after(5000, _done)
+            self.root.after(5000, _done, process)
         except Exception as exc:
             _done()
             if hasattr(self, "_val_status"):
@@ -4050,9 +4072,19 @@ class CellMatchrLauncher:
             tk.Label(cfg_card,
                      text="Select which segmented channel to validate:",
                      bg=CARD, fg=FG, font=FONT).pack(anchor="w", pady=(0, 6))
-            self._val_channel_var = tk.StringVar(
-                value=f"Channel {channel_options[0]}"
-            )
+            saved_channel = str(prediction_channel(self.config.get("val_mask_pattern", "")))
+            channel = saved_channel if saved_channel in channel_options else channel_options[0]
+            self._val_channel_var = tk.StringVar(value=f"Channel {channel}")
+
+            def remember_channel(*_):
+                selected = self._val_channel_var.get().removeprefix("Channel ")
+                if selected in channel_options:
+                    pattern = f"*_predict_original_ch{selected}*.tif"
+                    self.config["val_mask_pattern"] = pattern
+                    self._vars["val_mask_pattern"].set(pattern)
+
+            self._val_channel_var.trace_add("write", remember_channel)
+            remember_channel()
             _cb_val_ch = ttk.Combobox(
                 cfg_card, textvariable=self._val_channel_var,
                 values=[f"Channel {c}" for c in channel_options],
@@ -4475,7 +4507,6 @@ class CellMatchrLauncher:
 
     def _get_val_status_for_channel(self, project_root: str, channel: int) -> str:
         """Include focused mask-change review in the displayed status."""
-        import glob as _glob
         from .validation_state import get_change_state
         change = get_change_state(project_root, channel, verify_hash=False)
         if change["status"] in ("pending", "unknown"):
@@ -4500,9 +4531,9 @@ class CellMatchrLauncher:
 
     def _refresh_ana_val_status(self) -> None:
         """Rebuild the per-channel validation status labels in the analysis step."""
-        if not hasattr(self, "_ana_val_status_frame"):
+        frame = getattr(self, "_ana_val_status_frame", None)
+        if frame is None or not frame.winfo_exists():
             return
-        frame = self._ana_val_status_frame
         for w in frame.winfo_children():
             w.destroy()
 
@@ -4538,7 +4569,6 @@ class CellMatchrLauncher:
                 pass
 
         # Collect per-channel aggregate status across all sample sub-folders
-        import glob as _glob
         project_dirs = [
             d for d in sorted(os.listdir(scan_root))
             if os.path.isdir(os.path.join(scan_root, d))
@@ -4596,9 +4626,9 @@ class CellMatchrLauncher:
 
     def _refresh_val_status(self) -> None:
         """Rebuild per-project validation progress labels in the validation step."""
-        if not hasattr(self, "_val_prog_frame"):
+        frame = getattr(self, "_val_prog_frame", None)
+        if frame is None or not frame.winfo_exists():
             return
-        frame = self._val_prog_frame
         for w in frame.winfo_children():
             w.destroy()
 
@@ -4714,10 +4744,12 @@ class CellMatchrLauncher:
             ch = self._ana_coi_chan_var.get().replace("Channel ", "").strip()
             if ch.isdigit():
                 self.config["ana_red_channel"] = ch
+                self._vars["ana_red_channel"].set(ch)
         if self._ana_pm_chan_var:
             ch = self._ana_pm_chan_var.get().replace("Channel ", "").strip()
             if ch.isdigit():
                 self.config["ana_pv_channel"] = ch
+                self._vars["ana_pv_channel"].set(ch)
         self.config["ana_coloc_enabled"] = bool(self._vars["ana_coloc_enabled"].get())
 
         proj = self.config.get("project_output_folder", "").strip()
@@ -4878,7 +4910,8 @@ class CellMatchrLauncher:
             return False
         if step == "seg":
             for v in self._find_variants(SUBFOLDER["seg"]):
-                if glob.glob(os.path.join(proj, v, "**", "*_predict_*.tif"), recursive=True):
+                if matching_paths(os.path.join(proj, v), os.path.join("**", "*_predict_*.tif"),
+                                  recursive=True):
                     return True
             return False
         if step == "val":
@@ -4908,7 +4941,8 @@ class CellMatchrLauncher:
                 for d in os.listdir(seg_folder)
                 if os.path.isdir(os.path.join(seg_folder, d))
                 and not d.startswith((".", "DEBUG"))
-                and glob.glob(os.path.join(seg_folder, d, mask_pat))
+                and any(prediction_channel(mask_pat) in (None, prediction_channel(path))
+                        for path in matching_paths(os.path.join(seg_folder, d), mask_pat))
             ]
             if not projects:
                 return False

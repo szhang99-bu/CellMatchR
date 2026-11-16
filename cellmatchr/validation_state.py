@@ -22,6 +22,10 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+if __package__:
+    from .file_paths import filesystem_path, read_tiff
+else:
+    from file_paths import filesystem_path, read_tiff
 
 VALIDATION_FOLDER = "ROI Validation Results"
 TSV_COLUMNS = ("ROI_ID", "Decision", "Note")
@@ -63,7 +67,7 @@ def _all_ids(mask_path: str | None) -> list[int]:
     if not mask_path or not os.path.isfile(mask_path):
         return []
     try:
-        return sorted(_label_ids(tifffile.imread(mask_path)))
+        return sorted(_label_ids(read_tiff(mask_path)))
     except (OSError, ValueError, tifffile.TiffFileError):
         return []
 
@@ -350,7 +354,7 @@ def save_edited_mask(mask_path: str, channel: int | None,
                                      dir=sample_dir)
     os.close(fd)
     try:
-        tifffile.imwrite(temp_mask, new_mask.astype(np.uint32), compression="lzw")
+        tifffile.imwrite(filesystem_path(temp_mask), new_mask.astype(np.uint32), compression="lzw")
         if not track:
             os.replace(temp_mask, mask_path)
             return get_change_state(sample_dir, channel, mask_path)
@@ -484,7 +488,7 @@ def begin_review(project_folder: str, channel: int | None,
         return adopted
     # Reuse the same safe directory swap as a normal edit: older applications
     # must no longer see a complete marker or a full active TSV.
-    current_mask = tifffile.imread(mask_path)
+    current_mask = read_tiff(mask_path)
     return save_edited_mask(mask_path, channel, current_mask, current_mask)
 
 

@@ -5,21 +5,21 @@ import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, font, filedialog
 import numpy as np
 import pandas as pd
-import tifffile
 from skimage.measure import regionprops_table, find_contours
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.gridspec import GridSpec
 from matplotlib.colors import LinearSegmentedColormap
-from glob import glob
 
 if __package__:
+    from .file_paths import matching_paths, prediction_channel, read_tiff
     from .validation_state import (
         begin_review, finalize_if_ready, get_change_state,
         get_review_decision, save_review_decision,
     )
 else:
+    from file_paths import matching_paths, prediction_channel, read_tiff
     from validation_state import (
         begin_review, finalize_if_ready, get_change_state,
         get_review_decision, save_review_decision,
@@ -178,7 +178,7 @@ def get_completion_marker(channel):
 def get_predicted_channels(project_folder):
     """Return sorted list of channel numbers that have a predicted mask TIF."""
     seen = set()
-    for f in glob(os.path.join(project_folder, "*_predict_original_ch*.tif")):
+    for f in matching_paths(project_folder, "*_predict_original_ch*.tif"):
         m = re.search(r"_predict_original_ch(\d+)", os.path.basename(f))
         if m:
             seen.add(int(m.group(1)))
@@ -250,7 +250,7 @@ def detect_channel_configs(project_path):
     Returns a list of configs sorted by actual channel number. Each config has:
         channel_index, name, glob_pattern, color, rgb_weights
     """
-    split_files = sorted(glob(os.path.join(project_path, "*_split_ch*.tif")))
+    split_files = sorted(matching_paths(project_path, "*_split_ch*.tif"))
     detected_channels = []
 
     for path in split_files:
@@ -809,7 +809,7 @@ class RoiVerifierApp:
     def load_data(self):
         try:
             print(f"Loading mask: {self.filtered_mask_path}")
-            self.filtered_mask = tifffile.imread(self.filtered_mask_path)
+            self.filtered_mask = read_tiff(self.filtered_mask_path)
             
             print("Calculating ROI properties...")
             props_df = pd.DataFrame(regionprops_table(self.filtered_mask, properties=('label', 'bbox')))
@@ -823,7 +823,7 @@ class RoiVerifierApp:
                 )
                 # begin_review may replace the TIFF atomically to protect old
                 # readers, so use its current on-disk representation.
-                self.filtered_mask = tifffile.imread(self.filtered_mask_path)
+                self.filtered_mask = read_tiff(self.filtered_mask_path)
                 props_df = pd.DataFrame(regionprops_table(
                     self.filtered_mask, properties=('label', 'bbox')))
             if change_state["status"] == "pending" and not change_state["pending_ids"]:
@@ -847,7 +847,7 @@ class RoiVerifierApp:
             for i, config in enumerate(self.channel_config):
                 img_path = self.channel_file_paths.get(i)
                 if img_path and os.path.exists(img_path):
-                    img = tifffile.imread(img_path)
+                    img = read_tiff(img_path)
                     self.channel_images[i] = img
                     if img.max() > global_max: global_max = img.max()
                 else:
@@ -1166,7 +1166,7 @@ class ProjectChooser:
 
             else:
                 # Fall back to PREDICTED_MASK_GLOB_PATTERN (legacy / config-overridden pattern)
-                mask_candidates = sorted(glob(os.path.join(p, PREDICTED_MASK_GLOB_PATTERN)))
+                mask_candidates = sorted(matching_paths(p, PREDICTED_MASK_GLOB_PATTERN))
                 mask_candidates = [
                     m for m in mask_candidates
                     if "coverage" not in os.path.basename(m).lower()
@@ -1265,10 +1265,12 @@ class ProjectChooser:
                     return  # user cancelled
 
             # Find the correct mask for this channel
-            mask_candidates = sorted(glob(os.path.join(proj["path"], f"*_predict_original_ch{val_channel}*.tif")))
+            mask_candidates = sorted(matching_paths(
+                proj["path"], f"*_predict_original_ch{val_channel}*.tif"))
             mask_candidates = [
                 m for m in mask_candidates
-                if "coverage" not in os.path.basename(m).lower()
+                if prediction_channel(m) == val_channel
+                and "coverage" not in os.path.basename(m).lower()
                 and "combined" not in os.path.basename(m).lower()
                 and "debug" not in os.path.basename(m).lower()
                 and "unfiltered" not in os.path.basename(m).lower()
@@ -1284,7 +1286,7 @@ class ProjectChooser:
 
         ch_paths = {}
         for i, cfg in enumerate(channel_configs):
-            fs = glob(os.path.join(proj["path"], cfg['glob_pattern']))
+            fs = matching_paths(proj["path"], cfg['glob_pattern'])
             if fs:
                 ch_paths[i] = fs[0]
             else:

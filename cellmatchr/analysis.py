@@ -1,6 +1,5 @@
 import os
 import re
-import glob
 import json
 import traceback
 import numpy as np
@@ -13,8 +12,10 @@ from skimage.segmentation import find_boundaries
 from skimage.draw import polygon as sk_polygon
 
 if __package__:
+    from .file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from .validation_state import get_change_state, get_validation_tsv_path
 else:
+    from file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from validation_state import get_change_state, get_validation_tsv_path
 
 
@@ -71,7 +72,7 @@ EXCLUDE_FROM_LABEL_SEARCH = [
 # =============================================================================
 
 def ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
+    os.makedirs(filesystem_path(path), exist_ok=True)
 
 
 def safe_percent(numerator, denominator):
@@ -111,10 +112,11 @@ def find_one_file(folder, pattern, required=True):
 
 def _matching_files(folder, pattern):
     """Find the same usable files that find_one_file accepts."""
+    channel = prediction_channel(pattern)
     return [
-        p for p in sorted(glob.glob(os.path.join(folder, pattern)))
-        if not any(excl in os.path.basename(p)
-                   for excl in EXCLUDE_FROM_LABEL_SEARCH)
+        p for p in sorted(matching_paths(folder, pattern))
+        if (channel is None or prediction_channel(p) == channel)
+        and not any(excl in os.path.basename(p) for excl in EXCLUDE_FROM_LABEL_SEARCH)
     ]
 
 
@@ -169,9 +171,9 @@ def _incomplete_summary_row(project_name, status, missing_channels="", error="")
 
 def get_project_folders(root):
     folders = []
-    for name in sorted(os.listdir(root)):
+    for name in sorted(os.listdir(filesystem_path(root))):
         path = os.path.join(root, name)
-        if not os.path.isdir(path):
+        if not os.path.isdir(filesystem_path(path)):
             continue
         if name.startswith("DEBUG") or name.startswith("."):
             continue
@@ -221,8 +223,8 @@ def find_roi_mask_for_project(project_name, roi_mask_folder):
         return None
 
     candidates = sorted(
-        glob.glob(os.path.join(roi_mask_folder, "*.tif")) +
-        glob.glob(os.path.join(roi_mask_folder, "*.roi"))
+        matching_paths(roi_mask_folder, "*.tif") +
+        matching_paths(roi_mask_folder, "*.roi")
     )
     if not candidates:
         print(f"  [WARNING] No .tif or .roi mask files found in {roi_mask_folder}")
@@ -304,7 +306,7 @@ def load_roi_mask_from_file(path, target_shape):
     ext = os.path.splitext(path)[1].lower()
 
     if ext in (".tif", ".tiff"):
-        raw = tifffile.imread(path)
+        raw = read_tiff(path)
         # Flatten to 2D (take first channel/slice if multi-dim)
         if raw.ndim > 2:
             raw = raw[0] if raw.shape[0] <= raw.shape[-1] else raw[..., 0]
@@ -598,7 +600,7 @@ def _save_qc_png_with_legend(rgb, png_path, coi_ch=None, pm_ch=None,
             edgecolor="none",
         )
         fig.tight_layout(pad=0.2)
-        fig.savefig(png_path, dpi=150, bbox_inches="tight",
+        fig.savefig(filesystem_path(png_path), dpi=150, bbox_inches="tight",
                     facecolor=fig.get_facecolor())
         plt.close(fig)
         print(f"  QC PNG saved: {os.path.basename(png_path)}")
@@ -703,10 +705,10 @@ def analyze_project_folder(project_folder):
     print(f"  PM  labels: {os.path.basename(pm_label_path)}")
 
     # ── Load images ─────────────────────────────────────────────────────────
-    coi_labels = tifffile.imread(coi_label_path)
-    pm_labels  = tifffile.imread(pm_label_path)
-    coi_raw    = tifffile.imread(coi_raw_path)
-    pm_raw     = tifffile.imread(pm_raw_path)
+    coi_labels = read_tiff(coi_label_path)
+    pm_labels  = read_tiff(pm_label_path)
+    coi_raw    = read_tiff(coi_raw_path)
+    pm_raw     = read_tiff(pm_raw_path)
 
     if coi_labels.shape != pm_labels.shape:
         raise ValueError(
@@ -929,22 +931,24 @@ def analyze_project_folder(project_folder):
     summary_df = pd.DataFrame([summary])
 
     # ── Save per-project CSVs ────────────────────────────────────────────────
-    p = project_name
-    summary_df.to_csv(os.path.join(analysis_folder, f"{p}_summary.csv"), index=False)
-    coi_props.to_csv(os.path.join(analysis_folder, f"{p}_{coi_ch}_object_table.csv"), index=False)
-    pm_props.to_csv(os.path.join(analysis_folder,  f"{p}_{pm_ch}_object_table.csv"),  index=False)
+    def artifact(suffix):
+        return filesystem_path(os.path.join(analysis_folder, f"{project_name}_{suffix}"))
+
+    summary_df.to_csv(artifact("summary.csv"), index=False)
+    coi_props.to_csv(artifact(f"{coi_ch}_object_table.csv"), index=False)
+    pm_props.to_csv(artifact(f"{pm_ch}_object_table.csv"), index=False)
     coi_to_pm_matches.to_csv(
-        os.path.join(analysis_folder, f"{p}_{coi_ch}_to_{pm_ch}_matches.csv"), index=False)
+        artifact(f"{coi_ch}_to_{pm_ch}_matches.csv"), index=False)
     pm_to_coi_matches.to_csv(
-        os.path.join(analysis_folder, f"{p}_{pm_ch}_to_{coi_ch}_matches.csv"), index=False)
+        artifact(f"{pm_ch}_to_{coi_ch}_matches.csv"), index=False)
     coi_to_pm_iou.to_csv(
-        os.path.join(analysis_folder, f"{p}_{coi_ch}_to_{pm_ch}_iou_candidates.csv"), index=False)
+        artifact(f"{coi_ch}_to_{pm_ch}_iou_candidates.csv"), index=False)
     pm_to_coi_iou.to_csv(
-        os.path.join(analysis_folder, f"{p}_{pm_ch}_to_{coi_ch}_iou_candidates.csv"), index=False)
+        artifact(f"{pm_ch}_to_{coi_ch}_iou_candidates.csv"), index=False)
 
     if roi_mask is not None:
         tifffile.imwrite(
-            os.path.join(analysis_folder, f"{p}_roi_mask_resized.tif"),
+            artifact("roi_mask_resized.tif"),
             roi_mask.astype(np.uint8) * 255,
         )
 
@@ -962,13 +966,13 @@ def analyze_project_folder(project_folder):
             roi_mask=roi_mask,
             matched_coi_labels=matched_coi_set,
             matched_pm_labels=matched_pm_set,
-            output_path=os.path.join(analysis_folder, f"{p}_QC_overlay.tif"),
+            output_path=artifact("QC_overlay.tif"),
             coi_ch=COI_CHANNEL, pm_ch=PM_CHANNEL,
         )
         if roi_mask is not None:
             make_roi_mask_preview(
                 raw_img=coi_raw, roi_mask=roi_mask,
-                output_path=os.path.join(analysis_folder, f"{p}_QC_roi_preview.tif"),
+                output_path=artifact("QC_roi_preview.tif"),
             )
 
     print(f"  COI total: {total_coi}  |  PM total: {total_pm}")
@@ -989,7 +993,7 @@ def _write_run_report(out_dir, total, analyzed, skipped, failures,
     """Write a readable log and a small status file for the launcher."""
     report_path = os.path.abspath(os.path.join(out_dir, "analysis_errors.log"))
     summary_path = os.path.join(out_dir, "analysis_run_summary.json")
-    with open(report_path, "w") as report:
+    with open(filesystem_path(report_path), "w", encoding="utf-8") as report:
         report.write(f"Segmentation input: {MICROSAM_OUTPUT_ROOT}\n")
         report.write(f"Analysis output: {out_dir}\n")
         report.write(
@@ -1035,7 +1039,7 @@ def _write_run_report(out_dir, total, analyzed, skipped, failures,
         "output_error": output_error,
         "report_path": report_path,
     }
-    with open(summary_path, "w") as f:
+    with open(filesystem_path(summary_path), "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     return report_path
 
@@ -1046,7 +1050,7 @@ def main():
         message = f"No project folders found in: {MICROSAM_OUTPUT_ROOT}"
         print(f"[ERROR] {message}")
         out_dir = ANALYSIS_OUTPUT_ROOT or MICROSAM_OUTPUT_ROOT
-        os.makedirs(out_dir, exist_ok=True)
+        ensure_dir(out_dir)
         report_path = _write_run_report(
             out_dir, 0, 0, [], [], False, message, "",
         )
@@ -1125,14 +1129,14 @@ def main():
     # Combined outputs go to ANALYSIS_OUTPUT_ROOT (the Analysis folder),
     # not MICROSAM_OUTPUT_ROOT (the Segmentation folder).
     out_dir = ANALYSIS_OUTPUT_ROOT or MICROSAM_OUTPUT_ROOT
-    os.makedirs(out_dir, exist_ok=True)
+    ensure_dir(out_dir)
 
     workbook_written = False
     output_error = ""
     output_error_traceback = ""
     try:
         excel_path = os.path.join(out_dir, "combined_analysis_summary.xlsx")
-        with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
+        with pd.ExcelWriter(filesystem_path(excel_path), engine="openpyxl") as writer:
             combined.to_excel(writer, sheet_name="Summary", index=False)
 
             # Format the colocalization-percentage columns as real Excel
@@ -1180,7 +1184,7 @@ def _apply_config(config_path: str) -> None:
     global COI_CHANNEL, PM_CHANNEL, IOU_THRESHOLD
     global ROI_CELL_RULE, ANALYSIS_SUBFOLDER_NAME, SAVE_QC_PNG
 
-    with open(config_path) as f:
+    with open(filesystem_path(config_path)) as f:
         cfg = json.load(f)
 
     # MICROSAM_OUTPUT_ROOT = segmentation folder (project sub-dirs live here)

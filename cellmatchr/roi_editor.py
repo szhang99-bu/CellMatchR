@@ -28,16 +28,17 @@ Can also be run standalone:
 import argparse
 import os
 import sys
-from glob import glob
 
 import numpy as np
 import tifffile
 from skimage.measure import label as connected_components
 
 if __package__:
+    from .file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from .validation_state import finalize_if_ready, save_edited_mask
     from .sidecar_input import install_sidecar_controls
 else:
+    from file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from validation_state import finalize_if_ready, save_edited_mask
     from sidecar_input import install_sidecar_controls
 
@@ -86,7 +87,7 @@ def _upsample_additions(additions: np.ndarray, s: int,
 
 def _find_raw(sample_dir: str, channel: int) -> str | None:
     for pat in (f"*_split_ch{channel}.tif", f"*_split_ch{channel}.TIF"):
-        hits = glob(os.path.join(sample_dir, pat))
+        hits = matching_paths(sample_dir, pat)
         if hits:
             return hits[0]
     return None
@@ -99,8 +100,9 @@ def _find_mask(sample_dir: str, channel: int) -> str | None:
         f"*_predict_original_ch{channel}*.TIF",
     ):
         candidates = [
-            p for p in glob(os.path.join(sample_dir, pat))
-            if not any(k in os.path.basename(p).lower() for k in skip)
+            p for p in sorted(matching_paths(sample_dir, pat))
+            if prediction_channel(p) == channel
+            and not any(k in os.path.basename(p).lower() for k in skip)
         ]
         if candidates:
             return candidates[-1]
@@ -206,7 +208,7 @@ def _save_debug_png(raw_path: str,
     import matplotlib.pyplot as plt
     import matplotlib.patches as mpatches
 
-    raw = tifffile.imread(raw_path).astype(np.float32)
+    raw = read_tiff(raw_path).astype(np.float32)
     lo, hi = np.percentile(raw, (1, 99))
     raw_norm = np.clip((raw - lo) / max(hi - lo, 1e-6), 0, 1)
 
@@ -647,9 +649,9 @@ class RoiEditorApp:
         print(f"[roi_editor] Loading sample {idx + 1}/{len(self.samples)}: {s['name']}")
 
         print(f"[roi_editor]   Reading raw image...")
-        raw = tifffile.imread(s["raw"]).astype(np.float32)
+        raw = read_tiff(s["raw"]).astype(np.float32)
         print(f"[roi_editor]   Reading mask...")
-        msk = tifffile.imread(s["mask"]).astype(np.int32)
+        msk = read_tiff(s["mask"]).astype(np.int32)
         n_rois = len(np.unique(msk)) - 1
         print(f"[roi_editor]   Mask has {n_rois} existing ROIs")
 
@@ -912,7 +914,7 @@ class RoiEditorApp:
         )
 
         # Always merge into the original full-res mask from disk
-        existing = tifffile.imread(s["mask"]).astype(np.int32)
+        existing = read_tiff(s["mask"]).astype(np.int32)
         new_mask, n_added, new_ids = _merge_additions(existing, additions)
         new_mask, deleted_ids = _remove_touched_objects(
             new_mask, existing, erasures)
@@ -974,8 +976,8 @@ class RoiEditorApp:
         mask_base = os.path.basename(s["mask"])
         stem      = os.path.splitext(mask_base)[0]
 
-        debug_tif = os.path.join(mask_dir, f"DEBUG_{mask_base}")
-        debug_png = os.path.join(mask_dir, f"DEBUG_{stem}_review.png")
+        debug_tif = filesystem_path(os.path.join(mask_dir, f"DEBUG_{mask_base}"))
+        debug_png = filesystem_path(os.path.join(mask_dir, f"DEBUG_{stem}_review.png"))
 
         # 1. Save DEBUG TIF
         tifffile.imwrite(debug_tif, new_mask.astype(np.uint32), compression="lzw")

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cellmatchr.lif_classify import classify_lif_image
+from cellmatchr.file_paths import filesystem_path
 
 
 def _load_planner():
@@ -31,7 +32,7 @@ def _load_source_guard():
              "_check_resume_sources"}
     nodes = [node for node in tree.body
              if isinstance(node, ast.FunctionDef) and node.name in names]
-    namespace = {"os": os, "RESUME": True,
+    namespace = {"os": os, "RESUME": True, "filesystem_path": filesystem_path,
                  "RUN_PROGRESS_FILENAME": "_run_progress.json"}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(path), "exec"),
          namespace)
@@ -198,7 +199,12 @@ class LifRoutingTests(unittest.TestCase):
             external = root / "external_exports"
             external.mkdir()
             linked = variant / "exports"
-            linked.symlink_to(external, target_is_directory=True)
+            try:
+                linked.symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 1314:
+                    raise
+                self.skipTest("This Windows account cannot create symbolic links.")
             source = linked / "crop.tif"
             source.write_bytes(b"crop")
             record = source_guard["_input_source_record"](

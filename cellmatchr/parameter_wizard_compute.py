@@ -33,10 +33,10 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 import numpy as np
-import tifffile
 
 from cellmatchr import segmentation as seg
 from cellmatchr.config import DEFAULT_CONFIG
+from cellmatchr.file_paths import read_tiff
 
 
 def _load_cfg(path: str) -> dict:
@@ -205,7 +205,7 @@ def main() -> None:
 
         print(f"[parameter_wizard_compute] Channel {ch}: running unfiltered segmentation "
               "(this can take a while)...")
-        image = tifffile.imread(tiff_path).astype(np.uint16)
+        image = read_tiff(tiff_path).astype(np.uint16)
         labels = seg.segment_by_tiling(
             predictor, segmenter, image,
             seg.TILE_SHAPE_2D, seg.HALO_2D, seg.NDIM,

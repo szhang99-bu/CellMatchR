@@ -72,6 +72,7 @@ import tifffile
 from skimage.measure import regionprops_table
 
 from cellmatchr.config import DEFAULT_CONFIG, save_config, save_project_config, CONFIG_PATH
+from cellmatchr.file_paths import filesystem_path, read_tiff
 from cellmatchr.sidecar_input import install_sidecar_controls
 
 # Every picked threshold is padded by this fraction so a by-eye pick of the
@@ -170,7 +171,7 @@ def _original_color_view(path: str, image_shape: tuple[int, int]):
     if not path:
         return None
     try:
-        original = tifffile.memmap(path, mode="r")
+        original = tifffile.memmap(filesystem_path(path), mode="r")
         if original.ndim != 3:
             return None
         if original.shape[:2] == image_shape and original.shape[2] in (3, 4):
@@ -242,8 +243,8 @@ class ParameterWizardApp:
 
         print(f"[parameter_wizard] Loading channel {ch} "
               f"({entry.get('n_objects', '?')} unfiltered objects)...")
-        image = tifffile.imread(entry["raw"]).astype(np.uint16)
-        labels = tifffile.imread(entry["labels"]).astype(np.int32)
+        image = read_tiff(entry["raw"]).astype(np.uint16)
+        labels = read_tiff(entry["labels"]).astype(np.int32)
 
         self._raw_image = image
         self._display_image = (_original_color_view(entry.get("source_rgb"), image.shape)

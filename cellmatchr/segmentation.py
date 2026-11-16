@@ -8,12 +8,22 @@ import tifffile
 from tifffile import imwrite
 from tqdm import tqdm
 import cv2
+from PIL import Image
 
 import micro_sam
 import micro_sam.automatic_segmentation
 import pandas as pd
 from skimage.measure import regionprops_table
 from skimage.segmentation import find_boundaries
+
+if __package__:
+    from .file_paths import filesystem_path, read_tiff
+else:
+    from file_paths import filesystem_path, read_tiff
+
+
+def _save_png(path, image):
+    Image.fromarray(image).save(filesystem_path(path), format="PNG")
 
 
 def _free_memory():
@@ -314,7 +324,7 @@ def save_debug_pngs(
     labeled_tile,
     segmentation_results
 ):
-    os.makedirs(debug_folder, exist_ok=True)
+    os.makedirs(filesystem_path(debug_folder), exist_ok=True)
 
     y, x = corner_coord
     prefix = f"tile_{tile_index:04d}_y{y}_x{x}"
@@ -331,15 +341,15 @@ def save_debug_pngs(
     overlay_path = os.path.join(debug_folder, f"{prefix}_04_overlay_boundaries.png")
     csv_path = os.path.join(debug_folder, f"{prefix}_05_raw_sam_masks.csv")
 
-    tifffile.imwrite(raw_path, raw_preview)
-    tifffile.imwrite(processed_path, processed_uint8)
+    _save_png(raw_path, raw_preview)
+    _save_png(processed_path, processed_uint8)
 
     mask_preview = np.zeros_like(processed_uint8, dtype=np.uint8)
 
     if labeled_tile.max() > 0:
         mask_preview = ((labeled_tile > 0) * 255).astype(np.uint8)
 
-    tifffile.imwrite(mask_path, mask_preview)
+    _save_png(mask_path, mask_preview)
 
     boundaries = find_boundaries(labeled_tile > 0, mode="outer")
 
@@ -352,7 +362,7 @@ def save_debug_pngs(
     overlay[boundaries, 1] = 0
     overlay[boundaries, 2] = 0
 
-    tifffile.imwrite(overlay_path, overlay)
+    _save_png(overlay_path, overlay)
 
     rows = []
 
@@ -366,7 +376,7 @@ def save_debug_pngs(
             "stability_score": mask_dict.get("stability_score", None),
         })
 
-    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    pd.DataFrame(rows).to_csv(filesystem_path(csv_path), index=False)
 
     print(f"      Saved debug PNGs for tile {tile_index}: {debug_folder}")
 
@@ -650,7 +660,7 @@ def save_combined_debug_pngs(
     if debug_folder is None:
         return
 
-    os.makedirs(debug_folder, exist_ok=True)
+    os.makedirs(filesystem_path(debug_folder), exist_ok=True)
 
     print("    Saving combined full-image debug PNGs...")
 
@@ -713,28 +723,28 @@ def save_combined_debug_pngs(
     # -------------------------------------------------------------------------
     # Save files
     # -------------------------------------------------------------------------
-    tifffile.imwrite(
+    _save_png(
         os.path.join(debug_folder, "combined_01_raw_with_tile_boundaries.png"),
         raw_with_tiles
     )
 
-    tifffile.imwrite(
+    _save_png(
         os.path.join(debug_folder, "combined_02_roi_mask.png"),
         roi_mask
     )
 
-    tifffile.imwrite(
+    _save_png(
         os.path.join(debug_folder, "combined_03_roi_overlay_with_tile_boundaries.png"),
         overlay_with_tiles
     )
 
-    tifffile.imwrite(
+    _save_png(
         os.path.join(debug_folder, "combined_04_tile_core_coverage.png"),
         coverage_with_tiles
     )
 
     pd.DataFrame(tile_records).to_csv(
-        os.path.join(debug_folder, "combined_05_tile_summary.csv"),
+        filesystem_path(os.path.join(debug_folder, "combined_05_tile_summary.csv")),
         index=False
     )
 
@@ -1132,7 +1142,7 @@ def _save_split_tiff(channel_data, ch_index, output_subfolder, base_name, split_
         f"min={channel_data.min()}, max={channel_data.max()}, "
         f"size_MB={channel_data.nbytes / 1024**2:.1f}"
     )
-    tiff_path = os.path.join(output_subfolder, f"{base_name}_split_ch{ch_index}.tif")
+    tiff_path = filesystem_path(os.path.join(output_subfolder, f"{base_name}_split_ch{ch_index}.tif"))
     imwrite(tiff_path, channel_data, photometric="minisblack", imagej=True)
     split_tiff_paths[ch_index] = tiff_path
 
@@ -1567,6 +1577,7 @@ def save_segmentation_tiff(output_path, result):
     Save segmentation in ImageJ-compatible format when possible.
     ImageJ TIFF does not support uint32 labels.
     """
+    output_path = filesystem_path(output_path)
     max_label = int(result.max())
 
     print(f"    Max label in result: {max_label}")
@@ -1628,7 +1639,7 @@ def make_final_qc_overlay(raw_image, label_image, output_png_path, downsample=4)
     rgb[boundaries, 1] = 0
     rgb[boundaries, 2] = 0
 
-    tifffile.imwrite(output_png_path, rgb)
+    _save_png(output_png_path, rgb)
     print(f"    Saved final QC overlay PNG: {output_png_path}")
 
 
@@ -1645,7 +1656,7 @@ def make_final_qc_mask_png(label_image, output_png_path, downsample=4):
     label_small = label_image[::downsample, ::downsample]
     mask_png = ((label_small > 0) * 255).astype(np.uint8)
 
-    tifffile.imwrite(output_png_path, mask_png)
+    _save_png(output_png_path, mask_png)
     print(f"    Saved final binary ROI mask PNG: {output_png_path}")
 
 
@@ -1699,7 +1710,7 @@ RUN_PROGRESS_FILENAME = "_run_progress.json"
 
 
 def _run_progress_path(out_dir: str) -> str:
-    return os.path.join(out_dir, RUN_PROGRESS_FILENAME)
+    return filesystem_path(os.path.join(out_dir, RUN_PROGRESS_FILENAME))
 
 
 def _run_identity() -> dict:
@@ -1853,7 +1864,7 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None,
     import json as _json
     import datetime as _dt
     try:
-        os.makedirs(out_dir, exist_ok=True)
+        os.makedirs(filesystem_path(out_dir), exist_ok=True)
         data = {
             "total": int(total),
             "completed": sorted(completed),
@@ -1910,6 +1921,12 @@ def main():
         work_items = work_items[:1]
 
     print(f"Found {len(all_files)} file(s) → {len(work_items)} sample(s) to process.")
+    if is_dry_run:
+        for file_path, lif_scene, base_name in work_items:
+            scene = f" (LIF scene {lif_scene})" if lif_scene is not None else ""
+            print(f"  [PLAN] {base_name}: {file_path}{scene}")
+        print(f"  [PLAN] Requested channels: {CHANNELS_TO_PREDICT}")
+        return 0
 
     predictor, segmenter, cellpose_model, stardist_model = None, None, None, None
 
@@ -1988,10 +2005,10 @@ def main():
     # continue it. Persisted to <output>/_run_progress.json after every image.
     _total_samples = len(work_items)
     _completed = set()
-    if not is_dry_run:
-        _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                            finished=False, channels=CHANNELS_TO_PREDICT,
-                            input_sources=input_sources)
+    failures = 0
+    _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                        finished=False, channels=CHANNELS_TO_PREDICT,
+                        input_sources=input_sources)
 
     for file_path, lif_scene, base_name in work_items:
         print(f"\n--- Planning for: {base_name} ---")
@@ -2001,13 +2018,13 @@ def main():
         output_subfolder = os.path.join(MAIN_OUTPUT_FOLDER, base_name)
 
         def _predict_path(ch):
-            return os.path.join(
+            return filesystem_path(os.path.join(
                 output_subfolder,
-                f"{base_name}_predict_original_ch{ch}_{PREPROCESS_MODE}_tile2048.tif")
+                f"{base_name}_predict_original_ch{ch}_{PREPROCESS_MODE}_tile2048.tif"))
 
         # Resume: if every requested channel for this sample is already
         # segmented, skip it entirely (don't even re-read/re-split the file).
-        if RESUME and not is_dry_run and CHANNELS_TO_PREDICT and all(
+        if RESUME and CHANNELS_TO_PREDICT and all(
                 os.path.isfile(_predict_path(ch)) for ch in CHANNELS_TO_PREDICT):
             print(f"  [RESUME] '{base_name}' already segmented for all channels — skipping.")
             _completed.add(base_name)
@@ -2016,9 +2033,10 @@ def main():
                                 input_sources=input_sources)
             continue
 
+        _saved_filters = (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
+                          MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX)
         try:
-            if not is_dry_run:
-                os.makedirs(output_subfolder, exist_ok=True)
+            os.makedirs(filesystem_path(output_subfolder), exist_ok=True)
 
             split_tiff_paths = save_raw_split_tiffs(
                 file_path,
@@ -2027,9 +2045,6 @@ def main():
                 lif_scene=lif_scene,
                 brightfield=(INPUT_TYPE == "vsi" and SLIDE_SIGNAL_TYPE == "brightfield"),
             )
-
-            if is_dry_run:
-                continue
 
             for ch_to_predict in CHANNELS_TO_PREDICT:
                 if ch_to_predict not in split_tiff_paths:
@@ -2041,8 +2056,6 @@ def main():
                     continue
 
                 # Apply per-channel filter overrides if configured
-                _saved_filters = (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
-                                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX)
                 if PER_CHANNEL_FILTERS_ENABLED and ch_to_predict in PER_CHANNEL_FILTERS:
                     pcf = PER_CHANNEL_FILTERS[ch_to_predict]
                     MIN_OBJECT_SIZE      = int(pcf.get("min_size",     MIN_OBJECT_SIZE))
@@ -2058,7 +2071,7 @@ def main():
                 print(f"\n  - Predicting on Channel {ch_to_predict}...")
 
                 tiff_path = split_tiff_paths[ch_to_predict]
-                image_data = tifffile.imread(tiff_path).astype(np.uint16)
+                image_data = read_tiff(tiff_path).astype(np.uint16)
 
                 print(
                     f"    Loaded split TIFF: shape={image_data.shape}, "
@@ -2090,10 +2103,7 @@ def main():
                     **generate_kwargs
                 )
 
-                output_path = os.path.join(
-                    output_subfolder,
-                    f"{base_name}_predict_original_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048.tif"
-                )
+                output_path = _predict_path(ch_to_predict)
 
                 save_segmentation_tiff(output_path, result)
 
@@ -2130,28 +2140,29 @@ def main():
                  MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX) = _saved_filters
 
         except Exception as e:
+            failures += 1
             print(f"  [ERROR] Failed: {e}")
             import traceback
             traceback.print_exc()
             continue
+        finally:
+            (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
+             MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX) = _saved_filters
+            _free_memory()
 
-        if not is_dry_run:
-            _completed.add(base_name)
-            _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                                finished=False, channels=CHANNELS_TO_PREDICT,
-                                input_sources=input_sources)
-        # Free torch/GPU cache before the next file, so memory doesn't
-        # accumulate across a batch (the cause of macOS killing the process
-        # with SIGKILL / exit -9 after many files).
-        _free_memory()
+        _completed.add(base_name)
+        _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                            finished=False, channels=CHANNELS_TO_PREDICT,
+                            input_sources=input_sources)
         print(f"--- Finished: {base_name} ---\n")
 
     # Mark the run finished only if every planned sample completed.
-    if not is_dry_run:
-        _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                            finished=(len(_completed) >= _total_samples),
-                            channels=CHANNELS_TO_PREDICT,
-                            input_sources=input_sources)
+    _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                        finished=(len(_completed) == _total_samples),
+                        channels=CHANNELS_TO_PREDICT, input_sources=input_sources)
+    if failures:
+        print(f"[ERROR] Segmentation failed for {failures} of {_total_samples} samples.")
+    return int(bool(failures))
 
 
 def _apply_config(config_path: str) -> None:
@@ -2267,4 +2278,4 @@ if __name__ == "__main__":
     _args, _ = _parser.parse_known_args()
     if os.path.exists(_args.config):
         _apply_config(_args.config)
-    main()
+    raise SystemExit(main())

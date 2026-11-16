@@ -54,6 +54,7 @@ class BrightfieldCompatibilityTests(unittest.TestCase):
                                float(model_input[35, 35]))
             shown = _original_color_view(str(source), native.shape)
             np.testing.assert_array_equal(shown[12, 12], rgb[12, 12])
+            del shown  # Release the memory map before Windows removes the TIFF.
             self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), before)
 
     def test_brightfield_max_filter_keeps_dark_cells(self):

@@ -14,11 +14,15 @@ import napari
 import slideio
 
 try:
+    from .file_paths import filesystem_path
     from .lif_classify import classify_lif_image
     from .sidecar_input import install_sidecar_controls
+    from .slide_tiff import TIFF_EXTENSIONS, TiffSlide, resize_overview as _resize_overview
 except ImportError:  # This file can also be launched directly as a script.
+    from file_paths import filesystem_path
     from lif_classify import classify_lif_image
     from sidecar_input import install_sidecar_controls
+    from slide_tiff import TIFF_EXTENSIONS, TiffSlide, resize_overview as _resize_overview
 
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox, QGroupBox,
@@ -68,7 +72,7 @@ def safe_slot(fn):
 # UTILITIES
 # ----------------------------
 def ensure_dir(p: str):
-    os.makedirs(p, exist_ok=True)
+    os.makedirs(filesystem_path(p), exist_ok=True)
 
 
 def clamp(val, lo, hi):
@@ -402,7 +406,7 @@ def _parse_scene_physical_coords(slide) -> dict:
 def compute_overview(scene, overview_width: int):
     W_full, H_full = scene.size
     scale = overview_width / W_full
-    overview_h = int(round(H_full * scale))
+    overview_h = max(1, int(round(H_full * scale)))
 
     debug(f"Scene full size W,H = {W_full},{H_full}")
     debug(f"Overview requested W,H = {overview_width},{overview_h} (scale={scale:.8f})")
@@ -414,7 +418,8 @@ def compute_overview(scene, overview_width: int):
 
 
 def write_multichannel_tiff(path: str, img_yxc: np.ndarray):
-    """Save (Y,X,C) as multichannel TIFF readable by Fiji (stores as (C,Y,X), imagej=True)."""
+    """Save grayscale or channel-first TIFF, preserving source pixel values."""
+    path = filesystem_path(path)
     if img_yxc.ndim == 2:
         tiff.imwrite(path, img_yxc, photometric="minisblack", compression=None)
         return
@@ -422,7 +427,9 @@ def write_multichannel_tiff(path: str, img_yxc: np.ndarray):
         raise ValueError(f"Expected 2D or 3D array, got shape {img_yxc.shape}")
 
     img_cyx = np.moveaxis(img_yxc, -1, 0)  # (C,Y,X)
-    tiff.imwrite(path, img_cyx, imagej=True, compression=None)
+    imagej = img_cyx.dtype.char in "BHhf" and img_cyx.nbytes < 2**32 - 2**25
+    tiff.imwrite(path, img_cyx, imagej=imagej, photometric="minisblack",
+                 metadata={"axes": "CYX"})
 
 
 # ----------------------------
@@ -432,20 +439,6 @@ def write_multichannel_tiff(path: str, img_yxc: np.ndarray):
 # its merged/stitched image(s) in objects that quack like slideio's Slide/Scene
 # so the rest of the converter (overview, ROI drawing, full-res export) works
 # unchanged.
-
-def _resize_overview(arr: np.ndarray, oh: int, ow: int) -> np.ndarray:
-    """Resize a large (H,W,C) image to (oh,ow,C) for the navigation overview.
-
-    Uses nearest-neighbour index sampling — pure numpy, no OpenCV (which would
-    pull in a second Qt and crash the napari window), and memory-light (it never
-    casts the whole gigabyte-scale image to float). Quality is fine for an
-    overview; full-resolution ROI export uses an un-resized crop.
-    """
-    H, W = arr.shape[:2]
-    ys = np.linspace(0, H - 1, oh).round().astype(np.intp)
-    xs = np.linspace(0, W - 1, ow).round().astype(np.intp)
-    return arr[ys][:, xs]
-
 
 class _LifScene:
     """slideio-Scene-compatible wrapper over one readlif image (a stitched scene)."""
@@ -575,6 +568,7 @@ class VSINapariROIApp:
 
         self.slide = None
         self.is_lif = self.vsi_path.lower().endswith(".lif")
+        self.is_tiff = self.vsi_path.lower().endswith(TIFF_EXTENSIONS)
         self.scene_id = START_SCENE_ID
         self.scene = None
         self.total_scenes = 0
@@ -637,6 +631,9 @@ class VSINapariROIApp:
         if self.is_lif:
             debug(f"Opening LIF with readlif: {self.vsi_path}")
             self.slide = _LifSlide(self.vsi_path)
+        elif self.is_tiff:
+            debug(f"Opening TIFF: {self.vsi_path}")
+            self.slide = TiffSlide(self.vsi_path)
         else:
             debug(f"Opening VSI with slideio: {self.vsi_path}")
             self.slide = slideio.open_slide(self.vsi_path, "VSI")
@@ -647,8 +644,8 @@ class VSINapariROIApp:
             s = self.slide.get_scene(i)
             debug(f"Scene {i}: size=({s.size[0]} x {s.size[1]}), channels={s.num_channels}")
 
-        if self.is_lif:
-            # LIF has no slide-label photo or per-scene stage coordinates.
+        if self.is_lif or self.is_tiff:
+            # These readers do not supply a slide label or a physical scene map.
             self._label_img = None
             self._scene_coords = {}
         else:
@@ -674,7 +671,11 @@ class VSINapariROIApp:
         C = self.scene.num_channels
         debug(f"Using SCENE_ID={scene_id}: full={W_full}x{H_full}, channels={C} | last_scene={self.is_last_scene}")
 
-        self.overview, self.scale_overview_per_full = compute_overview(self.scene, OVERVIEW_WIDTH)
+        overview_width = OVERVIEW_WIDTH
+        if self.is_tiff:
+            # Bound both preview dimensions, including for tall single-strip scans.
+            overview_width = min(W_full, max(1, round(OVERVIEW_WIDTH * W_full / max(W_full, H_full))))
+        self.overview, self.scale_overview_per_full = compute_overview(self.scene, overview_width)
 
         meta = {
             "vsi_path": self.vsi_path,
@@ -688,7 +689,7 @@ class VSINapariROIApp:
             "scale_full_per_overview": float(1.0 / self.scale_overview_per_full),
         }
         meta_path = os.path.join(self.intermediate_dir, f"{self.vsi_base}_slice{scene_id+1:02d}_overview_meta.json")
-        with open(meta_path, "w") as f:
+        with open(filesystem_path(meta_path), "w") as f:
             json.dump(meta, f, indent=2)
         debug(f"Wrote overview metadata: {meta_path}")
 
@@ -697,7 +698,7 @@ class VSINapariROIApp:
     # ---------- Napari ----------
     def setup_viewer(self):
         file_name = os.path.basename(self.vsi_path)
-        self.viewer = napari.Viewer(title=f"VSI ROI Tool — {file_name}")
+        self.viewer = napari.Viewer(title=f"Slide Scanner ROI Tool — {file_name}")
         debug("Launching napari...")
 
         self._add_overview_layers()
@@ -811,12 +812,15 @@ class VSINapariROIApp:
         if self.viewer is None:
             return
         file_name = os.path.basename(self.vsi_path)
-        self.viewer.title = f"VSI ROI Tool — {file_name} — Slice {self.scene_id + 1}/{self.total_scenes}"
+        scene_label = "Scene" if self.is_tiff else "Slice"
+        self.viewer.title = (f"Slide Scanner ROI Tool — {file_name} — "
+                             f"{scene_label} {self.scene_id + 1}/{self.total_scenes}")
 
         if self.lbl_file is not None:
             self.lbl_file.setText(f"<b>File:</b> {file_name}")
         if self.lbl_slice is not None:
-            self.lbl_slice.setText(f"<b>Brain slice:</b> {self.scene_id + 1} / {self.total_scenes}")
+            label = "Scene" if self.is_tiff else "Brain slice"
+            self.lbl_slice.setText(f"<b>{label}:</b> {self.scene_id + 1} / {self.total_scenes}")
 
         if self.btn_next is not None:
             self.btn_next.setEnabled(not self.is_last_scene)
@@ -1334,7 +1338,7 @@ class VSINapariROIApp:
                 self.mask_dir,
                 f"{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}_vertices_overview_yx.npy"
             )
-            np.save(verts_path, poly)
+            np.save(filesystem_path(verts_path), poly)
 
             coords_xy = [[float(x), float(y)] for y, x in poly]
             if coords_xy[0] != coords_xy[-1]:
@@ -1357,7 +1361,7 @@ class VSINapariROIApp:
                 self.mask_dir,
                 f"{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}{suffix_part}_overview.geojson"
             )
-            with open(geo_path, "w") as f:
+            with open(filesystem_path(geo_path), "w") as f:
                 json.dump(geojson, f, indent=2)
 
             mask = rasterize_polygon_mask(poly, (H_ov, W_ov))
@@ -1366,7 +1370,7 @@ class VSINapariROIApp:
                 self.mask_dir,
                 f"{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}{suffix_part}_mask_overview.tif"
             )
-            tiff.imwrite(mask_path, mask_vis, photometric="minisblack", compression=None)
+            tiff.imwrite(filesystem_path(mask_path), mask_vis, photometric="minisblack", compression=None)
 
             debug(f"Saved ROI {i+1}: {os.path.basename(mask_path)}")
             saved.append({"roi_idx": i, "mask_path": mask_path})
@@ -1631,9 +1635,16 @@ class VSINapariROIApp:
             self._set_busy(False, "")
 
     def run_one_file(self):
-        self.open_slide()
-        self.load_scene(START_SCENE_ID)
-        self.setup_viewer()
+        try:
+            self.open_slide()
+            self.load_scene(START_SCENE_ID)
+            self.setup_viewer()
+        except Exception:
+            if self.is_tiff and self.slide is not None:
+                self.slide.close()
+            raise
+        if self.is_tiff:
+            self.viewer.window._qt_window.destroyed.connect(self.slide.close)
 
 
 # ----------------------------
@@ -1647,7 +1658,7 @@ def choose_vsi_or_folder_dialog(parent=None):
     box = QMessageBox(parent)
     box.setWindowTitle("Select input")
     box.setText("What would you like to open?")
-    btn_file = box.addButton("Open a slide-scanner image (VSI / LIF)", QMessageBox.AcceptRole)
+    btn_file = box.addButton("Open a slide-scanner image (VSI / LIF / TIFF)", QMessageBox.AcceptRole)
     btn_folder = box.addButton("Set working directory (folder)", QMessageBox.AcceptRole)
     btn_cancel = box.addButton("Cancel", QMessageBox.RejectRole)
     box.setDefaultButton(btn_file)
@@ -1685,9 +1696,11 @@ def pick_folder(start_dir: str) -> str:
 def pick_vsi_file(start_dir: str) -> str:
     debug(f"Opening slide-scanner image picker at: {start_dir}")
 
-    dlg = QFileDialog(None, "Select a slide-scanner image (VSI / LIF)", start_dir)
+    dlg = QFileDialog(None, "Select a slide-scanner image (VSI / LIF / TIFF)", start_dir)
     dlg.setFileMode(QFileDialog.ExistingFile)
-    dlg.setNameFilter("Slide-scanner images (*.vsi *.lif);;Olympus VSI (*.vsi);;Leica LIF (*.lif)")
+    tiffs = " ".join(f"*{ext} *{ext.upper()}" for ext in TIFF_EXTENSIONS)
+    dlg.setNameFilter(f"Slide-scanner images (*.vsi *.VSI *.lif *.LIF {tiffs});;"
+                      f"Olympus VSI (*.vsi *.VSI);;Leica LIF (*.lif *.LIF);;TIFF / BigTIFF ({tiffs})")
     dlg.setOption(QFileDialog.DontUseNativeDialog, True)  # <- IMPORTANT on mac
     dlg.setModal(True)
 
@@ -1737,7 +1750,7 @@ def main():
     def _excepthook(exc_type, exc_value, exc_tb):
         msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
         print(msg, flush=True)
-        _show_error_dialog("CellMatchR VSI Converter — Unhandled Error", msg)
+        _show_error_dialog("CellMatchR Slide Scanner Converter — Unhandled Error", msg)
 
     sys.excepthook = _excepthook
 
@@ -1820,10 +1833,10 @@ def main():
             qtwin.destroyed.connect(lambda: QTimer.singleShot(0, pick_next))
 
         except Exception:
-            debug("Fatal error while processing VSI:")
+            debug("Fatal error while processing slide:")
             msg = traceback.format_exc()
             print(msg, flush=True)
-            _show_error_dialog("CellMatchR VSI Converter — Error", msg)
+            _show_error_dialog("CellMatchR Slide Scanner Converter — Error", msg)
             QTimer.singleShot(0, pick_next)
 
     # Make sure a Qt app exists (needed in VS Code interactive sometimes)
@@ -1861,7 +1874,7 @@ def _apply_config(config_path: str) -> None:
 
 if __name__ == "__main__":
     import argparse
-    _parser = argparse.ArgumentParser(description="CellMatchR VSI Converter")
+    _parser = argparse.ArgumentParser(description="CellMatchR Slide Scanner Converter (VSI, LIF, TIFF)")
     _parser.add_argument(
         "--config",
         default=os.path.expanduser("~/.cellmatchr/config.json"),

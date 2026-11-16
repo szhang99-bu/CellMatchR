@@ -4,12 +4,25 @@
 
 Confocal and slide-scanner cell segmentation, manual validation, and colocalization analysis pipeline.
 
-Reads images directly from most major microscope brands, plus **Olympus `.vsi`**
-slide-scanner files via the built-in VSI Converter.
+Reads images directly from most major microscope brands. The built-in Slide
+Scanner Converter exports selected regions from Olympus VSI, Leica LIF slide
+scans, and TIFF or BigTIFF files.
 Segmentation runs with [Micro-SAM](https://github.com/computational-cell-analytics/micro-sam),
 [Cellpose-SAM](https://github.com/MouseLand/cellpose) (with optional Cellpose 2
 and published rat Nissl model choices), or the optional
 [StarDist 2D](https://github.com/stardist/stardist) backend (selectable per run).
+
+## What to open
+
+| Platform | Launcher in the CellMatchR folder |
+|----------|----------------------------------|
+| Windows x64 | After [Windows setup](#windows-x64), double-click **Launch CellMatchR (Windows)**, the shortcut with the CellMatchR logo. You can also double-click **`run-windows.cmd`**. |
+| macOS 27 or later | After installing the environment, double-click **`CellMatchR (macOS 27+).app`** in Finder. |
+| macOS 26 or earlier | After installing the environment, double-click **`CellMatchR.app`** in Finder. |
+| Linux | After [Linux setup](#linux-setup), open a terminal in the CellMatchR folder and run **`bash run-linux.sh`**. |
+
+See [Launching CellMatchR](#launching-cellmatchr) for the macOS Terminal/log
+launcher and first-launch instructions.
 
 **Supported input formats**
 
@@ -17,10 +30,10 @@ and published rat Nissl model choices), or the optional
 |--------|-------|--------|
 | `.czi` | Zeiss | ✅ tested |
 | `.lif` | Leica (confocal **and** slide scanner) | ✅ tested |
-| `.tif` / `.tiff` | any | ✅ tested |
+| `.tif` / `.tiff` | TIFF or BigTIFF | ✅ direct-read or region selection in the Slide Scanner Converter |
 | `.nd2` | Nikon | 🧪 **beta** — not yet validated on a real file; use with caution |
 | `.oib` / `.oif` | Olympus FluoView | 🧪 **beta** — not yet validated on a real file; use with caution |
-| `.vsi` | Olympus slide scanner | ✅ tested (via VSI Converter) |
+| `.vsi` | Olympus slide scanner | ✅ tested (via Slide Scanner Converter) |
 | `.oir` | Olympus FV3000 | ❌ not supported — convert to `.tif` in [Fiji/ImageJ](https://imagej.net/software/fiji/) first |
 
 **Brightfield Nissl slides:** In Step 2 choose **Slide scanner → Brightfield
@@ -120,9 +133,10 @@ Large stitched slide scans may need substantial memory during ROI conversion.
    `C:\CellMatchR` by default. If your account cannot create that directory,
    set `CELLMATCHR_WINDOWS_RUNTIME` to a short, writable absolute path in both
    the setup and launch shells.
-2. Run `.\run-windows.cmd` from the same folder to open the launcher. The
-   source folder can live on the Desktop or in another location you choose.
-   Keep both `.cmd` files beside the `cellmatchr` and `scripts` folders.
+2. Double-click **Launch CellMatchR (Windows)** in the same folder. Setup
+   creates this shortcut with the CellMatchR logo. **`run-windows.cmd`** also
+   opens the launcher. If you moved the source folder or already installed the
+   runtime, run `.\setup-windows.cmd -ShortcutOnly` to recreate the shortcut.
 3. For CUDA acceleration, use a working NVIDIA driver. Run
    `.\setup-windows.cmd -Device CPU` to install CPU builds explicitly. The
    first run of a base segmentation model may download weights into the
@@ -150,6 +164,18 @@ it from another computer. When reopening an existing project, first confirm
 that the paths in Step 2 point to the current TIFF exports and that Step 5
 shows the corresponding ROI mask folder. Replacing an analysis run keeps the
 previous run's files in `.analysis_backups` inside that project's folder.
+
+#### Retraining and GPU support on Windows
+
+In Step 7, Cellpose-SAM and Micro-SAM use the NVIDIA GPU when PyTorch detects
+CUDA. Both were tested on an RTX 3090. StarDist in the native Windows setup uses
+TensorFlow 2.16.2 on the CPU. TensorFlow 2.10 was the last release with native
+Windows CUDA support. StarDist GPU training uses a CUDA-enabled TensorFlow
+environment on Linux or under WSL2. See the [TensorFlow installation guide](https://www.tensorflow.org/install/pip).
+
+All three backends completed one-epoch retraining and checkpoint reloads on
+real VSI regions in the Windows validation runs. The trials used mock reviews
+to check that the training workflow runs.
 
 #### Optional StarDist backend on Windows
 
@@ -470,7 +496,7 @@ chmod +x "CellMatchR.app/Contents/MacOS/CellMatchR" "CellMatchR (macOS 27+).app/
 > no longer can (it fails with `Operation not permitted`). On macOS 26 (Tahoe)
 > or earlier, keep using `CellMatchR.app`.
 
-### Option A — double-click the app (macOS, recommended)
+### Option A — double-click the matching macOS app in Finder
 
 Pick the app that matches your macOS version. Both are in the project folder:
 
@@ -551,6 +577,24 @@ On Linux, run `bash run-linux.sh` from the checkout after completing
 conda activate cellmatchr
 python scripts/run_cellmatchr.py
 ```
+
+### Draw regions on an existing TIFF slide
+
+1. In **Step 2 → Slide scanner**, choose the signal type and click **Launch
+   Slide Scanner Converter**.
+2. Open the large TIFF or BigTIFF, draw and name each ROI, then save and export
+   it. This works with grayscale, RGB, ImageJ and OME-TIFF images that
+   `tifffile` can read. For stacks with explicit Z and T axes, the converter
+   takes the first time point and projects the Z stack by maximum intensity.
+   Generic multi-page TIFF images appear as separate scenes when the file
+   does not specify channel or stack axes.
+3. Use the exported full-resolution TIFFs in **Step 3**. The converter keeps
+   the ROI masks in `VSI_Converted_TIFF/DONOTDELETE-MASK_FOR_VSI` for **Step 5**.
+
+The converter uses stored pyramid levels when available for preview. Tiled
+or compressed TIFF reads use Zarr 3. For an existing environment, install
+`zarr>=3.1.3,<4` in the active CellMatchR environment or update it from its
+environment file.
 
 ### Option D — entry-point (after `pip install -e .`)
 
@@ -649,6 +693,9 @@ skipped, or had errors, and points to `analysis_errors.log`.
 CellMatchr/
 ├── CellMatchR.app/                # macOS launcher — macOS 26 (Tahoe) and earlier
 ├── CellMatchR (macOS 27+).app/    # macOS launcher — macOS 27 (Golden Gate) and later
+├── setup-windows.cmd              # Windows installer and shortcut creator
+├── run-windows.cmd                # Windows launcher
+├── run-linux.sh                   # Linux launcher
 ├── CellMatchr_Logo.png            # application logo
 ├── README.md
 ├── environment.yml                # conda environment (key versions pinned)

@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet('Auto', 'CPU')]
-    [string]$Device = 'Auto'
+    [string]$Device = 'Auto',
+    [switch]$ShortcutOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +11,30 @@ if ($env:OS -ne 'Windows_NT' -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
 }
 
 $repo = Split-Path -Parent $PSScriptRoot
+
+function New-LauncherShortcut {
+    $launcher = Join-Path $repo 'run-windows.cmd'
+    $icon = Join-Path $PSScriptRoot 'CellMatchR.ico'
+    if (!(Test-Path -LiteralPath $launcher -PathType Leaf) -or
+        !(Test-Path -LiteralPath $icon -PathType Leaf)) {
+        throw 'Keep run-windows.cmd and scripts\CellMatchR.ico in the CellMatchR folder.'
+    }
+    $path = Join-Path $repo 'Launch CellMatchR (Windows).lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($path)
+    $shortcut.TargetPath = $launcher
+    $shortcut.WorkingDirectory = $repo
+    $shortcut.IconLocation = "$icon,0"
+    $shortcut.Description = 'Open CellMatchR on Windows'
+    $shortcut.Save()
+    Write-Host "Created: $path"
+}
+
+if ($ShortcutOnly) {
+    New-LauncherShortcut
+    return
+}
+
 # Keep the cache path short for packages with deeply nested Windows paths.
 $runtime = Join-Path "$env:SystemDrive\" 'CellMatchR'
 if ($env:CELLMATCHR_WINDOWS_RUNTIME) {
@@ -85,5 +110,10 @@ if ($Device -eq 'CPU') {
 Invoke-Checked $mamba $arguments
 Invoke-Checked $mamba @('--no-rc', 'run', '--prefix', $prefix, 'python', '-m', 'pip', 'check')
 Invoke-Checked $mamba @('--no-rc', 'run', '--prefix', $prefix, 'python', '-c',
-    "import cv2, micro_sam.automatic_segmentation, tkinter, torch; from cellpose import models; from qtpy import QtWidgets; print(torch.cuda.get_device_name() if torch.cuda.is_available() else 'CPU')")
-Write-Host 'Setup complete. Open run-windows.cmd to start CellMatchR.'
+    "import cv2, micro_sam.automatic_segmentation, tkinter, torch, zarr; from cellpose import models; from qtpy import QtWidgets; print(torch.cuda.get_device_name() if torch.cuda.is_available() else 'CPU')")
+try {
+    New-LauncherShortcut
+} catch {
+    Write-Warning "Could not create the Windows shortcut. $($_.Exception.Message)"
+}
+Write-Host 'Setup complete. Open the Launch CellMatchR (Windows) shortcut or run-windows.cmd.'

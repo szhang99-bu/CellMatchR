@@ -3,11 +3,11 @@
 # build_cellmatchr_app_macos27.sh — build "CellMatchR (macOS 27+).app".
 #
 # Use THIS app on macOS 27 (Golden Gate) and later. On macOS 26 (Tahoe) and
-# earlier, keep using the original CellMatchR.app (scripts/build_cellmatchr_app.sh),
+# earlier, use CellMatchR (macOS 26 and earlier).app (scripts/build_cellmatchr_app.sh),
 # which is left unchanged.
 #
 # WHY A SEPARATE APP:
-#   The original CellMatchR.app is a bash script that asks Terminal (via an
+#   The launcher for macOS 26 and earlier is a bash script that asks Terminal (via an
 #   AppleScript `do script`) to run scripts/launch_cellmatchr.command, so the
 #   GUI runs with Terminal's permission to read the Desktop. macOS 27 no longer
 #   allows that: a command another app asks Terminal to run is checked against

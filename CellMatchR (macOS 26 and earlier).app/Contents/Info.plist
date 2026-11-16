@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>            <string>CellMatchR</string>
-    <key>CFBundleDisplayName</key>     <string>CellMatchR</string>
+    <key>CFBundleDisplayName</key>     <string>CellMatchR (macOS 26 and earlier)</string>
     <key>CFBundleIdentifier</key>      <string>com.cellmatchr.launcher</string>
     <key>CFBundleVersion</key>         <string>0.1.0</string>
     <key>CFBundleShortVersionString</key> <string>0.1.0</string>

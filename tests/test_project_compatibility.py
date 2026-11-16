@@ -207,7 +207,7 @@ class ProjectCompatibilityTests(unittest.TestCase):
             self.skipTest("Git history unavailable")
         repo = Path(__file__).resolve().parents[1]
         source = subprocess.run(
-            ["git", "show", "bbeb583:cellmatchr/analysis.py"],
+            ["git", "show", "3136a4ce1fabf2dad1600783002defde9e0ef4d1:cellmatchr/analysis.py"],
             cwd=repo, text=True, capture_output=True,
         )
         if source.returncode != 0:

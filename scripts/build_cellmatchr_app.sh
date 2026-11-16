@@ -1,6 +1,6 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# build_cellmatchr_app.sh — rebuild CellMatchR.app from scratch.
+# build_cellmatchr_app.sh — rebuild the app for macOS 26 and earlier.
 #
 # WHY THIS DESIGN:
 #   Under macOS Tahoe (26+), an app launched from Finder runs in a sandbox that
@@ -19,7 +19,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-APP="$ROOT_DIR/CellMatchR.app"
+APP="$ROOT_DIR/CellMatchR (macOS 26 and earlier).app"
 CONTENTS="$APP/Contents"
 
 echo "Project root : $ROOT_DIR"
@@ -36,7 +36,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>            <string>CellMatchR</string>
-    <key>CFBundleDisplayName</key>     <string>CellMatchR</string>
+    <key>CFBundleDisplayName</key>     <string>CellMatchR (macOS 26 and earlier)</string>
     <key>CFBundleIdentifier</key>      <string>com.cellmatchr.launcher</string>
     <key>CFBundleVersion</key>         <string>0.1.0</string>
     <key>CFBundleShortVersionString</key> <string>0.1.0</string>
@@ -53,20 +53,24 @@ PLIST
 # 3) Main executable: thin Terminal-handoff launcher ------------------------
 cat > "$CONTENTS/MacOS/CellMatchR" <<'LAUNCH'
 #!/bin/bash
-# CellMatchR.app — thin launcher (see build_cellmatchr_app.sh for rationale).
+# Thin launcher for macOS 26 and earlier (see build_cellmatchr_app.sh).
 # Resolve the project root from our own bundle path using STRING math only —
 # no filesystem access, so the Tahoe Desktop restriction never applies to us.
-SELF="$0"                                  # .../CellMatchR.app/Contents/MacOS/CellMatchR
-ROOT="${SELF%/CellMatchR.app/*}"           # .../<project dir>
+SELF="$0"
+[[ "$SELF" == /* ]] || SELF="$PWD/$SELF"
+BUNDLE="${SELF%/Contents/MacOS/*}"
+ROOT="${BUNDLE%/*}"
 CMD="$ROOT/scripts/launch_cellmatchr.command"
 
 # Hand off to Terminal, which IS allowed to read the Desktop. Terminal runs the
 # .command (and the Python GUI it starts) with its own file-access permission.
-osascript >/dev/null 2>&1 <<OSA
-tell application "Terminal"
-    activate
-    do script "'$CMD'"
-end tell
+osascript - "$CMD" >/dev/null 2>&1 <<'OSA'
+on run argv
+    tell application "Terminal"
+        activate
+        do script (quoted form of (item 1 of argv))
+    end tell
+end run
 OSA
 LAUNCH
 chmod +x "$CONTENTS/MacOS/CellMatchR"

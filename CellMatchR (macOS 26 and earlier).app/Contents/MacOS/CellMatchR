@@ -1,16 +1,20 @@
 #!/bin/bash
-# CellMatchR.app — thin launcher (see build_cellmatchr_app.sh for rationale).
+# Thin launcher for macOS 26 and earlier (see build_cellmatchr_app.sh).
 # Resolve the project root from our own bundle path using STRING math only —
 # no filesystem access, so the Tahoe Desktop restriction never applies to us.
-SELF="$0"                                  # .../CellMatchR.app/Contents/MacOS/CellMatchR
-ROOT="${SELF%/CellMatchR.app/*}"           # .../<project dir>
+SELF="$0"
+[[ "$SELF" == /* ]] || SELF="$PWD/$SELF"
+BUNDLE="${SELF%/Contents/MacOS/*}"
+ROOT="${BUNDLE%/*}"
 CMD="$ROOT/scripts/launch_cellmatchr.command"
 
 # Hand off to Terminal, which IS allowed to read the Desktop. Terminal runs the
 # .command (and the Python GUI it starts) with its own file-access permission.
-osascript >/dev/null 2>&1 <<OSA
-tell application "Terminal"
-    activate
-    do script "'$CMD'"
-end tell
+osascript - "$CMD" >/dev/null 2>&1 <<'OSA'
+on run argv
+    tell application "Terminal"
+        activate
+        do script (quoted form of (item 1 of argv))
+    end tell
+end run
 OSA

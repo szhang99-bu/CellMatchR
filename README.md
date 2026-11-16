@@ -112,6 +112,64 @@ Large stitched slide scans may need substantial memory during ROI conversion.
 
 ## Installation
 
+### Windows (x64)
+
+1. Clone this repository with Git for Windows or extract the complete source
+   folder. Open PowerShell in that folder and run `.\setup-windows.cmd`.
+   Setup installs a dedicated Python 3.11 environment with micromamba under
+   `C:\CellMatchR` by default. If your account cannot create that directory,
+   set `CELLMATCHR_WINDOWS_RUNTIME` to a short, writable absolute path in both
+   the setup and launch shells.
+2. Run `.\run-windows.cmd` from the same folder to open the launcher. The
+   source folder can live on the Desktop or in another location you choose.
+   Keep both `.cmd` files beside the `cellmatchr` and `scripts` folders.
+3. For CUDA acceleration, use a working NVIDIA driver. Run
+   `.\setup-windows.cmd -Device CPU` to install CPU builds explicitly. The
+   first run of a base segmentation model may download weights into the
+   runtime's `model-cache` folder.
+
+Double-clicking either `.cmd` file also works with the default runtime location.
+
+For example, with the default runtime, this opens the CLI help for GPU/CPU
+segmentation, analysis, and training from PowerShell in the source folder:
+
+```powershell
+$runtime = "$env:SystemDrive\CellMatchR"
+$env:MAMBA_ROOT_PREFIX = $runtime
+$env:MICROSAM_CACHEDIR = "$runtime\model-cache\micro-sam"
+$env:CELLPOSE_LOCAL_MODELS_PATH = "$runtime\model-cache\cellpose"
+$mamba = "$runtime\Library\bin\micromamba.exe"
+$prefix = "$runtime\CellMatchR-win-env"
+& $mamba --no-rc run --prefix $prefix python -m cellmatchr.segmentation --help
+& $mamba --no-rc run --prefix $prefix python -m cellmatchr.analysis --help
+& $mamba --no-rc run --prefix $prefix python -m cellmatchr.retraining --help
+```
+
+Keep a `.vsi` file next to its matching `_name_` companion folder when copying
+it from another computer. When reopening an existing project, first confirm
+that the paths in Step 2 point to the current TIFF exports and that Step 5
+shows the corresponding ROI mask folder. Replacing an analysis run keeps the
+previous run's files in `.analysis_backups` inside that project's folder.
+
+#### Optional StarDist backend on Windows
+
+StarDist uses TensorFlow on the CPU in this Windows setup. Its dependency
+versions differ from the default environment's Micro-SAM stack. In the same
+PowerShell session as above, install the pinned StarDist dependencies in a
+separate directory and enable them for a StarDist session:
+
+```powershell
+$stardist = "$runtime\stardist"
+& $mamba --no-rc run --prefix $prefix python -m pip install --no-deps --target $stardist -r .\scripts\windows-stardist-requirements.txt
+$env:CELLMATCHR_WINDOWS_STARDIST = $stardist
+.\run-windows.cmd
+```
+
+Select StarDist in the launcher for this session. Use a new PowerShell session
+or remove `CELLMATCHR_WINDOWS_STARDIST` before returning to the default
+Micro-SAM and Cellpose environment. For CLI StarDist sessions, set
+`$env:PYTHONPATH = $stardist` before running the modules above.
+
 ### Prerequisites — install **conda** and **git** (one-time)
 
 CellMatchR is installed into a `conda` environment, and the easiest way to get

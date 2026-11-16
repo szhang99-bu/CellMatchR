@@ -1,12 +1,12 @@
-# Lab PC Windows 11: 5 Gb Ethernet and SSH handoff
+# Lab PC Windows 11: 5 Gb Ethernet, SSH, and Remote Desktop handoff
 
-**Prepared:** 16 November 2026. **Status:** Windows 11 is installed; Windows networking and SSH steps below have not yet been performed or verified.
+**Prepared:** 16 November 2026. **Status:** Windows 11 is installed; Windows networking, SSH, and Remote Desktop steps below have not yet been performed or verified.
 
 ## Goal and known network layout
 
 The lab PC dual boots Ubuntu and Windows 11. Only the operating system currently booted can answer SSH. The Mac already has a direct 5 Gb Ethernet connection on `en9` with `192.168.77.2/24`; its existing `labpc` SSH shortcut connects to Ubuntu at `192.168.77.1` as `shiyuzhang`. Keep that Linux shortcut. Give the Windows 5 Gb adapter the same PC-side address, `192.168.77.1/24`, because Ubuntu and Windows cannot run simultaneously. Use a separate `labpc-win` SSH shortcut and separate host-key identity for Windows.
 
-This direct link needs **no gateway or DNS server**. Keep Wi-Fi or another network connection for internet access. Do not forward SSH port 22 on a router. SSH is for terminal work and file transfers; a graphical Windows session can use a separate remote-desktop tool later if needed. Switching operating systems still requires a reboot and selection in GRUB or the firmware menu.
+This direct link needs **no gateway or DNS server**. Keep Wi-Fi or another network connection for internet access. Do not forward SSH port 22 or Remote Desktop port 3389 on a router. Use SSH for terminal work and file transfers, and Remote Desktop for the Windows graphical interface. Switching operating systems still requires a reboot and selection in GRUB or the firmware menu.
 
 ## On Windows: identify and configure the 5 Gb adapter
 
@@ -117,6 +117,36 @@ Compare the displayed `SHA256:...` host-key fingerprint with the Windows value a
 
 After key login is confirmed, password authentication can be disabled in `C:\ProgramData\ssh\sshd_config` if desired, followed by `sshd.exe -t` and `Restart-Service sshd`. Do this only after a second key-login test succeeds.
 
+## Windows graphical access: Remote Desktop over the same cable
+
+1. On Windows, open **Settings → System → About** and confirm the edition is **Windows 11 Pro**. Windows Home cannot accept built-in Remote Desktop connections. The old Windows installation had a Pro licence, but confirm the new edition before continuing.
+2. Open **Settings → System → Remote Desktop**, turn **Remote Desktop** on, and confirm. Leave **Network Level Authentication** enabled. An administrator account is allowed by default; for a standard account, use **Select users that can remotely access this PC** to add it. The account needs a real password; a Windows Hello PIN alone will not work for this connection.
+3. In **Administrator PowerShell**, create rules limited to the Mac's direct-link address, then disable the broader built-in Remote Desktop inbound rules that the Settings toggle may have enabled:
+
+   ```powershell
+   New-NetFirewallRule -Name 'LabPC-RDP-Mac-5Gb-TCP' -DisplayName 'RDP from Mac over 5 Gb link (TCP)' `
+     -Enabled True -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 `
+     -LocalAddress 192.168.77.1 -RemoteAddress 192.168.77.2 -Profile Any
+
+   New-NetFirewallRule -Name 'LabPC-RDP-Mac-5Gb-UDP' -DisplayName 'RDP from Mac over 5 Gb link (UDP)' `
+     -Enabled True -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3389 `
+     -LocalAddress 192.168.77.1 -RemoteAddress 192.168.77.2 -Profile Any
+
+   Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -Direction Inbound |
+     Disable-NetFirewallRule
+
+   Get-NetFirewallRule -Name 'LabPC-RDP-Mac-5Gb-*' |
+     Format-Table Name,Enabled,Direction,Action -Auto
+   Get-Service TermService
+   Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue
+   ```
+
+   If either named narrow rule already exists, inspect it instead of creating it again. Keep Windows Firewall on. Recheck that the broader built-in rules remain disabled after changing Remote Desktop settings or major Windows updates.
+4. On the Mac, install/open **Windows App** from the Mac App Store. In its **Devices** tab, choose **+ → Add PC**. Set **PC Name** to `192.168.77.1`, and optionally set **Friendly Name** to `Lab PC Windows`. You do **not** need to sign in to Windows App to add a direct PC connection. Connect using the Windows account name and **account password**, not the PIN. If the username alone is not accepted, use the full `COMPUTERNAME\username` shown by Windows `whoami`.
+5. Test while Windows is booted: the Mac should reach the Windows desktop through Windows App, and `ssh labpc-win` should still work. An RDP connection may lock the physical Windows console; that is expected. For an unattended PC, set **Settings → System → Power → Screen, sleep & hibernate timeouts** so the PC does not sleep while plugged in; the display may still turn off. Long GPU training jobs should run independently of the remote desktop window.
+
+If Windows App cannot connect, first verify Windows is booted, the 5 Gb cable is linked, `192.168.77.1` is on the correct adapter, `TermService` is running, and TCP 3389 is listening. Keep the port restricted to this direct link; do not open it on the Wi-Fi or internet connection.
+
 ## Verification and handoff notes
 
 Record these after setup for the next session. Do not put passwords or private keys here.
@@ -129,6 +159,8 @@ Record these after setup for the next session. Do not put passwords or private k
 | `sshd` service state | _expect `Running`, startup `Automatic`_ |
 | Windows SSH host-key fingerprint | _to fill_ |
 | Mac `ssh labpc-win` result | _to fill_ |
+| Windows edition and Remote Desktop toggle | _expect Windows 11 Pro and On_ |
+| Mac Windows App connection to `192.168.77.1` | _to fill_ |
 | Ubuntu `ssh labpc` still works after reboot | _to fill_ |
 
 The next session should verify both operating systems separately, because only one boots at a time. Do not change GRUB, UEFI boot entries, or EFI files as part of SSH setup. The Windows installation may have reused the Ubuntu drive's EFI partition; its location must be checked independently before any boot-file cleanup.
@@ -140,3 +172,5 @@ The next session should verify both operating systems separately, because only o
 - [Microsoft: Windows OpenSSH server configuration](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)
 - [Microsoft: `New-NetIPAddress`](https://learn.microsoft.com/en-us/powershell/module/nettcpip/new-netipaddress)
 - [Microsoft: `New-NetFirewallRule`](https://learn.microsoft.com/en-us/powershell/module/netsecurity/new-netfirewallrule)
+- [Microsoft: Remote Desktop host requirements and setup](https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/remote-desktop-allow-access)
+- [Microsoft: connect to a remote PC from Windows App on macOS](https://learn.microsoft.com/en-us/windows-app/get-started-connect-devices-desktops-apps)

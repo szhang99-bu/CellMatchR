@@ -359,7 +359,12 @@ class LifLauncherRoutingTests(TestCase):
             variant.mkdir(parents=True)
             external = Path(temp) / "external_exports"
             external.mkdir()
-            (variant / "exports").symlink_to(external, target_is_directory=True)
+            try:
+                (variant / "exports").symlink_to(external, target_is_directory=True)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 1314:
+                    raise
+                self.skipTest("This Windows account cannot create symbolic links.")
             app = object.__new__(CellMatchrLauncher)
             app.config = {"project_output_folder": str(project)}
             self.assertIsNone(app._input_converter_variant(str(variant / "exports")))

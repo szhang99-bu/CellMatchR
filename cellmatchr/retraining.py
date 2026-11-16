@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from .file_paths import filesystem_path, read_tiff
 from .roi_editor import _find_mask, _find_raw
 from .validation_state import get_change_state, get_validation_tsv_path
 
@@ -248,7 +249,7 @@ def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[st
             skipped.append(f"{sample.name}: validation decisions missing")
             continue
         decisions = _decisions(review)
-        labels = tifffile.imread(mask)
+        labels = read_tiff(mask)
         present = {int(v) for v in np.unique(labels) if v > 0}
         if present - decisions.keys():
             skipped.append(f"{sample.name}: some current cells have no decision")
@@ -303,16 +304,16 @@ def _prepare_pair(example: dict, destination: Path, index: int,
                   preprocess_mode: str) -> tuple[str, str]:
     from .segmentation import preprocess_tile_for_sam
 
-    raw = tifffile.imread(example["raw"])
-    mask = tifffile.imread(example["mask"])
+    raw = read_tiff(example["raw"])
+    mask = read_tiff(example["mask"])
     if raw.ndim != 2 or mask.ndim != 2 or raw.shape != mask.shape:
         raise ValueError(f"{example['sample']}: raw image and mask must be matching 2D arrays")
     processed, _rgb = preprocess_tile_for_sam(raw, mode=preprocess_mode)
     curated = np.where(np.isin(mask, example["accepted_ids"]), mask, 0)
     image_path = destination / f"image_{index:04d}.tif"
     label_path = destination / f"labels_{index:04d}.tif"
-    tifffile.imwrite(image_path, processed.astype(np.uint8))
-    tifffile.imwrite(label_path, curated.astype(np.uint32))
+    tifffile.imwrite(filesystem_path(image_path), processed.astype(np.uint8))
+    tifffile.imwrite(filesystem_path(label_path), curated.astype(np.uint32))
     return str(image_path), str(label_path)
 
 
@@ -322,8 +323,7 @@ def _train_cellpose(train_pairs, val_pairs, output: Path, epochs: int,
     import torch
 
     def arrays(pairs):
-        return ([tifffile.imread(p[0]) for p in pairs],
-                [tifffile.imread(p[1]) for p in pairs])
+        return ([read_tiff(p[0]) for p in pairs], [read_tiff(p[1]) for p in pairs])
 
     x_train, y_train = arrays(train_pairs)
     x_val, y_val = arrays(val_pairs)
@@ -409,10 +409,10 @@ def _train_stardist(train_pairs, val_pairs, output: Path, epochs: int,
     trained = StarDist2D(config, name="cellmatchr_stardist",
                          basedir=str(output))
     trained.keras_model.set_weights(pretrained.keras_model.get_weights())
-    x_train = [tifffile.imread(p[0]).astype(np.float32) / 255 for p in train_pairs]
-    y_train = [tifffile.imread(p[1]) for p in train_pairs]
-    x_val = [tifffile.imread(p[0]).astype(np.float32) / 255 for p in val_pairs]
-    y_val = [tifffile.imread(p[1]) for p in val_pairs]
+    x_train = [read_tiff(p[0]).astype(np.float32) / 255 for p in train_pairs]
+    y_train = [read_tiff(p[1]) for p in train_pairs]
+    x_val = [read_tiff(p[0]).astype(np.float32) / 255 for p in val_pairs]
+    y_val = [read_tiff(p[1]) for p in val_pairs]
     trained.train(x_train, y_train, validation_data=(x_val, y_val),
                   epochs=epochs, steps_per_epoch=max(1, len(x_train) * 4))
     return str(output / "cellmatchr_stardist")

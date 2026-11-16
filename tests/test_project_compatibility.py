@@ -20,6 +20,7 @@ import pandas as pd
 import tifffile
 
 from cellmatchr import analysis
+from cellmatchr.file_paths import filesystem_path
 from cellmatchr.launcher import CellMatchrLauncher
 from cellmatchr.validation_state import (
     finalize_if_ready, get_change_state, get_validation_tsv_path, save_edited_mask,
@@ -347,6 +348,31 @@ class ProjectCompatibilityTests(unittest.TestCase):
             path.write_bytes(b"replacement")
         launcher._restore_analysis_backup(backup_dir)
         self.assertEqual(before, {path: self._digest(path) for path in actual})
+
+    def test_analysis_replacement_and_recovery_with_a_long_backup_path(self):
+        project = self.root / ("nested_" + "x" * max(10, 161 - len(str(self.root))))
+        sample = project / "Segmentation" / "sample" / "analysis_results"
+        sample.mkdir(parents=True)
+        report = sample / "sample_channel_1_object_table.csv"
+        report.write_bytes(b"previous object table")
+
+        launcher = object.__new__(CellMatchrLauncher)
+        launcher.config = {"project_output_folder": str(project)}
+        launcher.root = None
+        with (patch("cellmatchr.launcher.messagebox.askyesno", return_value=True),
+              patch("cellmatchr.launcher.messagebox.showerror") as error):
+            prepared = launcher._prepare_analysis_output("Segmentation")
+        error.assert_not_called()
+        _, backup_dir = prepared
+        saved = Path(backup_dir) / report.relative_to(project)
+        self.assertGreater(len(str(saved)), 260)
+        self.assertEqual(Path(filesystem_path(saved)).read_bytes(), b"previous object table")
+        self.assertFalse(report.exists())
+
+        report.write_bytes(b"partially written replacement")
+        self.assertEqual(launcher._recover_all_analysis_backups(), 1)
+        self.assertEqual(report.read_bytes(), b"previous object table")
+        self.assertEqual(launcher._recover_all_analysis_backups(), 0)
 
     def test_existing_segmentation_masks_require_a_distinct_new_run(self):
         project = self.root / "segmentation_project"

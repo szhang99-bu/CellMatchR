@@ -1,0 +1,26 @@
+# Install with --no-deps into a separate directory beside the Windows runtime.
+# The base environment supplies NumPy, SciPy, h5py and the imaging libraries.
+astunparse==1.6.3
+csbdeep==0.8.2
+flatbuffers==25.12.19
+gast==0.7.0
+google-pasta==0.2.0
+grpcio==1.85.1
+keras==3.5.0
+libclang==18.1.1
+markdown-it-py==4.3.0
+mdurl==0.1.2
+ml-dtypes==0.3.2
+namex==0.1.0
+opt-einsum==3.4.0
+optree==0.20.0
+protobuf==4.25.9
+rich==15.0.0
+setuptools==80.9.0
+six==1.17.0
+stardist==0.9.1
+tensorboard==2.16.2
+tensorflow==2.16.2
+tensorflow-intel==2.16.2
+tensorflow-io-gcs-filesystem==0.31.0
+termcolor==3.3.0

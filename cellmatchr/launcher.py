@@ -1987,6 +1987,8 @@ class CellMatchrLauncher:
             (".vsi", "Olympus slide scanner", "tested", None),
             (".lif", "Leica (slide scanner)", "tested",
              "a confocal .lif placed in this folder is detected automatically and skipped"),
+            (".tif / .tiff", "TIFF or BigTIFF slide", "tested",
+             "draw regions on a large TIFF or a previously converted scan"),
         ]:
             self._format_status_row(self._fmt_slide_frame, ext, brand, status, note)
 
@@ -2013,7 +2015,7 @@ class CellMatchrLauncher:
                  bg=CARD, fg=MUTED, font=("Segoe UI", 9),
                  wraplength=700, justify="left").pack(anchor="w", pady=(4, 0))
 
-        vsi_card = self._card(self._vsi_section, "Slide Scanner Converter  (Olympus VSI · Leica LIF)")
+        vsi_card = self._card(self._vsi_section, "Slide Scanner Converter  (VSI · LIF · TIFF)")
         tk.Label(vsi_card,
                  text="Draw one ROI per region on the slide scan and export each as a "
                       "full-resolution TIFF.\nOutput auto-saves to: Project folder / VSI_Converted_TIFF/",

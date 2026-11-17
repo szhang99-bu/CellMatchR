@@ -97,6 +97,53 @@ shows how to find it.
 3. Open **CellMatchR (Linux)** from your app menu. For a terminal launch, run
    `bash run-linux.sh`.
 
+## Upgrade CellMatchR
+
+Close CellMatchR and let any running analysis or training finish. Open the
+same Terminal or PowerShell app used for installation. **Go to your existing
+CellMatchR-app folder; do not clone a second copy.** These commands use the
+default Desktop location. If you installed elsewhere, replace that path with
+your app folder.
+
+**macOS or Linux Terminal:**
+
+```bash
+cd ~/Desktop/CellMatchR-app
+git status --short
+```
+
+**Windows PowerShell:**
+
+```powershell
+cd (Join-Path ([Environment]::GetFolderPath('Desktop')) 'CellMatchR-app')
+git status --short
+```
+
+If `git status --short` prints nothing, the app folder has no local changes.
+If it lists files, [check the update guide](docs/usage.md#update-an-existing-git-installation)
+before pulling so you can keep your work. **When the folder is ready**, run
+this in the same window:
+
+```bash
+git pull --ff-only
+```
+
+Once the code is updated, refresh the app environment for your system:
+
+- **Windows:** Double-click `setup-windows.cmd` in the updated app folder.
+- **macOS:** In Terminal, still in the app folder, run
+  `conda env update -f environment.yml --prune`.
+- **Linux:** In Terminal, still in the app folder, run:
+
+  ```bash
+  PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
+    conda env update --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml --prune
+  ```
+
+Open CellMatchR as usual. Your projects and shared trained models remain in
+their own folders. If you installed from a ZIP instead of cloning, download
+and extract a new ZIP for each version; `git pull` cannot update a ZIP copy.
+
 ## Run your first project
 
 1. **Create a project** and choose an output folder.

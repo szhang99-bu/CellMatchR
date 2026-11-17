@@ -167,11 +167,13 @@ for this Windows workflow.
 
 ### Update an existing Git installation
 
-Close CellMatchR and any running analysis or training first. In the checkout,
-run `git status` to see whether you have local edits, then `git pull` to update
-the code. Keep any local edits you want before pulling; Git may ask you to
-resolve them. Project data and the shared model library are separate from the
-repository when you follow the setup above.
+Close CellMatchR and any running analysis or training first. In the app
+folder, run `git status --short`. If it prints nothing, run
+`git pull --ff-only` to update the code. If it lists files, check whether
+they are local app edits or project data you placed in the app folder. Keep a
+copy of anything important and resolve those changes before pulling; Git may
+stop rather than overwrite them. Project data and the shared model library
+are separate from the repository when you follow the setup above.
 
 After an update that changes dependencies, rerun `setup-windows.cmd` on Windows.
 On macOS run `conda env update -f environment.yml --prune`. On Linux run:

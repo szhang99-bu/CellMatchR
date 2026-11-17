@@ -478,8 +478,11 @@ written to the **current** project. Click **Refresh image library** after
 changing the sources.
 
 The library shows a color overlay of saved image channels without mask
-outlines. Each preview lists approximate original proposals, reviewed
-ARTIFACT/erased predictions, and training target cells. Uncheck an image to exclude it
+outlines. Each completed image's card lists approximate original proposals,
+reviewed ARTIFACT/erased predictions, training target cells, and the count
+for each reviewed cell label (for example, YES and NO). The label counts show
+all confirmed cell types in that image, even when you select only some as
+training targets. Uncheck an image to exclude it
 from this run. An image appears only after review is complete and every
 current object has a resolved decision. The log lists skipped images and why.
 The listed counts help spot an unusual sample before starting; inspect the
@@ -768,10 +771,13 @@ analysis. Validation is needed to exclude ARTIFACT objects through the
 validation filter or to create reviewed training targets. Check the Step 5
 status panel if review is partial.
 
-**Does marking a prediction NO remove it from analysis?** No. NO is used as
-background for retraining, but the analysis validation filter removes
-ARTIFACT objects. To remove a false prediction from the masks used in later
-analysis, use **Erase whole object** in the Step 4 editor and save the mask.
+**Does marking a prediction NO remove it from analysis or training?** No.
+YES and NO are both cell labels and are training targets by default. The
+analysis validation filter removes ARTIFACT objects. To remove a false
+prediction from the masks used in later analysis, use **Erase whole object**
+in the Step 4 editor and save the mask. To train a model for only one type of
+cell, select that label in Step 7; other cell types then become background in
+that specialized training run.
 
 ### Analysis and training
 
@@ -804,6 +810,18 @@ from. Uncheck any sample that should not enter this training run.
 resolve MAYBE decisions, and check that its raw channel and mask exist in the
 selected segmentation run. Click **Refresh image library** and read the
 skipped-sample reasons in the log.
+
+**Can I train while some images are still awaiting review?** Yes. When you
+start retraining, CellMatchR asks whether to use only images whose review is
+complete. **Yes** excludes unfinished images from that training run; **No**
+cancels so you can finish review. Unfinished decisions are not treated as
+negative examples.
+
+**What if I leave all cell labels unchecked?** That is the default: every
+confirmed cell label is a training target. To make a model for specific cell
+types, check one or more labels. Samples with none of the chosen labels are
+skipped, and unchosen cell types become background only in the training copy
+of the masks. The original masks and review decisions stay intact.
 
 **Can I train all selected channels together?** Step 7 trains one channel at
 a time. Select another channel and create another named model if needed.
@@ -854,24 +872,144 @@ project configuration or raw image.
 
 ## Command-line reference
 
-From the checkout in an active CellMatchR environment, inspect the available
-options before running a module directly:
+The app is the simplest way to choose runs and review images. The same
+segmentation, analysis, and retraining modules can also be run in a terminal
+or by a coding assistant. Open a terminal as described in
+[Where to type the commands](#where-to-type-the-commands), enter the cloned
+`CellMatchR-app` folder, and confirm that `environment.yml` is there. Paths
+below are examples; replace them with the full paths on your computer.
+
+**macOS:** Run `conda activate cellmatchr` after entering the app folder.
+**Linux:** Run `conda activate "$PWD/../CellMatchR-linux-env"` if you used the
+default Linux install path. For the same library and model-cache setup as
+the Linux app launcher, then run:
 
 ```bash
+export QT_API=pyqt5
+export PYTHONNOUSERSITE=1
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export MICROSAM_CACHEDIR="${MICROSAM_CACHEDIR:-$CONDA_PREFIX/model-cache/micro-sam}"
+export CELLPOSE_LOCAL_MODELS_PATH="${CELLPOSE_LOCAL_MODELS_PATH:-$CONDA_PREFIX/model-cache/cellpose}"
+```
+
+On macOS or Linux, verify the Python environment and inspect the options:
+
+```bash
+pwd
+ls environment.yml
+python -c "import sys, cellmatchr; print(sys.executable); print(cellmatchr.__file__)"
 python -m cellmatchr.segmentation --help
 python -m cellmatchr.analysis --help
 python -m cellmatchr.retraining --help
 ```
 
-On Windows, use the installed runtime from PowerShell:
+The printed package path should be inside this checkout. If it points to a
+different installation, enter the intended app folder and select its
+environment before running a job. `--help` is safe: it shows options without
+processing images.
+
+**Windows PowerShell:** Enter the cloned app folder first. Windows setup puts
+the environment in `C:\CellMatchR` by default; use the installed runtime for
+each CLI command:
 
 ```powershell
 $runtime = "$env:SystemDrive\CellMatchR"
 $mamba = "$runtime\Library\bin\micromamba.exe"
 $prefix = "$runtime\CellMatchR-win-env"
 $env:MAMBA_ROOT_PREFIX = $runtime
+& $mamba --no-rc run --prefix $prefix python -c "import sys, cellmatchr; print(sys.executable); print(cellmatchr.__file__)"
 & $mamba --no-rc run --prefix $prefix python -m cellmatchr.retraining --help
 ```
 
-The GUI launchers set the model-cache paths used by the app. If a direct CLI
-run differs from the GUI, compare the active environment and paths first.
+For segmentation and analysis, `--config` is the only direct CLI option. It
+points to a JSON file with the same settings the app saves in a project's
+`cellmatchr_project.json`. The default `~/.cellmatchr/config.json` reflects
+the **last** app session, so do not assume it points to the project you intend
+to process. Make a separate copy of your project config for CLI work and
+inspect these fields before running:
+
+| Module | Settings to check in the copied config |
+|---|---|
+| Segmentation | `input_type`, `input_root_folder`, `output_root_folder` (the chosen segmentation run folder), `seg_channels` (such as `"0,1"`), `seg_backend`, `seg_model_type` for Micro-SAM or the appropriate `seg_custom_model_path`, `seg_cellpose_model_path`, or `seg_stardist_model_path`, `seg_preprocess_mode`, `seg_resume`, `seg_dry_run`, and `seg_test_run`. |
+| Analysis | `ana_microsam_output_root` (the segmentation run to read), `output_root_folder` (the analysis folder to write), `ana_red_channel`, `ana_pv_channel`, and `apply_partial_validation`. |
+
+On macOS/Linux, one way to prepare a config is:
+
+```bash
+cp "/absolute/path/to/MyProject/cellmatchr_project.json" "/absolute/path/to/MyProject/cli-config.json"
+```
+
+Open `cli-config.json` in a text editor, check the paths and settings above,
+and set `"seg_dry_run": true` and `"seg_test_run": false` for a first
+segmentation check. Then run:
+
+```bash
+python -m cellmatchr.segmentation --config "/absolute/path/to/MyProject/cli-config.json"
+```
+
+The dry run lists the planned samples and channels without making masks.
+When the plan is correct, set `"seg_dry_run": false` in the copied config
+and run the command again. Use a new output folder for a new segmentation
+run; `seg_resume` is for continuing the same run. To analyze that run, set
+the analysis paths and channels in the copied config, then run:
+
+```bash
+python -m cellmatchr.analysis --config "/absolute/path/to/MyProject/cli-config.json"
+```
+
+Analysis writes the combined workbook and `analysis_errors.log` to its
+output folder. A CLI run does not show the app's **Replace analysis results?**
+dialog, so choose an empty analysis folder or preserve the existing results
+before rerunning. On Windows, make the copy and run the same module through
+the installed runtime, for example:
+
+```powershell
+Copy-Item "C:\path\to\MyProject\cellmatchr_project.json" "C:\path\to\MyProject\cli-config.json"
+# Check and edit cli-config.json before running this command.
+& $mamba --no-rc run --prefix $prefix python -m cellmatchr.segmentation --config "C:\path\to\MyProject\cli-config.json"
+```
+
+Retraining takes arguments directly instead of `--config`. This short trial
+trains Micro-SAM from the built-in `vit_b_lm` weights using channel 1 of an
+existing `Segmentation` run. It needs at least two fully reviewed images for
+the automatic holdout; replace the project path, run name, and channel with
+your own:
+
+```bash
+python -m cellmatchr.retraining \
+  --project "/absolute/path/to/MyProject" \
+  --seg-run "Segmentation" \
+  --channel 1 \
+  --backend microsam \
+  --base-model vit_b_lm \
+  --model-name "All reviewed cells trial" \
+  --epochs 5 \
+  --validation-mode automatic
+```
+
+With **no `--cell-label` option**, every confirmed cell label, including YES
+and NO, is a target. ARTIFACT is background; resolve MAYBE first. For a
+specialized model, add `--cell-label YES` or repeat the option, for example
+`--cell-label YES --cell-label NO`. Only the named labels are targets; other
+valid cell types become background in the temporary training masks. Images
+with no selected target label are skipped. The source masks and review files
+are not changed. The training report records the selected labels.
+
+If any image in the selected run still needs review, the CLI stops before
+training. Add `--allow-completed-only` **only if** you want to train on the
+fully reviewed images and skip the unfinished ones; the app asks this as a
+Yes/No question. For a single usable image, use `--validation-mode training_image`
+for an in-sample check, but that score does not measure performance on new
+images. See [Choose a validation approach](#choose-a-validation-approach)
+before judging a model. Training saves a **new** model under
+`~/CellMatchR/Models` and a report under the project's `Training_Reports`;
+the starting model remains available. On Windows, use the same retraining
+arguments after the PowerShell command prefix shown above, written on one
+line or with PowerShell line continuations.
+
+For a coding assistant, provide the app checkout, project folder, exact
+segmentation run, channel, model family, selected cell labels (if any), and
+whether completed images only are acceptable. Ask it to inspect `--help` and
+the copied config's input/output paths before launching a long job. The GUI
+launchers also set model-cache paths; if a CLI result differs from the GUI,
+compare the Python environment, model path, preprocessing, and cache paths.

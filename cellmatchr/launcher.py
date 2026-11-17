@@ -5673,7 +5673,8 @@ class CellMatchrLauncher:
         gallery_card = self._card(parent, "Images available for training")
         tk.Label(gallery_card, text=("Uncheck images that should not be used. Previews combine "
                                      "all saved channels without mask outlines. Counts show "
-                                     "original proposals, ARTIFACT/erased predictions, and verified cells."),
+                                     "original proposals, ARTIFACT/erased predictions, verified cells, "
+                                     "and the count for each reviewed cell label."),
                  bg=CARD, fg=MUTED, font=FONT, wraplength=740,
                  justify="left").pack(anchor="w", pady=(0, 4))
         gallery_summary = tk.Label(gallery_card, text="Checking reviewed images…",
@@ -5990,6 +5991,11 @@ class CellMatchrLauncher:
                 tk.Label(tile, text=(f"Original proposals: ~{item['original_count']}  ·  "
                                      f"ARTIFACT/erased: {item['incorrect_count']}  ·  "
                                      f"Training targets: {targets}"),
+                         bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
+                         wraplength=330, justify="left").pack(anchor="w")
+                label_counts = "  ·  ".join(
+                    f"{word}: {len(ids)}" for word, ids in sorted(item["label_ids"].items()))
+                tk.Label(tile, text=f"Reviewed cell labels: {label_counts}",
                          bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
                          wraplength=330, justify="left").pack(anchor="w")
             for column in (0, 1):

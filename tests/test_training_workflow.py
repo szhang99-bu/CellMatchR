@@ -1,6 +1,7 @@
 """Checks for multi-project training plans, previews, and saved reports."""
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ import tifffile
 
 from cellmatchr.retraining import (collect_source_examples, plan_examples,
                                   project_runs, _prepare_pair,
-                                  microsam_architecture)
+                                  microsam_architecture, train_model)
 from cellmatchr.training_gallery import composite_preview
 from cellmatchr.training_report import (build_report, object_scores, save_history)
 
@@ -159,6 +160,56 @@ class TrainingWorkflowTests(unittest.TestCase):
             "backend": "microsam", "microsam_architecture": "vit_l"}))
         self.assertEqual(microsam_architecture("vit_h_lm"), "vit_h")
         self.assertEqual(microsam_architecture(str(checkpoint)), "vit_l")
+        (folder / "model.json").write_text(json.dumps({
+            "backend": "microsam", "starting_model_name": "vit_h_lm"}))
+        self.assertEqual(microsam_architecture(str(checkpoint)), "vit_h")
+
+    def test_training_aggregates_projects_excludes_image_and_reports_to_current_project(self):
+        current, current_run = self.project("current")
+        imported, imported_run = self.project("imported")
+        self.sample(current_run, "a")
+        self.sample(current_run, "b")
+        self.sample(imported_run, "exclude_me")
+        self.sample(imported_run, "holdout")
+        sources = [
+            {"project": str(current), "seg_run": current_run.name, "channel": 1},
+            {"project": str(imported), "seg_run": imported_run.name, "channel": 1},
+        ]
+        examples, skipped = collect_source_examples(sources)
+        self.assertEqual(skipped, [])
+        keys = {item["sample"]: item["key"] for item in examples}
+        holdout_mask = tifffile.imread(next(
+            (imported_run / "holdout").glob("*_predict_original_ch1*.tif")))
+
+        def fake_trainer(_train, _val, output, _epochs, _base, _advanced):
+            path = output / "model.pth"
+            path.touch()
+            save_history(output, {"train_loss": [1.0], "val_loss": [1.1]})
+            return str(path)
+
+        with patch.dict(os.environ, {"CELLMATCHR_MODEL_LIBRARY":
+                                  str(self.root / "library")}), \
+             patch.dict("cellmatchr.retraining.TRAINERS", {"cellpose": fake_trainer}), \
+             patch("cellmatchr.training_report._predict_mask",
+                   side_effect=[np.zeros_like(holdout_mask), holdout_mask]):
+            result = train_model(
+                str(current), current_run.name, 1, "cellpose", 1, "cpsam",
+                "raw_percentile", "Multiple projects", sources=sources,
+                excluded_keys={keys["exclude_me"]},
+                validation_mode="whole_image", validation_key=keys["holdout"],
+                generate_report=True)
+
+        self.assertEqual(result["training_samples"], ["a", "b"])
+        self.assertEqual({item["project"] for item in result["training_images"]},
+                         {str(current.resolve())})
+        self.assertEqual(result["validation_samples"], ["holdout"])
+        self.assertEqual(result["excluded_keys"], [keys["exclude_me"]])
+        self.assertTrue(Path(result["model_path"]).is_file())
+        self.assertTrue(Path(result["report_path"]).resolve().is_relative_to(
+            current.resolve()))
+        self.assertFalse((imported / "Training_Reports").exists())
+        report = json.loads(Path(result["report_path"]).read_text())
+        self.assertEqual(report["validation"][0]["sample"], "holdout")
 
 
 if __name__ == "__main__":

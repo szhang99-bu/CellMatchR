@@ -463,7 +463,7 @@ You must choose one of these before **Start Retraining** becomes available:
 | Choice | What stays out of training | When to use it |
 |---|---|---|
 | **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two reviewed images are available. This gives an independent before/after check. |
-| **Reserve a small patch** | A randomly chosen patch around reviewed incorrect predictions; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects. Set the desired number of incorrect predictions beside the selection button. |
+| **Reserve a small patch** | A randomly chosen patch around marked NO/ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects still visible in the mask. Set an approximate target beside the selection button. The report records the actual count. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
 
 Choose a holdout that resembles the images you intend to process later.
@@ -688,8 +688,18 @@ Select both channels in Step 3 and choose their masks in Step 5.
 Saved models appear in the starting-model and future-segmentation dropdowns.
 
 **Can I continue training a fine-tuned model?** Yes. Select that saved model
-as **Starting model to fine-tune**, give the new result its own name, and
+under **Initialize weights from**, give the new result its own name, and
 review held-out predictions after training. The previous checkpoint remains.
+
+**Can I combine reviewed images from several projects?** Yes. Use **Add another
+project** in Step 7 for each additional `cellmatchr_project.json`, then choose
+its run and channel. The image library shows which project each sample came
+from. Uncheck any sample that should not enter this training run.
+
+**Why is an image absent from the training library?** Finish its Step 4 review,
+resolve MAYBE decisions, and check that its raw channel and mask exist in the
+selected segmentation run. Click **Refresh image library** and read the
+skipped-sample reasons in the log.
 
 **Can I train all selected channels together?** Step 7 trains one channel at
 a time. Select another channel and create another named model if needed.
@@ -718,7 +728,7 @@ examples alone cannot establish generalization.
 | Masks look sparse or contain many false detections | Test a representative image. Adjust model/Cellpose sensitivity, then inspect object filtering and preprocessing. Compare against human annotations. |
 | Run stopped partway through a batch | Reopen Step 3 and use **Continue a previous run** if shown. Inspect the run log for the sample that stopped it. |
 | Analysis has blank or missing-channel rows | Verify both selected channels exist for each sample; see `analysis_errors.log`. |
-| Training cannot start | Finish validation, resolve MAYBE decisions, use at least two reviewed samples, and check that the chosen model file and backend dependencies are installed. |
+| Training cannot start | Finish validation, resolve MAYBE decisions, choose one of the three validation approaches, and check that the starting model and backend dependencies are installed. A whole-image holdout needs two included images; the patch or in-sample choice can use one. |
 | Training runs out of memory | Reduce batch or patch size where supported, select a smaller model, or move training to a machine with more GPU/unified memory. |
 
 For the macOS ZIP permission issue, run:

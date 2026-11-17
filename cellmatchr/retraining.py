@@ -258,7 +258,9 @@ def microsam_architecture(model_name: str) -> str:
             with record_file.open(encoding="utf-8") as source:
                 record = json.load(source)
             if record.get("backend") == "microsam":
-                value = record.get("microsam_architecture") or record.get("base_model", "")
+                value = (record.get("microsam_architecture") or
+                         record.get("base_model") or
+                         record.get("starting_model_name", ""))
                 match = re.match(r"^(vit_[blh])(?:_|$)", str(value))
                 if match:
                     return match.group(1)
@@ -492,7 +494,8 @@ def plan_examples(examples: list[dict], validation_mode: str,
             raise ValueError("The validation patch leaves no trainable cells outside it; "
                              "choose another image or use the all-data option")
         return training, [heldout], {"mode": "patch", "heldout_key": choice["key"],
-                                      "independent": True, **details}
+                                      "independent": True, "random_seed": 42,
+                                      **details}
     raise ValueError("Choose a validation approach before starting training")
 
 
@@ -736,6 +739,12 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                   "epochs": epochs, "advanced": advanced,
                   "training_samples": [e["sample"] for e in train_examples],
                   "validation_samples": [e["sample"] for e in val_examples],
+                  "training_images": [{"project": e["project"],
+                                       "seg_run": e["seg_run"],
+                                       "channel": e["channel"],
+                                       "sample": e["sample"],
+                                       "crop": e.get("crop")}
+                                      for e in train_examples],
                   "training_sources": sources or [{"project": str(project_path),
                                                    "seg_run": seg_run, "channel": channel}],
                   "excluded_keys": sorted(excluded), "validation_plan": split,

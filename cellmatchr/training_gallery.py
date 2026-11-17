@@ -47,6 +47,10 @@ def _small_array(path: Path, max_side: int) -> np.ndarray:
             finally:
                 store.close()
         except (ImportError, OSError, ValueError, TypeError, AttributeError):
+            expanded_bytes = int(np.prod(shape)) * np.dtype(tif.series[0].dtype).itemsize
+            if expanded_bytes > 256 * 1024 * 1024:
+                raise ValueError("Preview needs more than 256 MB to decode this "
+                                 "compressed image; the sample remains available for training")
             return np.asarray(tif.asarray()[::stride, ::stride])
 
 

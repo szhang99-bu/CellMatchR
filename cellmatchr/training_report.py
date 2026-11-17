@@ -204,6 +204,7 @@ def build_report(project: Path, output: Path, result: dict,
               result["validation_plan"], "history": history,
               "validation": records, "training_sources": result["training_sources"],
               "training_samples": result["training_samples"],
+              "training_images": result.get("training_images", []),
               "excluded_keys": result["excluded_keys"], "epochs": result["epochs"],
               "advanced": result["advanced"], "preprocess": preprocess}
     path = folder / "report.json"

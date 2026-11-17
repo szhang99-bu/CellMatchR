@@ -5107,8 +5107,16 @@ class CellMatchrLauncher:
         backend_var = tk.StringVar(value=self.config.get("seg_backend", "microsam"))
         channels = str(self.config.get("seg_channels") or "1").split(",")
         channel_var = tk.StringVar(value=channels[0].strip())
-        model_name_var = tk.StringVar(
-            value=f"{backend_var.get()} ch{channel_var.get()} {datetime.now():%Y-%m-%d}")
+        model_name_date = datetime.now().strftime("%Y-%m-%d")
+        default_model_name = [f"{backend_var.get()} ch{channel_var.get()} {model_name_date}"]
+        model_name_var = tk.StringVar(value=default_model_name[0])
+        def refresh_default_model_name(*_):
+            replacement = f"{backend_var.get()} ch{channel_var.get()} {model_name_date}"
+            if model_name_var.get() == default_model_name[0]:
+                model_name_var.set(replacement)
+            default_model_name[0] = replacement
+        backend_var.trace_add("write", refresh_default_model_name)
+        channel_var.trace_add("write", refresh_default_model_name)
         epochs_var = tk.StringVar(value="20")
         preprocess_var = tk.StringVar(value=self.config.get("seg_preprocess_mode")
                                      or "local_bg_subtract")
@@ -5668,10 +5676,18 @@ class CellMatchrLauncher:
         gallery_grid = tk.Frame(gallery_canvas, bg=CARD)
         gallery_window = gallery_canvas.create_window(
             (0, 0), window=gallery_grid, anchor="nw")
-        gallery_canvas.bind("<Configure>", lambda event:
-                            gallery_canvas.itemconfigure(gallery_window, width=event.width))
-        gallery_grid.bind("<Configure>", lambda _event:
-                          gallery_canvas.configure(scrollregion=gallery_canvas.bbox("all")))
+        def resize_gallery(event):
+            width = int(float(gallery_canvas.itemcget(gallery_window, "width")))
+            if width != event.width:
+                gallery_canvas.itemconfigure(gallery_window, width=event.width)
+        def update_gallery_scroll(_event):
+            bounds = gallery_canvas.bbox("all")
+            current = tuple(int(float(value)) for value in
+                            str(gallery_canvas.cget("scrollregion")).split())
+            if bounds and bounds != current:
+                gallery_canvas.configure(scrollregion=bounds)
+        gallery_canvas.bind("<Configure>", resize_gallery)
+        gallery_grid.bind("<Configure>", update_gallery_scroll)
 
         validation_card = self._card(parent, "Choose how to validate training")
         tk.Label(validation_card, text="Choose one approach before training starts.",
@@ -5707,7 +5723,7 @@ class CellMatchrLauncher:
         tk.Button(choose_row, text="Choose held-out image from library",
                   command=choose_holdout, bg=ACTIVE, fg=FG,
                   font=FONT, relief="flat").pack(side="left")
-        tk.Label(choose_row, text="Incorrect predictions to include in a patch:",
+        tk.Label(choose_row, text="Target incorrect predictions per patch (approx.):",
                  bg=CARD, fg=MUTED, font=FONT).pack(side="left", padx=(15, 4))
         tk.Entry(choose_row, textvariable=patch_target_var, bg=BG, fg=FG,
                  insertbackground=FG, relief="flat", width=4).pack(side="left")
@@ -5756,7 +5772,8 @@ class CellMatchrLauncher:
                          font=FONT_BOLD).pack(anchor="w", pady=(0, 4))
                 for entry in report.get("validation", []):
                     before, after = entry["before"], entry["after"]
-                    caption = (f"{entry['sample']}:  recall {before['recall']:.1%} → "
+                    caption = (f"{os.path.basename(entry['project'])} / "
+                               f"{entry['sample']}:  recall {before['recall']:.1%} → "
                                f"{after['recall']:.1%}; missed cells "
                                f"{before['missed_cell']} → {after['missed_cell']}; "
                                f"false positives {before['false_positive']} → "
@@ -5824,18 +5841,30 @@ class CellMatchrLauncher:
                 ready = ready and len(included) >= 2 and any(
                     item["key"] == key for item in included)
             elif mode == "patch":
-                ready = ready and any(item.get("rejected_ids") for item in included)
+                try:
+                    valid_target = 1 <= int(patch_target_var.get()) <= 50
+                except ValueError:
+                    valid_target = False
+                ready = (ready and valid_target and
+                         any(item.get("rejected_ids") for item in included))
             if start_button_ref[0] is not None:
                 start_button_ref[0].config(state="normal" if ready else "disabled")
             if mode == "whole_image":
                 selected = next((item for item in included if item["key"] == key), None)
                 validation_hint.config(
-                    text=(f"Reserved: {selected['project_name']} / {selected['sample']}"
+                    text=("Include at least two reviewed images to reserve one."
+                          if len(included) < 2 else
+                          f"Reserved: {selected['project_name']} / {selected['sample']}"
                           if selected else "Click ‘Choose held-out image’, then click a preview."),
                     fg=ACCENT if selected else MUTED)
             elif mode == "patch":
-                validation_hint.config(text="A reviewed incorrect prediction anchors a random "
-                                       "patch. The report records its exact location.", fg=MUTED)
+                hint = ("Enter a target from 1 to 50." if not valid_target else
+                        "No marked incorrect objects are available; erased objects "
+                        "alone cannot locate a patch." if not any(
+                            item.get("rejected_ids") for item in included) else
+                        "A marked incorrect object anchors a random patch. "
+                        "The report records its exact location and count.")
+                validation_hint.config(text=hint, fg=MUTED)
             elif mode == "training_image":
                 validation_hint.config(text="All selected images train the model. The result "
                                        "will be labeled in-sample, not held-out.", fg=YELLOW)
@@ -5843,6 +5872,7 @@ class CellMatchrLauncher:
                 validation_hint.config(text="No approach selected yet.", fg=MUTED)
 
         validation_mode_var.trace_add("write", update_start_state)
+        patch_target_var.trace_add("write", update_start_state)
 
         def render_gallery():
             for child in gallery_grid.winfo_children():
@@ -5864,8 +5894,9 @@ class CellMatchrLauncher:
                     picture = tk.Label(tile, image=photo, bg=ACTIVE,
                                        cursor="hand2")
                 else:
-                    picture = tk.Label(tile, text="Preview unavailable", bg=BG,
+                    picture = tk.Label(tile, text=item.get("preview_error", "Preview unavailable"), bg=BG,
                                        fg=MUTED, width=45, height=10,
+                                       wraplength=320,
                                        cursor="hand2")
                 picture.pack(anchor="center")
                 def reserve(_event=None, selected=item):
@@ -5930,8 +5961,9 @@ class CellMatchrLauncher:
                         try:
                             item["preview"] = composite_preview(
                                 os.path.dirname(item["mask"]), color_names=colors)
-                        except (OSError, ValueError, ImportError):
+                        except (OSError, ValueError, ImportError) as exc:
                             item["preview"] = None
+                            item["preview_error"] = str(exc)
                     def finished():
                         if generation != gallery_state["generation"]:
                             return

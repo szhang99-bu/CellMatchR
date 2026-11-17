@@ -346,8 +346,8 @@ window shows raw images, predicted objects, and drawing layers.
 
 | Task | Action |
 |---|---|
-| Add a missed cell | Select **Add ROIs here** and paint it. Each disconnected painted area becomes a separate object. For touching cells, use different label colors. |
-| Remove a false prediction | Select **Erase whole object** and paint any part of that object. The complete predicted object is removed when saved. |
+| Add a missed cell | Click the large **ADD MISSED CELLS** button on the right and paint it. Each disconnected painted area becomes a separate object. For touching cells, use different label colors. |
+| Remove a false prediction | Click the large red **REMOVE PREDICTED OBJECTS** button on the right, then paint any part of the prediction. This switches to a separate removal layer; the whole predicted object is removed when saved. |
 | Undo a stroke | Press **Ctrl+Z** before saving. |
 | Paint or navigate | Press **P** for paint mode; right-drag to pan; use `[` and `]` to change brush size. |
 | Save changes | Click **Save & Next**. **Skip** leaves the image unchanged; **Previous** returns; **Finish** ends the session. |
@@ -356,7 +356,17 @@ On a Mac using an iPad as a Sidecar display, Apple Pencil draws or erases, one
 finger pans, and Pencil double-tap switches tools. This behavior is enabled
 only for Sidecar; normal Napari mouse controls remain available. **Test mode**
 in Step 4 processes one image and saves to a `DEBUG_` file so you can inspect
-the result before changing production masks. Editing a mask after validation
+the result before changing production masks. Napari's ordinary eraser on the
+**Add ROIs here** layer reshapes an unsaved addition; use the red removal
+button to reject an original model prediction. On the first normal save, the
+editor keeps an untouched copy of the prediction beside the active mask.
+The active mask is updated so existing analysis and older app versions still
+read the corrected cells. Added objects are listed in
+`_manual_additions_chN.tsv`; removed model predictions are listed with reason
+`ARTIFACT` in `_manual_deletions_chN.tsv`. Those records let retraining tell
+missed cells from incorrect predictions. A project edited before this feature
+cannot recover an original prediction that was already overwritten; its next
+edit preserves the mask as it exists then. Editing a mask after validation
 may flag only affected objects for revalidation; check the validation status
 before analysis or retraining.
 
@@ -391,7 +401,7 @@ slide scans, select the masks from the same converter run as the image crops.
 The **Validation Status** panel shows review progress. When validation is
 complete across the selected channel, analysis excludes objects marked
 **ARTIFACT**. It does not automatically remove objects marked **NO**; use
-**Erase whole object** in Step 4 if a false prediction must disappear from
+**REMOVE PREDICTED OBJECTS** in Step 4 if a false prediction must disappear from
 the measured mask. **Apply validation filter on partially-validated files**
 is an explicit choice when only some objects have been reviewed; inspect
 results carefully if using partial decisions.
@@ -561,10 +571,10 @@ and are never relabeled ARTIFACT.
 |---|---|---|---|
 | **High recall** | 20; `1e-5` | Repeat samples with human-added missed cells. | Fewer missed cells on the holdout. |
 | **Default training** | 20; `1e-5` | Use each reviewed sample once. | Compare with the starting model. |
-| **High precision** | 20; `1e-5` | Repeat samples with ARTIFACT predictions. | Check that recall has not fallen. |
+| **High precision** | 20; `1e-5` | Repeat samples with ARTIFACT or erased predictions. | Check that recall has not fallen. |
 | **Gentle follow-up** | 8; `3e-6` | No extra repetition. | Small, stable change from a saved model. |
 | **Recall follow-up** | 8; `3e-6` | Repeat missed-cell samples. | Better held-out recall. |
-| **Precision follow-up** | 8; `3e-6` | Repeat ARTIFACT samples. | Fewer false positives without losing true cells. |
+| **Precision follow-up** | 8; `3e-6` | Repeat samples with ARTIFACT or erased predictions. | Fewer false positives without losing true cells. |
 | **Short trial** | 5; `1e-5` | No extra repetition. | Check data and training setup before a longer run. |
 
 The learning rates shown apply to Micro-SAM and Cellpose. For StarDist, the
@@ -594,7 +604,7 @@ These values affect training, not the masks you have already reviewed.
 | **Learning rate** | Size of each weight update. Larger values can change a model faster but may destabilize training; smaller values usually need more time. Enter a value greater than 0 and at most 1, such as `1e-5`. The preset fills this for Cellpose and Micro-SAM. A blank StarDist field uses that model's own default. |
 | **Batch size** | Number of image patches presented together for a training update. Leave blank for the backend default, or enter **1–64**. Larger batches may use more GPU or unified memory. Cellpose and Micro-SAM default to **1**; StarDist uses its pretrained configuration. |
 | **Patch size (px)** | Width and height of square training crops. Leave blank for the model default; otherwise enter **64–2048** in multiples of **16**. Smaller patches may fit in less memory but give less context. Cellpose uses a fixed **256-pixel** patch, so this control is hidden for Cellpose. Micro-SAM defaults to **256**; StarDist uses its pretrained configuration. This is a *training crop* and is different from the small patch reserved for validation. |
-| **Training sample focus** | `none` uses every training sample once. `missed_cells` repeats samples containing manually added target cells; `rejected_cells` repeats samples containing ARTIFACT predictions. Repetition applies only to training examples, never to held-out validation data. It can shift emphasis but does not guarantee a higher recall or precision. |
+| **Training sample focus** | `none` uses every training sample once. `missed_cells` repeats samples containing manually added target cells; `rejected_cells` repeats samples containing ARTIFACT or erased model predictions. Repetition applies only to training examples, never to held-out validation data. It can shift emphasis but does not guarantee a higher recall or precision. |
 | **Other starting model** / **Browse** | Select a compatible checkpoint outside the dropdown: a **file** for Cellpose or Micro-SAM, a **model folder** for StarDist. This becomes the starting weight source, not the output location. The dropdown is easier for built-in and previously saved models. |
 | **StarDist distance loss** | **Model default** keeps the selected model's distance loss. `mae` and `mse` are alternate losses for predicted object distances. This control appears only for StarDist; Cellpose and Micro-SAM use their built-in training losses. |
 | **Micro-SAM: keep image encoder frozen** | On by default. It trains the remaining trainable parts while keeping the image encoder weights fixed. Turning it off also updates the encoder, which can use more memory and may need more varied examples. This control appears only for Micro-SAM. |
@@ -667,6 +677,8 @@ need another model selected.
 | `cellmatchr_project.json` | Project settings and paths; choose this file to reopen the project. |
 | `VSI_Converted_TIFF/` (and numbered variants) | Full-resolution slide regions and associated ROI masks. |
 | `Segmentation/` (and run variants) | Predicted masks, channel images, QC material, and run information. |
+| `_prediction_baseline_chN_*.tif` inside an edited sample | Untouched prediction copied before the first edit made by this version of the editor. It is kept outside the active mask search pattern. |
+| `_manual_additions_chN.tsv`, `_manual_deletions_chN.tsv` inside an edited sample | IDs of missed cells you added and model predictions you removed as ARTIFACT. `N` is the channel number. |
 | `Validation/` | Validation-stage project output; per-channel decisions are saved as TSV beside prediction files. |
 | `Analysis/` (and run variants) | Object tables, combined workbook, and run report. |
 | `.analysis_backups/` | Earlier generated analysis results preserved when you approve replacement. |
@@ -756,7 +768,7 @@ maximum size, shape ratio, and intensity/brightness bounds. Set a suspect
 filter to `0` to disable it, then rerun a test image. For Cellpose, also check
 cell-probability and flow thresholds.
 
-**Can I delete only part of a bad prediction?** **Erase whole object** marks
+**Can I delete only part of a bad prediction?** **REMOVE PREDICTED OBJECTS** marks
 the entire touched predicted object for removal on save. Use **Ctrl+Z** to
 undo a stroke before saving. This prevents a partial fragment from silently
 remaining as a cell.
@@ -774,7 +786,7 @@ status panel if review is partial.
 **Does marking a prediction NO remove it from analysis or training?** No.
 YES and NO are both cell labels and are training targets by default. The
 analysis validation filter removes ARTIFACT objects. To remove a false
-prediction from the masks used in later analysis, use **Erase whole object**
+prediction from the masks used in later analysis, use **REMOVE PREDICTED OBJECTS**
 in the Step 4 editor and save the mask. To train a model for only one type of
 cell, select that label in Step 7; other cell types then become background in
 that specialized training run.

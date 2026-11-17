@@ -26,7 +26,7 @@ import numpy as np
 import tifffile
 
 from .file_paths import filesystem_path, read_tiff
-from .roi_editor import _find_mask, _find_raw
+from .roi_editor import _find_mask, _find_raw, _prediction_baseline_path
 from .validation_state import get_change_state, get_validation_tsv_path
 
 BACKENDS = ("microsam", "cellpose", "stardist")
@@ -370,6 +370,17 @@ def collect_examples(seg_folder: str, channel: int, *, with_review_status: bool 
             continue
         additions = _logged_ids(sample / f"_manual_additions_ch{channel}.tsv", "label_id")
         deletions = _logged_ids(sample / f"_manual_deletions_ch{channel}.tsv", "label_id")
+        erased_ids = deletions - present
+        baseline_path = _prediction_baseline_path(mask, channel)
+        if os.path.isfile(baseline_path):
+            baseline = read_tiff(baseline_path)
+            if baseline.shape != labels.shape:
+                raise ValueError(f"{sample.name}: prediction baseline shape differs from edited mask")
+            original_count = len({int(value) for value in np.unique(baseline)
+                                  if value > 0})
+        else:
+            # Older edited projects may have no pre-edit mask to consult.
+            original_count = len(present - additions) + len(erased_ids)
         accepted_additions = additions & accepted
         label_ids = {word: sorted(v for v in accepted if decisions[v] == word)
                      for word in sorted({decisions[v] for v in accepted})}
@@ -377,13 +388,15 @@ def collect_examples(seg_folder: str, channel: int, *, with_review_status: bool 
                          "accepted_ids": sorted(accepted),
                          "label_ids": label_ids,
                          "manual_added_ids": sorted(accepted_additions),
+                         "erased_prediction_ids": sorted(erased_ids),
                          "rejected_ids": sorted(artifacts),
                          "rejected_count": len(artifacts),
                          "manual_added_count": len(accepted_additions),
-                         "original_count": len(present - additions) + len(deletions),
-                         "incorrect_count": len(artifacts) + len(deletions),
+                         "original_count": original_count,
+                         "incorrect_count": len(artifacts) + len(erased_ids),
                          "final_count": len(accepted),
-                         "deletion_count": len(deletions)})
+                         "deletion_count": len(erased_ids),
+                         "prediction_baseline": baseline_path if os.path.isfile(baseline_path) else ""})
     return (examples, skipped, unfinished) if with_review_status else (examples, skipped)
 
 
@@ -402,9 +415,11 @@ def select_training_labels(examples: list[dict], labels: list[str] | None
         if not targets:
             skipped.append(f"{example['sample']}: no cells with selected labels")
             continue
+        selected_additions = sorted(set(example.get("manual_added_ids", [])) &
+                                    set(targets))
         item = dict(example, accepted_ids=targets, final_count=len(targets),
-                    manual_added_count=len(set(example.get("manual_added_ids", [])) &
-                                           set(targets)))
+                    manual_added_ids=selected_additions,
+                    manual_added_count=len(selected_additions))
         filtered.append(item)
     return filtered, skipped
 
@@ -428,11 +443,11 @@ def _focus_training_pairs(pairs: list[tuple[str, str]], examples: list[dict],
     """Repeat difficult training samples only; validation samples stay untouched."""
     if focus == "none":
         return pairs
-    count_key = ("manual_added_count" if focus == "missed_cells"
-                 else "rejected_count")
     weighted = []
     for pair, example in zip(pairs, examples):
-        weighted.extend([pair] * (2 if example.get(count_key, 0) > 0 else 1))
+        count = (example.get("manual_added_count", 0) if focus == "missed_cells"
+                 else example.get("incorrect_count", example.get("rejected_count", 0)))
+        weighted.extend([pair] * (2 if count > 0 else 1))
     return weighted
 
 
@@ -761,7 +776,8 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         examples, validation_mode, validation_key, patch_target_incorrect,
         advanced.get("validation_percent", 20))
     print(f"Reviewed targets: {sum(len(e['accepted_ids']) for e in examples)} labeled cells; "
-          f"{sum(e['rejected_count'] for e in examples)} ARTIFACT across "
+          f"{sum(e['incorrect_count'] for e in examples)} incorrect predictions "
+          "(ARTIFACT or erased) across "
           f"{len(examples)} samples", flush=True)
 
     parent = None
@@ -819,7 +835,12 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                                        "seg_run": e["seg_run"],
                                        "channel": e["channel"],
                                        "sample": e["sample"],
-                                       "crop": e.get("crop")}
+                                       "crop": e.get("crop"),
+                                       "prediction_baseline": e.get("prediction_baseline", ""),
+                                       "original_proposals": e["original_count"],
+                                       "manually_added_ids": e["manual_added_ids"],
+                                       "erased_prediction_ids": e["erased_prediction_ids"],
+                                       "incorrect_predictions": e["incorrect_count"]}
                                       for e in train_examples],
                   "training_sources": sources or [{"project": str(project_path),
                                                    "seg_run": seg_run, "channel": channel}],

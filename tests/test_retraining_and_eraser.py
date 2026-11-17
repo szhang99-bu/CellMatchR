@@ -13,11 +13,14 @@ import numpy as np
 import tifffile
 
 from cellmatchr.roi_editor import (RoiEditorApp, _merge_additions,
+                                  _model_prediction_mask,
+                                  _prediction_baseline_path,
                                   _remove_touched_objects)
 from cellmatchr.retraining import (available_channels, collect_examples,
                                   delete_managed_model, list_trained_models,
                                   train_model, validate_advanced,
-                                  _prepare_pair, _train_stardist)
+                                  _focus_training_pairs, _prepare_pair,
+                                  _train_stardist)
 from cellmatchr.validation_state import (finalize_if_ready, get_change_state,
                                          save_edited_mask, save_review_decision)
 
@@ -34,6 +37,15 @@ class WholeObjectEraserTests(unittest.TestCase):
         self.assertFalse(np.any(edited == 1))
         self.assertEqual(int(np.sum(edited == 2)), 4)
         self.assertEqual(int(np.sum(predicted == 1)), 9)
+
+    def test_added_id_does_not_reuse_an_erased_prediction_id(self):
+        current = np.zeros((8, 8), dtype=np.uint32)
+        current[1:3, 1:3] = 1
+        addition = np.zeros_like(current)
+        addition[4:6, 4:6] = 1
+        edited, count, ids = _merge_additions(current, addition, {2})
+        self.assertEqual((count, ids), (1, {3}))
+        self.assertEqual(int(edited[4, 4]), 3)
 
     def test_erase_undo_restores_preview_before_save(self):
         app = object.__new__(RoiEditorApp)
@@ -226,6 +238,60 @@ class ReviewedTrainingDataTests(unittest.TestCase):
             staged = tifffile.imread(label_path)
             self.assertEqual(int(staged[5, 5]), 0)
             self.assertEqual(int(staged[1, 1]), 1)
+
+    def test_editor_keeps_original_and_records_added_and_erased_objects(self):
+        sample = self.sample("edited")
+        mask_path = sample / "edited_predict_original_ch1_method.tif"
+        original_bytes = mask_path.read_bytes()
+        app = object.__new__(RoiEditorApp)
+        app.channel = 1
+        app._scale = 1
+        app._orig_h = app._orig_w = 8
+        app.idx = 0
+        app.samples = [{"name": "edited", "mask": str(mask_path)}]
+        app.test_mode = False
+        app._mask_lyr = Mock()
+        addition = np.zeros((8, 8), dtype=np.int32)
+        addition[3:5, 3:5] = 1
+        erasure = np.zeros((8, 8), dtype=np.uint8)
+        erasure[5, 5] = 1
+        app._add_lyr = Mock(data=addition)
+        app._erase_lyr = Mock(data=erasure)
+        app._set_status = Mock()
+
+        self.assertTrue(app._save_current())
+        baseline = Path(_prediction_baseline_path(str(mask_path), 1))
+        self.assertEqual(baseline.read_bytes(), original_bytes)
+        edited = tifffile.imread(mask_path)
+        self.assertEqual(set(np.unique(edited)), {0, 1, 3})
+        self.assertIn("3\t", (sample / "_manual_additions_ch1.tsv").read_text())
+        deletion_log = (sample / "_manual_deletions_ch1.tsv").read_text()
+        self.assertIn("2\t1\tedited\tARTIFACT\t", deletion_log)
+        self.assertEqual(int(_model_prediction_mask(str(mask_path), 1, edited)[3, 3]), 0)
+
+        save_review_decision(str(sample), 1, str(mask_path), 3, "YES", "added by reviewer")
+        examples, skipped = collect_examples(str(self.run), 1)
+        self.assertEqual(skipped, [])
+        self.assertEqual(examples[0]["original_count"], 2)
+        self.assertEqual(examples[0]["manual_added_count"], 1)
+        self.assertEqual(examples[0]["incorrect_count"], 1)
+        self.assertEqual(len(_focus_training_pairs([("image", "mask")], examples,
+                                                    "rejected_cells")), 2)
+
+        app._add_lyr.data = np.zeros((8, 8), dtype=np.int32)
+        app._erase_lyr.data = np.zeros((8, 8), dtype=np.uint8)
+        app._erase_lyr.data[3, 3] = 1  # previously added, not model-predicted
+        self.assertTrue(app._save_current())
+        self.assertEqual(baseline.read_bytes(), original_bytes)
+        np.testing.assert_array_equal(tifffile.imread(mask_path), edited)
+        self.assertEqual((sample / "_manual_deletions_ch1.tsv").read_text(),
+                         deletion_log)
+
+        app._erase_lyr.data = np.zeros((8, 8), dtype=np.uint8)
+        app._add_lyr.data[7, 7] = 1
+        self.assertTrue(app._save_current())
+        self.assertEqual(baseline.read_bytes(), original_bytes)
+        self.assertEqual(int(tifffile.imread(mask_path)[7, 7]), 4)
 
     def test_advanced_controls_reject_unsupported_loss(self):
         self.assertEqual(validate_advanced("stardist", {"loss": "mse",

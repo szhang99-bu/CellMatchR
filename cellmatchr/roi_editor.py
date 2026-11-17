@@ -16,7 +16,9 @@ Test mode  (--test-mode)
       • Processes only the first image — stops after one test save
 
 Normal mode  (default)
-    Writes directly to the prediction mask TIF.  No PNG, no debug files.
+    Saves the edited mask at the existing prediction path for compatibility.
+    Before the first edit, keeps an untouched prediction baseline beside it.
+    Erased predictions are recorded as ARTIFACT in the deletion log.
 
 Launched from the CellMatchR launcher (Step 4 → "Review Segmented Images").
 Can also be run standalone:
@@ -26,8 +28,12 @@ Can also be run standalone:
 """
 
 import argparse
+import csv
+import hashlib
 import os
+import shutil
 import sys
+import tempfile
 
 import numpy as np
 import tifffile
@@ -128,8 +134,9 @@ def _find_samples(seg_folder: str, channel: int) -> list[dict]:
 
 # ── Core merge logic ─────────────────────────────────────────────────────────
 
-def _merge_additions(existing: np.ndarray,
-                     additions: np.ndarray) -> tuple[np.ndarray, int, set[int]]:
+def _merge_additions(existing: np.ndarray, additions: np.ndarray,
+                     reserved_ids: set[int] | None = None
+                     ) -> tuple[np.ndarray, int, set[int]]:
     """
     Separate every disconnected painted blob into its own ROI.
 
@@ -153,7 +160,7 @@ def _merge_additions(existing: np.ndarray,
     if len(label_values) == 0:
         return existing, 0, set()
 
-    max_id   = int(existing.max())
+    max_id   = max(int(existing.max()), max(reserved_ids or {0}))
     new_mask = existing.copy()
     new_ids  = set()
     added    = 0
@@ -187,6 +194,70 @@ def _remove_touched_objects(mask: np.ndarray, predicted: np.ndarray,
     result = mask.copy()
     result[np.isin(result, list(touched))] = 0
     return result, touched
+
+
+def _prediction_baseline_path(mask_path: str, channel: int) -> str:
+    """Keep the first pre-edit prediction outside active mask search patterns."""
+    identity = hashlib.sha256(os.path.basename(mask_path).encode("utf-8")).hexdigest()[:12]
+    return os.path.join(os.path.dirname(mask_path),
+                        f"_prediction_baseline_ch{channel}_{identity}.tif")
+
+
+def _preserve_prediction_baseline(mask_path: str, channel: int) -> str:
+    """Copy the prediction once before editing; later edits never replace it."""
+    baseline = _prediction_baseline_path(mask_path, channel)
+    if os.path.exists(baseline):
+        if not os.path.isfile(baseline) or os.path.getsize(baseline) == 0:
+            raise OSError(f"Prediction baseline is incomplete: {baseline}")
+        return baseline
+    fd, staging = tempfile.mkstemp(prefix=".prediction_baseline_", suffix=".tif",
+                                   dir=os.path.dirname(mask_path))
+    os.close(fd)
+    try:
+        shutil.copy2(mask_path, staging)
+        os.replace(staging, baseline)
+    finally:
+        if os.path.exists(staging):
+            os.unlink(staging)
+    return baseline
+
+
+def _logged_editor_ids(sample_dir: str, channel: int, kind: str) -> set[int]:
+    """Read added or erased object IDs from current and older editor logs."""
+    seen = set()
+    path = os.path.join(sample_dir, f"_manual_{kind}_ch{channel}.tsv")
+    if not os.path.isfile(path):
+        return seen
+    with open(path, newline="", encoding="utf-8") as source:
+        for row in csv.DictReader(source, delimiter="\t"):
+            try:
+                seen.add(int(row["label_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return seen
+
+
+def _previous_editor_ids(sample_dir: str, channel: int) -> set[int]:
+    """Avoid reusing IDs that were already added or marked as artifacts."""
+    return (_logged_editor_ids(sample_dir, channel, "additions") |
+            _logged_editor_ids(sample_dir, channel, "deletions"))
+
+
+def _model_prediction_mask(mask_path: str, channel: int,
+                           current: np.ndarray) -> np.ndarray:
+    """Return only still-present model predictions for the removal brush."""
+    baseline_path = _prediction_baseline_path(mask_path, channel)
+    predicted = (read_tiff(baseline_path) if os.path.isfile(baseline_path)
+                 else current)
+    if predicted.shape != current.shape:
+        raise ValueError("Prediction baseline shape differs from the active mask")
+    predicted = predicted.copy()
+    added = _logged_editor_ids(os.path.dirname(mask_path), channel, "additions")
+    original_ids = {int(value) for value in np.unique(current) if value > 0} - added
+    predicted[~np.isin(predicted, list(original_ids))] = 0
+    if added:
+        predicted[np.isin(current, list(added))] = 0
+    return predicted
 
 
 # ── Debug PNG ────────────────────────────────────────────────────────────────
@@ -300,6 +371,7 @@ class RoiEditorApp:
         self._add_lyr  = None
         self._erase_lyr = None
         self._base_display_mask = None
+        self._prediction_display_mask = None
 
         # Qt widgets (set in _build_dock)
         self._prog_lbl   = None
@@ -308,6 +380,7 @@ class RoiEditorApp:
         self._save_btn   = None     # stored so we can disable it in test mode
         self._skip_btn   = None     # stored so we can disable after all reviewed
         self._colour_btns: dict = {}  # label_value → QPushButton
+        self._add_btn = None
         self._erase_btn = None
         self._sidecar_controls = None
 
@@ -389,6 +462,7 @@ class RoiEditorApp:
         dozen slices.  The Metal shader only needs compiling once per session, so
         a single warm is sufficient.
         """
+        self._sync_tool_buttons()
         if self._add_lyr is None:
             return
         if getattr(self, "_prewarmed", False):
@@ -490,6 +564,45 @@ class RoiEditorApp:
         title.setFont(QFont("", 13, QFont.Bold))
         lay.addWidget(title)
 
+        # Keep the two correction modes visible at the top of the right dock.
+        tool_lbl = QLabel("Choose a correction tool:")
+        tool_lbl.setStyleSheet("font-size:11px; font-weight:bold;")
+        lay.addWidget(tool_lbl)
+
+        self._add_btn = QPushButton("＋  ADD MISSED CELLS\nPaint new cells")
+        self._add_btn.setCheckable(True)
+        self._add_btn.setChecked(True)
+        self._add_btn.setMinimumHeight(58)
+        self._add_btn.setStyleSheet(
+            "QPushButton { background:#285e52; color:white; font-size:12px; "
+            "font-weight:bold; padding:8px; border-radius:5px; }"
+            "QPushButton:checked { border:3px solid #9df5cf; }"
+        )
+        self._add_btn.clicked.connect(self._select_add_brush)
+        lay.addWidget(self._add_btn)
+
+        self._erase_btn = QPushButton(
+            "−  REMOVE PREDICTED OBJECTS\nClick here, then brush any part of one")
+        self._erase_btn.setCheckable(True)
+        self._erase_btn.setMinimumHeight(68)
+        self._erase_btn.setToolTip(
+            "Switches to the separate removal layer. A touched prediction is "
+            "recorded as ARTIFACT and the whole object is removed on Save.")
+        self._erase_btn.setStyleSheet(
+            "QPushButton { background:#9b3546; color:white; font-size:12px; "
+            "font-weight:bold; padding:10px; border-radius:5px; }"
+            "QPushButton:checked { border:3px solid #ffb0bc; }"
+        )
+        self._erase_btn.clicked.connect(self._select_eraser)
+        lay.addWidget(self._erase_btn)
+
+        tool_hint = QLabel(
+            "The red removal brush targets predictions, even if you touch "
+            "one pixel. Napari's eraser on the Add layer only edits your new drawing.")
+        tool_hint.setWordWrap(True)
+        tool_hint.setStyleSheet("font-size:10px; color:#aaaaaa;")
+        lay.addWidget(tool_hint)
+
         # ── First-stroke warning ──
         freeze_warn = QLabel(
             "⏳  FIRST STROKE MAY FREEZE\n"
@@ -518,13 +631,13 @@ class RoiEditorApp:
         )
         instr = QLabel(
             "<b>How to add missed cells:</b><br><br>"
-            "1. Make sure <i>Add ROIs here</i> layer is selected<br>"
+            "1. Click <b>ADD MISSED CELLS</b> in this panel<br>"
             "2. Press <b>P</b> for the brush<br>"
             "3. <b>Left-click</b> to paint missed cells<br>"
             "   • Same colour + not touching → separate ROIs ✓<br>"
             "   • <b>Touching cells → use different colours</b><br>"
             "4. <b>Right-click drag</b> to pan the view<br>"
-            "5. To reject a prediction, select <b>Erase whole object</b> "
+            "5. To reject a prediction, click <b>REMOVE PREDICTED OBJECTS</b> "
             "and paint any part of it<br>"
             "6. Press <b>Ctrl+Z</b> to undo a brush stroke before saving<br>"
             "7. Press Save when done<br><br>"
@@ -583,15 +696,6 @@ class RoiEditorApp:
             self._colour_btns[lv] = btn
 
         lay.addWidget(colour_row)
-        self._erase_btn = QPushButton("🧽  Erase whole object")
-        self._erase_btn.setCheckable(True)
-        self._erase_btn.setStyleSheet(
-            "QPushButton { background:#713541; color:white; padding:6px; "
-            "border-radius:4px; }"
-            "QPushButton:checked { border:2px solid #ff7485; }"
-        )
-        self._erase_btn.clicked.connect(self._select_eraser)
-        lay.addWidget(self._erase_btn)
         lay.addWidget(self._hr())
 
         # ── Buttons ──
@@ -664,6 +768,8 @@ class RoiEditorApp:
         raw_d = _downsample(raw, self._scale)
         msk_d = _downsample(msk, self._scale)
         self._base_display_mask = msk_d.copy()
+        predicted = _model_prediction_mask(s["mask"], self.channel, msk)
+        self._prediction_display_mask = _downsample(predicted, self._scale)
 
         if self._scale > 1:
             print(f"[roi_editor]   {w}×{h} → display at "
@@ -723,12 +829,24 @@ class RoiEditorApp:
             self._add_lyr.selected_label  = 1
             self._add_lyr.mode            = "paint"
             self.viewer.layers.selection.active = self._add_lyr
-            if self._erase_btn is not None:
-                self._erase_btn.setChecked(False)
+            self._sync_tool_buttons()
 
         self.viewer.reset_view()
 
     # ── Button callbacks ─────────────────────────────────────────────────────
+
+    def _sync_tool_buttons(self) -> None:
+        """Reflect the actual selected napari layer in the correction controls."""
+        active = self.viewer.layers.selection.active if self.viewer is not None else None
+        if self._add_btn is not None:
+            self._add_btn.setChecked(active is self._add_lyr)
+        if self._erase_btn is not None:
+            self._erase_btn.setChecked(active is self._erase_lyr)
+
+    def _select_add_brush(self) -> None:
+        label = self._add_lyr.selected_label if self._add_lyr is not None else 1
+        self._set_brush_colour(label)
+        self._set_status("Paint missed cells in the Add layer. Choose a colour for touching cells.")
 
     def _set_brush_colour(self, label: int) -> None:
         """Switch the active brush label and update button checked states."""
@@ -738,8 +856,7 @@ class RoiEditorApp:
             self.viewer.layers.selection.active = self._add_lyr
         for lv, btn in self._colour_btns.items():
             btn.setChecked(lv == label)
-        if self._erase_btn is not None:
-            self._erase_btn.setChecked(False)
+        self._sync_tool_buttons()
 
     def _select_eraser(self) -> None:
         if self._erase_lyr is None:
@@ -749,8 +866,9 @@ class RoiEditorApp:
         self.viewer.layers.selection.active = self._erase_lyr
         for btn in self._colour_btns.values():
             btn.setChecked(False)
-        self._erase_btn.setChecked(True)
-        self._set_status("Paint any part of a predicted object to remove it on Save. Ctrl+Z undoes a stroke.")
+        self._sync_tool_buttons()
+        self._set_status("Paint any part of a prediction: the whole object will be removed "
+                         "and recorded as ARTIFACT on Save. Ctrl+Z undoes a stroke.")
 
     def _toggle_sidecar_tool(self) -> None:
         """Switch correction brushes only for a Sidecar Pencil double-tap."""
@@ -764,14 +882,20 @@ class RoiEditorApp:
     def _update_erasure_preview(self, event=None) -> None:
         if self._erase_lyr is None or self._base_display_mask is None:
             return
+        prediction_display = getattr(self, "_prediction_display_mask", None)
+        predicted = (prediction_display if prediction_display is not None
+                     else self._base_display_mask)
         touched = {int(v) for v in np.unique(
-            self._base_display_mask[self._erase_lyr.data > 0]) if v > 0}
+            predicted[self._erase_lyr.data > 0]) if v > 0}
         preview = self._base_display_mask.copy()
         if touched:
             preview[np.isin(preview, list(touched))] = 0
         self._mask_lyr.data = preview
         if touched:
             self._set_status(f"{len(touched)} whole predicted object(s) marked for removal. Ctrl+Z to undo.")
+        elif np.any(self._erase_lyr.data):
+            self._set_status("No model prediction touched. Use the Add layer eraser "
+                             "to reshape an unsaved new cell.")
 
     def _undo_eraser(self, layer=None) -> None:
         self._erase_lyr.undo()
@@ -880,7 +1004,7 @@ class RoiEditorApp:
 
     def _record_deleted_rois(self, s: dict, old_mask: np.ndarray,
                              deleted_ids: set[int]) -> None:
-        """Keep a human-readable false-prediction record beside the edited mask."""
+        """Keep an ARTIFACT decision for each erased original prediction."""
         if not deleted_ids:
             return
         import datetime
@@ -894,7 +1018,7 @@ class RoiEditorApp:
             for label_id in sorted(deleted_ids):
                 if np.any(old_mask == label_id):
                     output.write(f"{label_id}\t{self.channel}\t{s['name']}\t"
-                                 f"false_prediction\t{timestamp}\n")
+                                 f"ARTIFACT\t{timestamp}\n")
 
     def _save_current(self) -> bool:
         additions_display = self._add_lyr.data
@@ -913,11 +1037,15 @@ class RoiEditorApp:
             erasures_display, self._scale, self._orig_h, self._orig_w
         )
 
-        # Always merge into the original full-res mask from disk
+        # Edit the full-resolution active mask; a separate baseline keeps
+        # the model's prediction unchanged across correction rounds.
         existing = read_tiff(s["mask"]).astype(np.int32)
-        new_mask, n_added, new_ids = _merge_additions(existing, additions)
+        predicted = _model_prediction_mask(s["mask"], self.channel, existing)
+        reserved_ids = _previous_editor_ids(os.path.dirname(s["mask"]), self.channel)
+        new_mask, n_added, new_ids = _merge_additions(
+            existing, additions, reserved_ids)
         new_mask, deleted_ids = _remove_touched_objects(
-            new_mask, existing, erasures)
+            new_mask, predicted, erasures)
 
         if n_added == 0 and not deleted_ids:
             self._set_status(
@@ -947,7 +1075,8 @@ class RoiEditorApp:
     def _normal_save(self, s: dict, existing: np.ndarray,
                      new_mask: np.ndarray, n_added: int,
                      n_deleted: int = 0) -> None:
-        """Write directly to the original mask TIF. No PNG, no debug files."""
+        """Preserve the prediction, then update the compatible active mask."""
+        _preserve_prediction_baseline(s["mask"], self.channel)
         state = save_edited_mask(s["mask"], self.channel, existing, new_mask)
         if state["status"] == "pending" and not state["pending_ids"]:
             state = finalize_if_ready(os.path.dirname(s["mask"]), self.channel,

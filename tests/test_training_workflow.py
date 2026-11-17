@@ -61,11 +61,15 @@ class TrainingWorkflowTests(unittest.TestCase):
         examples, _ = collect_source_examples([
             {"project": str(project), "seg_run": run.name, "channel": 1}])
         self.assertEqual(examples[0]["label_ids"], {"NO": [3], "YES": [1]})
+        examples[0]["manual_added_ids"] = [3]
         all_cells, omitted = select_training_labels(examples, [])
         self.assertEqual((all_cells[0]["accepted_ids"], omitted), ([1, 3], []))
         no_cells, omitted = select_training_labels(examples, ["no"])
         self.assertEqual((no_cells[0]["accepted_ids"], omitted), ([3], []))
+        self.assertEqual(no_cells[0]["manual_added_ids"], [3])
         self.assertEqual(no_cells[0]["rejected_ids"], [2])
+        yes_cells, _ = select_training_labels(examples, ["YES"])
+        self.assertEqual(yes_cells[0]["manual_added_ids"], [])
         with tempfile.TemporaryDirectory() as stage:
             _image, labels_path = _prepare_pair(no_cells[0], Path(stage), 0,
                                                 "raw_percentile")

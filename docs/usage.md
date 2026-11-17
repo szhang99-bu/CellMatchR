@@ -369,10 +369,16 @@ buttons and keys, up to six options; Shift and Down stay reserved. Use notes
 and **Go Back** if you need to revise an earlier object. Decisions save as TSV
 files alongside the prediction files.
 
-For training, **YES** is a cell target, **NO** and **ARTIFACT** are background,
-and **MAYBE** must be resolved. If the goal is high recall, add genuinely
+For training, **YES** and **NO** are both cell labels and are targets by
+default. **ARTIFACT** alone marks an incorrect prediction; **MAYBE** must be
+resolved. You can choose one or several cell labels in Step 7 for a specialized
+model. If the goal is high recall, add genuinely
 missed cells in the mask editor rather than trying to label them in a list of
 existing predictions: a missing prediction has no object to validate.
+For an older project where **NO** was used to mean an incorrect prediction,
+review those decisions before retraining. Mark incorrect objects ARTIFACT, or
+select only the cell labels you want as training targets. Existing analysis
+and segmentation outputs are not changed by retraining.
 
 ## Step 5: Analyze results
 
@@ -424,8 +430,9 @@ and input folder in the summary before starting a long run.
 
 Use completed human validation from Step 4. Choose the reviewed segmentation
 run, one channel, the model family to train, a starting model, and a **new model
-name**. Corrected masks provide the examples: YES objects become targets;
-NO/ARTIFACT objects are background. Resolve MAYBE objects first. The masks can
+name**. Corrected masks provide the examples: confirmed cell labels,
+including YES and NO, become targets by default; ARTIFACT is background.
+Resolve MAYBE objects first. The masks can
 have been created with **any** model family. For example, reviewed Micro-SAM
 masks can teach a Cellpose model.
 
@@ -449,6 +456,7 @@ also makes it the current choice after training.
 |---|---|
 | **Reviewed masks from** | Select the current project's segmentation run whose masks you corrected in Step 4. This supplies training labels; it does not choose the model whose weights will be changed. |
 | **Channel to train** | Choose one channel found in that run. Step 7 trains one channel at a time; train channels 0, 1, and 2 separately if you need all three. The menu updates when the reviewed run changes. |
+| **Cell labels to train** | Leave every box unchecked (the default) to use **all confirmed cells**. Check one or more labels to make only those cells training targets. Other valid cell types become background in this specialized model, so it may stop detecting them. ARTIFACT always remains background and cannot be selected as a cell label. |
 | **Model family to train** | Pick **Micro-SAM**, **Cellpose**, or **StarDist**. This controls the training software, compatible starting weights, and later Step 3 model choice. Reviewed masks can come from a different family. |
 | **Initialize weights from** | Choose a built-in model or a previously saved fine-tuned model **of the selected family**. Continuing a fine-tuned model creates a *new* model; the prior checkpoint stays available. Use **Other starting model** under advanced settings only for a compatible checkpoint that is not listed. |
 | **Save new model as** | Give the result a recognizable name. The suggested name includes family, channel, and date; you can replace it. The field accepts 1–60 characters without slashes, backslashes, tabs, or line breaks. Each run creates a separate folder, even if you reuse a display name. |
@@ -471,7 +479,7 @@ changing the sources.
 
 The library shows a color overlay of saved image channels without mask
 outlines. Each preview lists approximate original proposals, reviewed
-incorrect predictions, and final YES cells. Uncheck an image to exclude it
+ARTIFACT/erased predictions, and training target cells. Uncheck an image to exclude it
 from this run. An image appears only after review is complete and every
 current object has a resolved decision. The log lists skipped images and why.
 The listed counts help spot an unusual sample before starting; inspect the
@@ -480,8 +488,12 @@ mask in Step 4 when a count is surprising.
 **Refresh image library** after changing the selected run or channel, adding
 a project, or changing review data. The gallery may show fewer images than a
 segmentation run contains: only usable, fully reviewed images are offered.
-Unchecking an image excludes it from this training run; it does not delete
-the image or its validation. When choosing a whole-image holdout, click the
+With selected cell labels, an image containing none of those labels is
+automatically left out. Unchecking an image excludes it from this training
+run; it does not delete the image or its validation. If some images still
+need verification, **Start Retraining** asks whether to train only on the
+finished images. Choose **No** to finish review first; choosing **Yes** does
+not change unfinished images. When choosing a whole-image holdout, click the
 **Choose held-out image from library** button and then that image's preview.
 Keep at least one other included image for training.
 
@@ -499,7 +511,7 @@ You must choose one of these before **Start Retraining** becomes available:
 | Choice | What stays out of training | When to use it |
 |---|---|---|
 | **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two reviewed images are available. This gives an independent before/after check. |
-| **Reserve a small patch** | A randomly chosen patch around marked NO/ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects still visible in the mask. The default target is 8 incorrect predictions; change the approximate target beside the selection button if needed. The report records the random seed, exact patch location, and actual count, which can be lower when few incorrect objects are available. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
+| **Reserve a small patch** | A randomly chosen patch around marked ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed artifacts still visible in the mask. The default target is 8 incorrect predictions; change the approximate target beside the selection button if needed. The report records the random seed, exact patch location, and actual count, which can be lower when few artifacts are available. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
 
 ![Step 7 validation approach choices and held-out image button, circled in red](images/step7-validation-choice.png)
@@ -535,6 +547,10 @@ saved report in the current project's `Training_Reports` folder. The model
 remains in the shared model library even if report generation fails; the log
 and report folder explain that failure. Compare missed cells first when recall
 is your priority, then inspect false positives and actual mask shapes.
+For a specialized model, the report uses only selected labels as its reference;
+predictions on other real cell types can therefore appear as off-target
+detections in its score. Those cells are still present in the source review
+and are never relabeled ARTIFACT.
 
 ### Training presets
 
@@ -542,10 +558,10 @@ is your priority, then inspect false positives and actual mask shapes.
 |---|---|---|---|
 | **High recall** | 20; `1e-5` | Repeat samples with human-added missed cells. | Fewer missed cells on the holdout. |
 | **Default training** | 20; `1e-5` | Use each reviewed sample once. | Compare with the starting model. |
-| **High precision** | 20; `1e-5` | Repeat samples with rejected false predictions. | Check that recall has not fallen. |
+| **High precision** | 20; `1e-5` | Repeat samples with ARTIFACT predictions. | Check that recall has not fallen. |
 | **Gentle follow-up** | 8; `3e-6` | No extra repetition. | Small, stable change from a saved model. |
 | **Recall follow-up** | 8; `3e-6` | Repeat missed-cell samples. | Better held-out recall. |
-| **Precision follow-up** | 8; `3e-6` | Repeat rejected-prediction samples. | Fewer false positives without losing true cells. |
+| **Precision follow-up** | 8; `3e-6` | Repeat ARTIFACT samples. | Fewer false positives without losing true cells. |
 | **Short trial** | 5; `1e-5` | No extra repetition. | Check data and training setup before a longer run. |
 
 The learning rates shown apply to Micro-SAM and Cellpose. For StarDist, the
@@ -575,7 +591,7 @@ These values affect training, not the masks you have already reviewed.
 | **Learning rate** | Size of each weight update. Larger values can change a model faster but may destabilize training; smaller values usually need more time. Enter a value greater than 0 and at most 1, such as `1e-5`. The preset fills this for Cellpose and Micro-SAM. A blank StarDist field uses that model's own default. |
 | **Batch size** | Number of image patches presented together for a training update. Leave blank for the backend default, or enter **1–64**. Larger batches may use more GPU or unified memory. Cellpose and Micro-SAM default to **1**; StarDist uses its pretrained configuration. |
 | **Patch size (px)** | Width and height of square training crops. Leave blank for the model default; otherwise enter **64–2048** in multiples of **16**. Smaller patches may fit in less memory but give less context. Cellpose uses a fixed **256-pixel** patch, so this control is hidden for Cellpose. Micro-SAM defaults to **256**; StarDist uses its pretrained configuration. This is a *training crop* and is different from the small patch reserved for validation. |
-| **Training sample focus** | `none` uses every training sample once. `missed_cells` repeats samples containing cells a person added; `rejected_cells` repeats samples containing rejected predictions. Repetition applies only to training examples, never to held-out validation data. It can shift emphasis but does not guarantee a higher recall or precision. |
+| **Training sample focus** | `none` uses every training sample once. `missed_cells` repeats samples containing manually added target cells; `rejected_cells` repeats samples containing ARTIFACT predictions. Repetition applies only to training examples, never to held-out validation data. It can shift emphasis but does not guarantee a higher recall or precision. |
 | **Other starting model** / **Browse** | Select a compatible checkpoint outside the dropdown: a **file** for Cellpose or Micro-SAM, a **model folder** for StarDist. This becomes the starting weight source, not the output location. The dropdown is easier for built-in and previously saved models. |
 | **StarDist distance loss** | **Model default** keeps the selected model's distance loss. `mae` and `mse` are alternate losses for predicted object distances. This control appears only for StarDist; Cellpose and Micro-SAM use their built-in training losses. |
 | **Micro-SAM: keep image encoder frozen** | On by default. It trains the remaining trainable parts while keeping the image encoder weights fixed. Turning it off also updates the encoder, which can use more memory and may need more varied examples. This control appears only for Micro-SAM. |

@@ -205,7 +205,11 @@ def build_report(project: Path, output: Path, result: dict,
               "validation": records, "training_sources": result["training_sources"],
               "training_samples": result["training_samples"],
               "training_images": result.get("training_images", []),
+              "selected_cell_labels": result.get("selected_cell_labels", []),
               "excluded_keys": result["excluded_keys"], "epochs": result["epochs"],
+              "unfinished_review": result.get("unfinished_review", []),
+              "allow_completed_only": result.get("allow_completed_only", False),
+              "skipped": result.get("skipped", []),
               "advanced": result["advanced"], "preprocess": preprocess}
     path = folder / "report.json"
     path.write_text(json.dumps(report, indent=2) + "\n")

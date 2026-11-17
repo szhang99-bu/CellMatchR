@@ -12,7 +12,8 @@ import tifffile
 
 from cellmatchr.retraining import (collect_source_examples, plan_examples,
                                   project_runs, _prepare_pair,
-                                  microsam_architecture, train_model)
+                                  microsam_architecture, select_training_labels,
+                                  train_model)
 from cellmatchr.training_gallery import composite_preview, project_preview_settings
 from cellmatchr.training_report import (build_report, object_scores, save_history)
 
@@ -31,7 +32,7 @@ class TrainingWorkflowTests(unittest.TestCase):
             "project_name": name, "project_output_folder": "/old/path"}))
         return project, run
 
-    def sample(self, run, name, channel=1):
+    def sample(self, run, name, channel=1, complete=True):
         folder = run / name
         folder.mkdir()
         raw = np.full((768, 768), 100, np.uint16)
@@ -47,11 +48,62 @@ class TrainingWorkflowTests(unittest.TestCase):
         review = folder / "ROI Validation Results"
         review.mkdir()
         (review / f"roi_verification_results_ch{channel}.tsv").write_text(
-            "ROI_ID\tDecision\n1\tYES\n2\tNO\n3\tYES\n")
-        (review / f"_validation_complete_ch{channel}").touch()
+            "ROI_ID\tDecision\n1\tYES\n2\tARTIFACT\n3\tNO\n")
+        if complete:
+            (review / f"_validation_complete_ch{channel}").touch()
         (folder / f"_manual_deletions_ch{channel}.tsv").write_text(
             "label_id\tchannel\n9\t1\n")
         return folder
+
+    def test_cell_label_selection_preserves_artifact_meaning(self):
+        project, run = self.project("current")
+        self.sample(run, "a")
+        examples, _ = collect_source_examples([
+            {"project": str(project), "seg_run": run.name, "channel": 1}])
+        self.assertEqual(examples[0]["label_ids"], {"NO": [3], "YES": [1]})
+        all_cells, omitted = select_training_labels(examples, [])
+        self.assertEqual((all_cells[0]["accepted_ids"], omitted), ([1, 3], []))
+        no_cells, omitted = select_training_labels(examples, ["no"])
+        self.assertEqual((no_cells[0]["accepted_ids"], omitted), ([3], []))
+        self.assertEqual(no_cells[0]["rejected_ids"], [2])
+        with tempfile.TemporaryDirectory() as stage:
+            _image, labels_path = _prepare_pair(no_cells[0], Path(stage), 0,
+                                                "raw_percentile")
+            staged = tifffile.imread(labels_path)
+            self.assertEqual(set(np.unique(staged)), {0, 3})
+        both, omitted = select_training_labels(examples, ["YES", "NO"])
+        self.assertEqual((both[0]["accepted_ids"], omitted), ([1, 3], []))
+
+    def test_unfinished_review_requires_explicit_completed_only_choice(self):
+        project, run = self.project("current")
+        self.sample(run, "done")
+        self.sample(run, "unfinished", complete=False)
+        sources = [{"project": str(project), "seg_run": run.name, "channel": 1}]
+        examples, skipped, unfinished = collect_source_examples(
+            sources, with_review_status=True)
+        self.assertEqual([item["sample"] for item in examples], ["done"])
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(len(unfinished), 1)
+        with self.assertRaisesRegex(ValueError, "Confirm training on completed images"):
+            train_model(str(project), run.name, 1, "cellpose", 1,
+                        validation_mode="training_image", sources=sources)
+
+        def fake_trainer(train_pairs, _validation_pairs, output, *_args):
+            staged = tifffile.imread(train_pairs[0][1])
+            self.assertEqual(set(np.unique(staged)), {0, 3})
+            model = output / "weights.pth"
+            model.touch()
+            return str(model)
+
+        with patch.dict(os.environ, {"CELLMATCHR_MODEL_LIBRARY":
+                                  str(self.root / "models")}), \
+             patch.dict("cellmatchr.retraining.TRAINERS", {"cellpose": fake_trainer}):
+            result = train_model(str(project), run.name, 1, "cellpose", 1,
+                                 validation_mode="training_image", sources=sources,
+                                 allow_completed_only=True, selected_labels=["NO"])
+        self.assertEqual(result["selected_cell_labels"], ["NO"])
+        self.assertEqual(result["training_samples"], ["done"])
+        self.assertEqual(len(result["unfinished_review"]), 1)
 
     def test_imported_project_uses_project_file_folder_and_keeps_sources_unchanged(self):
         first, run_a = self.project("current")

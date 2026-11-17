@@ -166,7 +166,7 @@ class ReviewedTrainingDataTests(unittest.TestCase):
         self.assertTrue(any("resolve MAYBE" in reason for reason in skipped))
 
     def test_rejected_cell_is_background_in_staged_pair_only(self):
-        sample = self.sample("reviewed", decisions="1\tYES\n2\tNO\n")
+        sample = self.sample("reviewed", decisions="1\tYES\n2\tARTIFACT\n")
         examples, skipped = collect_examples(str(self.run), 1)
         self.assertEqual(skipped, [])
         original_path = sample / "reviewed_predict_original_ch1_method.tif"
@@ -179,6 +179,16 @@ class ReviewedTrainingDataTests(unittest.TestCase):
             self.assertEqual(int(staged[1, 1]), 1)
             self.assertEqual(int(staged[5, 5]), 0)
         np.testing.assert_array_equal(tifffile.imread(original_path), original)
+
+    def test_no_and_custom_cell_labels_are_training_targets(self):
+        self.sample("no_is_a_cell", decisions="1\tYES\n2\tNO\n")
+        self.sample("custom_cell", decisions="1\tNeuron\n2\tGlia\n")
+        examples, skipped = collect_examples(str(self.run), 1)
+        self.assertEqual(skipped, [])
+        self.assertEqual([item["accepted_ids"] for item in examples], [[1, 2], [1, 2]])
+        self.assertEqual([item["rejected_ids"] for item in examples], [[], []])
+        self.assertEqual(examples[1]["label_ids"], {"NO": [2], "YES": [1]})
+        self.assertEqual(examples[0]["label_ids"], {"GLIA": [2], "NEURON": [1]})
 
     def test_added_cell_enters_training_after_focused_review(self):
         sample = self.sample("corrected")

@@ -46,7 +46,7 @@ TRAINING_PRESETS = {
         "sampling_focus": "none",
     },
     "High precision": {
-        "description": "Repeat samples with rejected false predictions. Check held-out recall so real cells are still found.",
+        "description": "Repeat samples with ARTIFACT predictions. Check held-out recall so real cells are still found.",
         "epochs": 20, "learning_rate": 1e-5, "validation_percent": 25,
         "sampling_focus": "rejected_cells",
     },
@@ -61,7 +61,7 @@ TRAINING_PRESETS = {
         "sampling_focus": "missed_cells",
     },
     "Precision follow-up": {
-        "description": "Continue a saved model gently while repeating samples with rejected predictions; check missed cells afterward.",
+        "description": "Continue a saved model gently while repeating samples with ARTIFACT predictions; check missed cells afterward.",
         "epochs": 8, "learning_rate": 3e-6, "validation_percent": 25,
         "sampling_focus": "rejected_cells",
     },
@@ -291,9 +291,9 @@ def project_runs(project_file: str) -> list[dict]:
     return sorted(runs, key=lambda item: item["name"])
 
 
-def collect_source_examples(sources: list[dict]) -> tuple[list[dict], list[str]]:
+def collect_source_examples(sources: list[dict], *, with_review_status: bool = False):
     """Read reviewed images from one or more projects, never altering sources."""
-    examples, skipped, seen = [], [], set()
+    examples, skipped, unfinished, seen = [], [], [], set()
     for source in sources:
         project = Path(source["project"]).expanduser().resolve()
         run = str(source["seg_run"])
@@ -304,9 +304,11 @@ def collect_source_examples(sources: list[dict]) -> tuple[list[dict], list[str]]
         folder = project / run
         if not folder.is_dir() or folder.is_symlink():
             raise FileNotFoundError(f"Segmentation run not found: {folder}")
-        found, omitted = collect_examples(str(folder), channel)
+        found, omitted, pending = collect_examples(
+            str(folder), channel, with_review_status=True)
         title = str(source.get("name") or project.name)
         skipped.extend(f"{title} / {run} / ch{channel}: {reason}" for reason in omitted)
+        unfinished.extend(f"{title} / {run} / ch{channel}: {reason}" for reason in pending)
         for item in found:
             key = example_id(str(project), run, channel, item["sample"])
             if key in seen:
@@ -315,15 +317,15 @@ def collect_source_examples(sources: list[dict]) -> tuple[list[dict], list[str]]
             item.update({"key": key, "project": str(project),
                          "project_name": title, "seg_run": run, "channel": channel})
             examples.append(item)
-    return examples, skipped
+    return (examples, skipped, unfinished) if with_review_status else (examples, skipped)
 
 
-def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[str]]:
-    """Find completely reviewed raw/mask pairs, with explicit YES decisions."""
+def collect_examples(seg_folder: str, channel: int, *, with_review_status: bool = False):
+    """Find fully reviewed pairs; only ARTIFACT is a false prediction."""
     root = Path(seg_folder)
     if not root.is_dir():
         raise FileNotFoundError(f"Segmentation run not found: {root}")
-    examples, skipped = [], []
+    examples, skipped, unfinished = [], [], []
     for sample in sorted(root.iterdir()):
         if not sample.is_dir() or sample.name.startswith((".", "DEBUG")):
             continue
@@ -333,47 +335,83 @@ def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[st
             continue
         state = get_change_state(str(sample), channel, mask)
         if state["status"] in ("pending", "unknown") or not _review_complete(sample, channel):
-            skipped.append(f"{sample.name}: finish channel {channel} validation first")
+            reason = f"{sample.name}: finish channel {channel} validation first"
+            skipped.append(reason)
+            unfinished.append(reason)
             continue
         review = get_validation_tsv_path(str(sample), channel)
         if not review:
-            skipped.append(f"{sample.name}: validation decisions missing")
+            reason = f"{sample.name}: validation decisions missing"
+            skipped.append(reason)
+            unfinished.append(reason)
             continue
         decisions = _decisions(review)
         labels = read_tiff(mask)
         present = {int(v) for v in np.unique(labels) if v > 0}
         if present - decisions.keys():
-            skipped.append(f"{sample.name}: some current cells have no decision")
+            reason = f"{sample.name}: some current cells have no decision"
+            skipped.append(reason)
+            unfinished.append(reason)
             continue
-        if any(decisions[v] not in {"YES", "NO", "MAYBE", "ARTIFACT"}
-               for v in present):
-            skipped.append(f"{sample.name}: custom decision words need an explicit mapping")
+        if any(not decisions[v] for v in present):
+            reason = f"{sample.name}: some current cells have an empty label"
+            skipped.append(reason)
+            unfinished.append(reason)
             continue
         if any(decisions[v] == "MAYBE" for v in present):
-            skipped.append(f"{sample.name}: resolve MAYBE cells as YES, NO, or ARTIFACT before training")
+            reason = f"{sample.name}: resolve MAYBE cells before training"
+            skipped.append(reason)
+            unfinished.append(reason)
             continue
-        accepted = {v for v in present if decisions[v] == "YES"}
+        accepted = {v for v in present if decisions[v] != "ARTIFACT"}
+        artifacts = present - accepted
         if not accepted:
-            skipped.append(f"{sample.name}: no accepted cells to train on")
+            skipped.append(f"{sample.name}: no labeled cells to train on")
             continue
         additions = _logged_ids(sample / f"_manual_additions_ch{channel}.tsv", "label_id")
         deletions = _logged_ids(sample / f"_manual_deletions_ch{channel}.tsv", "label_id")
         accepted_additions = additions & accepted
+        label_ids = {word: sorted(v for v in accepted if decisions[v] == word)
+                     for word in sorted({decisions[v] for v in accepted})}
         examples.append({"sample": sample.name, "raw": raw, "mask": mask,
                          "accepted_ids": sorted(accepted),
-                         "rejected_ids": sorted(present - accepted),
-                         "rejected_count": len(present - accepted),
+                         "label_ids": label_ids,
+                         "manual_added_ids": sorted(accepted_additions),
+                         "rejected_ids": sorted(artifacts),
+                         "rejected_count": len(artifacts),
                          "manual_added_count": len(accepted_additions),
                          "original_count": len(present - additions) + len(deletions),
-                         "incorrect_count": len(present - accepted) + len(deletions),
+                         "incorrect_count": len(artifacts) + len(deletions),
                          "final_count": len(accepted),
                          "deletion_count": len(deletions)})
-    return examples, skipped
+    return (examples, skipped, unfinished) if with_review_status else (examples, skipped)
+
+
+def select_training_labels(examples: list[dict], labels: list[str] | None
+                           ) -> tuple[list[dict], list[str]]:
+    """Choose cell targets without changing source masks or artifact decisions."""
+    chosen = {str(word).strip().upper() for word in (labels or [])}
+    if "" in chosen or chosen & {"ARTIFACT", "MAYBE"}:
+        raise ValueError("Choose cell labels other than ARTIFACT or MAYBE")
+    if not chosen:
+        return examples, []
+    filtered, skipped = [], []
+    for example in examples:
+        targets = sorted({int(value) for word, ids in example["label_ids"].items()
+                          if word in chosen for value in ids})
+        if not targets:
+            skipped.append(f"{example['sample']}: no cells with selected labels")
+            continue
+        item = dict(example, accepted_ids=targets, final_count=len(targets),
+                    manual_added_count=len(set(example.get("manual_added_ids", [])) &
+                                           set(targets)))
+        filtered.append(item)
+    return filtered, skipped
 
 
 def _accepted_manual_additions(sample: Path, channel: int,
                                accepted: set[int]) -> int:
-    """Count reviewed YES cells that the editor recorded as manual additions."""
+    """Count target cells that the editor recorded as manual additions."""
     path = sample / f"_manual_additions_ch{channel}.tsv"
     if not path.is_file():
         return 0
@@ -408,7 +446,7 @@ def _patch_validation_split(example: dict, target_incorrect: int,
     rejected = [int(value) for value in example.get("rejected_ids", [])
                 if np.any(labels == value)]
     if not rejected:
-        raise ValueError("Patch validation needs at least one reviewed NO or ARTIFACT "
+        raise ValueError("Patch validation needs at least one reviewed ARTIFACT "
                          "object in the selected image")
     centers = {}
     for value in rejected:
@@ -491,7 +529,7 @@ def plan_examples(examples: list[dict], validation_mode: str,
                       if validation_key else examples)
         candidates = [item for item in candidates if item.get("rejected_ids")]
         if not candidates:
-            raise ValueError("Patch validation needs an image with reviewed NO or ARTIFACT objects")
+            raise ValueError("Patch validation needs an image with reviewed ARTIFACT objects")
         random_seed = secrets.randbits(64)
         rng = np.random.default_rng(random_seed)
         choice = candidates[int(rng.integers(len(candidates)))]
@@ -665,7 +703,9 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                 excluded_keys: set[str] | None = None,
                 validation_mode: str = "automatic", validation_key: str = "",
                 patch_target_incorrect: int = DEFAULT_PATCH_TARGET_INCORRECT,
-                generate_report: bool = False) -> dict:
+                generate_report: bool = False,
+                allow_completed_only: bool = False,
+                selected_labels: list[str] | None = None) -> dict:
     if backend not in BACKENDS:
         raise ValueError(f"Choose one of: {', '.join(BACKENDS)}")
     if epochs < 1 or epochs > 500:
@@ -693,7 +733,8 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
     project_path = Path(project).resolve()
     seg_folder = project_path / seg_run
     if sources is None:
-        examples, skipped = collect_examples(str(seg_folder), channel)
+        examples, skipped, unfinished = collect_examples(
+            str(seg_folder), channel, with_review_status=True)
         for item in examples:
             item.update({"key": example_id(str(project_path), seg_run, channel,
                                             item["sample"]),
@@ -701,16 +742,26 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                          "project_name": project_path.name,
                          "seg_run": seg_run, "channel": channel})
     else:
-        examples, skipped = collect_source_examples(sources)
+        examples, skipped, unfinished = collect_source_examples(
+            sources, with_review_status=True)
+    if unfinished and not allow_completed_only:
+        raise ValueError(f"{len(unfinished)} image(s) still need verification or "
+                         "a resolved cell label. Confirm training on completed images only.")
     for reason in skipped:
         print(f"[SKIP] {reason}", flush=True)
     excluded = set(excluded_keys or ())
     examples = [item for item in examples if item["key"] not in excluded]
+    examples, label_skips = select_training_labels(examples, selected_labels)
+    skipped.extend(label_skips)
+    for reason in label_skips:
+        print(f"[SKIP] {reason}", flush=True)
+    if not examples:
+        raise ValueError("No verified images contain training targets for the chosen labels")
     train_examples, val_examples, split = plan_examples(
         examples, validation_mode, validation_key, patch_target_incorrect,
         advanced.get("validation_percent", 20))
-    print(f"Reviewed targets: {sum(len(e['accepted_ids']) for e in examples)} YES; "
-          f"{sum(e['rejected_count'] for e in examples)} NO/ARTIFACT across "
+    print(f"Reviewed targets: {sum(len(e['accepted_ids']) for e in examples)} labeled cells; "
+          f"{sum(e['rejected_count'] for e in examples)} ARTIFACT across "
           f"{len(examples)} samples", flush=True)
 
     parent = None
@@ -772,8 +823,12 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                                       for e in train_examples],
                   "training_sources": sources or [{"project": str(project_path),
                                                    "seg_run": seg_run, "channel": channel}],
+                  "selected_cell_labels": sorted({str(word).strip().upper()
+                                                  for word in (selected_labels or [])}),
                   "excluded_keys": sorted(excluded), "validation_plan": split,
-                  "skipped": skipped, "base_model": base_model,
+                  "skipped": skipped, "unfinished_review": unfinished,
+                  "allow_completed_only": allow_completed_only,
+                  "base_model": base_model,
                   "microsam_architecture": (microsam_architecture(base_model)
                                             if backend == "microsam" else None),
                   "completed_at": datetime.now().isoformat(timespec="seconds")}
@@ -793,7 +848,10 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                 report_path.write_text(json.dumps({
                     "status": "report_error", "model_path": path,
                     "message": result["report_error"], "validation_plan": split,
-                    "training_sources": result["training_sources"]}, indent=2) + "\n")
+                    "training_sources": result["training_sources"],
+                    "selected_cell_labels": result["selected_cell_labels"],
+                    "unfinished_review": unfinished,
+                    "allow_completed_only": allow_completed_only}, indent=2) + "\n")
                 print(f"[REPORT ERROR] {result['report_error']}; {report_path}", flush=True)
         (output / "model.json").write_text(json.dumps(result, indent=2) + "\n")
         print(f"[COMPLETE] Trained model: {path}", flush=True)
@@ -821,6 +879,10 @@ def main() -> None:
     parser.add_argument("--sampling-focus", choices=("none", "missed_cells", "rejected_cells"))
     parser.add_argument("--sources-json", help="JSON list of project/run/channel sources")
     parser.add_argument("--exclude-key", action="append", default=[])
+    parser.add_argument("--allow-completed-only", action="store_true",
+                        help="Train only on fully verified images when some are unfinished")
+    parser.add_argument("--cell-label", action="append", default=[],
+                        help="Train selected cell labels; repeat for multiple labels")
     parser.add_argument("--validation-mode", choices=("automatic", "whole_image",
                                                        "patch", "training_image"),
                         default="automatic")
@@ -841,7 +903,9 @@ def main() -> None:
                 args.epochs, args.base_model, args.preprocess, args.model_name, advanced,
                 sources, set(args.exclude_key), args.validation_mode,
                 args.validation_key, args.patch_target_incorrect,
-                generate_report=True)
+                generate_report=True,
+                allow_completed_only=args.allow_completed_only,
+                selected_labels=args.cell_label)
 
 
 if __name__ == "__main__":

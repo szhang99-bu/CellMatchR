@@ -5091,9 +5091,9 @@ class CellMatchrLauncher:
             "Use completed human validation to fine-tune a model for future runs.")
         card = self._card(parent, "Training data and model")
         tk.Label(card, text=(
-            "Finish validation for a channel first. Only cells marked YES are "
-            "training targets; NO and ARTIFACT are treated as background. "
-            "Resolve MAYBE cells before training. "
+            "Finish validation for a channel first. All confirmed cell labels "
+            "(including YES and NO) are training targets by default. Only "
+            "ARTIFACT is an incorrect prediction. Resolve MAYBE first. "
             "The original predictions and project files stay in place."),
             bg=CARD, fg=MUTED, font=FONT, wraplength=720,
             justify="left").pack(anchor="w", pady=(0, 10))
@@ -5555,7 +5555,8 @@ class CellMatchrLauncher:
         imported_frame = tk.Frame(sources_card, bg=CARD)
         imported_frame.pack(fill="x", pady=(6, 2))
         gallery_state = {"examples": [], "sources": "", "generation": 0,
-                         "excluded": set(), "photos": [], "choosing": False}
+                         "excluded": set(), "photos": [], "choosing": False,
+                         "unfinished": []}
         start_button_ref = [None]
 
         def source_specs():
@@ -5658,10 +5659,21 @@ class CellMatchrLauncher:
                   bg=ACTIVE, fg=button_fg, font=FONT_BOLD, relief="flat",
                   padx=10, pady=5).pack(anchor="w", pady=(4, 0))
 
+        labels_card = self._card(parent, "Cell labels to train")
+        tk.Label(labels_card, text=(
+            "Leave every label unchecked to train on all verified cells (default). "
+            "Check one or more labels to train a specialized model for only those cells. "
+            "Other cell labels become background in that model; ARTIFACT is always background."),
+            bg=CARD, fg=MUTED, font=FONT, wraplength=740,
+            justify="left").pack(anchor="w", pady=(0, 5))
+        label_choices_frame = tk.Frame(labels_card, bg=CARD)
+        label_choices_frame.pack(fill="x")
+        label_vars = {}
+
         gallery_card = self._card(parent, "Images available for training")
         tk.Label(gallery_card, text=("Uncheck images that should not be used. Previews combine "
                                      "all saved channels without mask outlines. Counts show "
-                                     "original proposals, incorrect predictions, and final YES cells."),
+                                     "original proposals, ARTIFACT/erased predictions, and verified cells."),
                  bg=CARD, fg=MUTED, font=FONT, wraplength=740,
                  justify="left").pack(anchor="w", pady=(0, 4))
         gallery_summary = tk.Label(gallery_card, text="Checking reviewed images…",
@@ -5834,9 +5846,17 @@ class CellMatchrLauncher:
             except tk.TclError:
                 pass
 
+        def selected_cell_labels():
+            return {word for word, variable in label_vars.items() if variable.get()}
+
+        def matching_examples():
+            selected = selected_cell_labels()
+            return [item for item in gallery_state["examples"]
+                    if item["key"] not in gallery_state["excluded"]
+                    and (not selected or selected.intersection(item["label_ids"]))]
+
         def update_start_state(*_):
-            included = [item for item in gallery_state["examples"]
-                        if item["key"] not in gallery_state["excluded"]]
+            included = matching_examples()
             mode = validation_mode_var.get()
             key = validation_key_var.get()
             ready = bool(gallery_state["sources"] and included and mode)
@@ -5877,6 +5897,38 @@ class CellMatchrLauncher:
         validation_mode_var.trace_add("write", update_start_state)
         patch_target_var.trace_add("write", update_start_state)
 
+        def render_label_choices():
+            previous = {word: variable.get() for word, variable in label_vars.items()}
+            label_vars.clear()
+            for child in label_choices_frame.winfo_children():
+                child.destroy()
+            counts = {}
+            for item in gallery_state["examples"]:
+                for word, ids in item["label_ids"].items():
+                    counts[word] = counts.get(word, 0) + len(ids)
+            if not counts:
+                tk.Label(label_choices_frame,
+                         text="Labels appear after reviewed images are found.",
+                         bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
+                return
+            for word in sorted(counts):
+                variable = tk.BooleanVar(value=previous.get(word, False))
+                label_vars[word] = variable
+                tk.Checkbutton(label_choices_frame,
+                               text=f"{word} ({counts[word]} cells)",
+                               variable=variable, command=render_gallery,
+                               bg=CARD, fg=FG, selectcolor=BG,
+                               activebackground=CARD, font=FONT).pack(anchor="w")
+            tk.Button(label_choices_frame, text="Use all cell labels",
+                      command=lambda: clear_label_choices(), bg=ACTIVE,
+                      fg=button_fg, font=FONT, relief="flat", padx=8).pack(
+                          anchor="w", pady=(5, 0))
+
+        def clear_label_choices():
+            for variable in label_vars.values():
+                variable.set(False)
+            render_gallery()
+
         def render_gallery():
             for child in gallery_grid.winfo_children():
                 child.destroy()
@@ -5890,6 +5942,10 @@ class CellMatchrLauncher:
                 tile = tk.Frame(gallery_grid, bg=ACTIVE, padx=8, pady=7)
                 tile.grid(row=index // 2, column=index % 2, sticky="nsew",
                           padx=4, pady=4)
+                chosen = selected_cell_labels()
+                targets = (sum(len(ids) for word, ids in item["label_ids"].items()
+                               if word in chosen) if chosen else item["final_count"])
+                eligible = targets > 0
                 image = item.get("preview")
                 if image is not None and _PIL:
                     photo = ImageTk.PhotoImage(image)
@@ -5903,7 +5959,8 @@ class CellMatchrLauncher:
                                        cursor="hand2")
                 picture.pack(anchor="center")
                 def reserve(_event=None, selected=item):
-                    if selected["key"] in gallery_state["excluded"]:
+                    if not any(entry["key"] == selected["key"]
+                               for entry in matching_examples()):
                         return
                     if gallery_state["choosing"] or validation_mode_var.get() == "whole_image":
                         validation_key_var.set(selected["key"])
@@ -5911,31 +5968,35 @@ class CellMatchrLauncher:
                         gallery_state["choosing"] = False
                         update_start_state()
                 picture.bind("<Button-1>", reserve)
-                included = tk.BooleanVar(value=item["key"] not in gallery_state["excluded"])
+                included = tk.BooleanVar(value=(eligible and item["key"] not in
+                                                 gallery_state["excluded"]))
                 def toggle(selected=item, variable=included):
                     if variable.get():
                         gallery_state["excluded"].discard(selected["key"])
                     else:
                         gallery_state["excluded"].add(selected["key"])
                     update_start_state()
-                    count = len(items) - len(gallery_state["excluded"] &
-                                             {entry["key"] for entry in items})
-                    gallery_summary.config(text=f"{count} of {len(items)} image(s) included")
+                    gallery_summary.config(
+                        text=f"{len(matching_examples())} of {len(items)} image(s) "
+                             "match selected labels and are included")
                 tk.Checkbutton(tile, text=f"{item['project_name']} / {item['sample']} "
-                               f"(ch{item['channel']})", variable=included,
+                               f"(ch{item['channel']})" +
+                               (" — no selected cells" if not eligible else ""),
+                               variable=included,
                                command=toggle, bg=ACTIVE, fg=FG, selectcolor=BG,
                                activebackground=ACTIVE, font=FONT_BOLD,
+                               state="normal" if eligible else "disabled",
                                wraplength=330, justify="left").pack(anchor="w")
                 tk.Label(tile, text=(f"Original proposals: ~{item['original_count']}  ·  "
-                                     f"Incorrect: {item['incorrect_count']}  ·  "
-                                     f"Final YES cells: {item['final_count']}"),
+                                     f"ARTIFACT/erased: {item['incorrect_count']}  ·  "
+                                     f"Training targets: {targets}"),
                          bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
                          wraplength=330, justify="left").pack(anchor="w")
             for column in (0, 1):
                 gallery_grid.grid_columnconfigure(column, weight=1)
-            count = len(items) - len(gallery_state["excluded"] &
-                                     {entry["key"] for entry in items})
-            gallery_summary.config(text=f"{count} of {len(items)} image(s) included")
+            gallery_summary.config(
+                text=f"{len(matching_examples())} of {len(items)} image(s) "
+                     "match selected labels and are included")
             update_start_state()
 
         def refresh_gallery(*_):
@@ -5946,6 +6007,8 @@ class CellMatchrLauncher:
             except (ValueError, OSError, KeyError) as exc:
                 gallery_state["sources"] = ""
                 gallery_state["examples"] = []
+                gallery_state["unfinished"] = []
+                render_label_choices()
                 render_gallery()
                 status.config(text=str(exc), fg=RED)
                 return
@@ -5957,7 +6020,8 @@ class CellMatchrLauncher:
                 try:
                     from .retraining import collect_source_examples
                     from .training_gallery import composite_preview, project_preview_settings
-                    examples, skipped = collect_source_examples(specs)
+                    examples, skipped, unfinished = collect_source_examples(
+                        specs, with_review_status=True)
                     display = {os.path.normcase(os.path.realpath(spec["project"])):
                                project_preview_settings(
                                    spec["project"],
@@ -5980,12 +6044,16 @@ class CellMatchrLauncher:
                             check_btn.config(state="normal")
                             gallery_state["sources"] = json.dumps(specs, sort_keys=True)
                             gallery_state["examples"] = examples
+                            gallery_state["unfinished"] = unfinished
+                            render_label_choices()
                             render_gallery()
-                            yes_count = sum(len(item["accepted_ids"]) for item in examples)
+                            cell_count = sum(len(item["accepted_ids"]) for item in examples)
                             rejected_count = sum(item["incorrect_count"] for item in examples)
                             status.config(text=(f"{len(examples)} reviewed sample(s) ready "
-                                                f"({yes_count} YES cells, {rejected_count} "
-                                                f"incorrect predictions); {len(skipped)} skipped."),
+                                                f"({cell_count} labeled cells, {rejected_count} "
+                                                f"incorrect predictions); "
+                                                f"{len(unfinished)} need verification, "
+                                                f"{len(skipped) - len(unfinished)} other skipped."),
                                           fg=GREEN if examples else YELLOW)
                             for reason in skipped:
                                 log("Skipped: " + reason)
@@ -6016,8 +6084,7 @@ class CellMatchrLauncher:
                 specs = source_specs()
                 if json.dumps(specs, sort_keys=True) != gallery_state["sources"]:
                     raise ValueError("Refresh the image library after changing projects or channels")
-                included = [item for item in gallery_state["examples"]
-                            if item["key"] not in gallery_state["excluded"]]
+                included = matching_examples()
                 mode = validation_mode_var.get()
                 if not mode:
                     raise ValueError("Choose how to validate training below the image library")
@@ -6077,6 +6144,21 @@ class CellMatchrLauncher:
                     return
             chosen_preprocess = preprocess_var.get()
             use_trained_model = use_var.get()
+            unfinished = gallery_state["unfinished"]
+            allow_completed_only = False
+            if unfinished:
+                allow_completed_only = messagebox.askyesno(
+                    "Some images are not fully verified",
+                    f"{len(unfinished)} image(s) still need verification or a "
+                    "resolved cell label.\n\n"
+                    f"Train using only the {len(included)} included, fully "
+                    "verified image(s)?\n\n"
+                    "No leaves everything as it is so you can finish review.",
+                    parent=self.root, default=messagebox.NO)
+                if not allow_completed_only:
+                    status.config(text="Training canceled; finish verification or try again.",
+                                  fg=YELLOW)
+                    return
             cmd = [sys.executable, "-m", "cellmatchr.retraining",
                    "--project", project, "--seg-run", run_var.get() or "Segmentation",
                    "--channel", str(channel), "--backend", backend,
@@ -6085,6 +6167,10 @@ class CellMatchrLauncher:
                    "--sources-json", json.dumps(specs),
                    "--validation-mode", mode,
                    "--patch-target-incorrect", str(patch_target)]
+            if allow_completed_only:
+                cmd.append("--allow-completed-only")
+            for word in sorted(selected_cell_labels()):
+                cmd.extend(("--cell-label", word))
             if holdout:
                 cmd.extend(("--validation-key", holdout))
             for key in sorted(gallery_state["excluded"]):

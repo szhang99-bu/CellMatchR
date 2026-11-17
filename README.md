@@ -159,12 +159,14 @@ and troubleshooting, see the [user guide](docs/usage.md).
 
 ## Retrain a model
 
-1. Finish **Step 4: Validation** for the images you want to use. Mark real
-   cells YES and incorrect predictions NO or ARTIFACT; resolve every MAYBE.
+1. Finish **Step 4: Validation** for the images you want to use. Give real
+   cells their cell labels (including YES or NO); mark incorrect predictions
+   ARTIFACT and resolve every MAYBE.
 2. Open **Step 7: Retrain Models**. Choose the reviewed run and one channel,
    the model family, starting weights, a name for the new model, and a training
-   preset. You can add reviewed images from other projects and exclude images
-   from this run.
+   preset. Leave cell labels unselected to train on all confirmed cells, or
+   check multiple labels for a specialized model. You can add reviewed images
+   from other projects and exclude images from this run.
 3. Choose how to check the result. **Reserve one whole image** is recommended
    when you have at least two reviewed images. Click **Start Retraining**, then
    compare the saved before/after report with the human-reviewed masks.

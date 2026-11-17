@@ -5953,14 +5953,20 @@ class CellMatchrLauncher:
             def worker():
                 try:
                     from .retraining import collect_source_examples
-                    from .training_gallery import composite_preview
+                    from .training_gallery import composite_preview, project_preview_settings
                     examples, skipped = collect_source_examples(specs)
-                    colors = {index: color.strip() for index, color in enumerate(
-                        self.config.get("val_channel_colors", "").split(",")) if color.strip()}
+                    display = {os.path.normcase(os.path.realpath(spec["project"])):
+                               project_preview_settings(
+                                   spec["project"],
+                                   self.config.get("project_output_folder", ""), self.config)
+                               for spec in specs}
                     for item in examples:
                         try:
+                            colors, brightfield = display[
+                                os.path.normcase(os.path.realpath(item["project"]))]
                             item["preview"] = composite_preview(
-                                os.path.dirname(item["mask"]), color_names=colors)
+                                os.path.dirname(item["mask"]),
+                                color_names=colors, brightfield=brightfield)
                         except (OSError, ValueError, ImportError) as exc:
                             item["preview"] = None
                             item["preview_error"] = str(exc)

@@ -13,7 +13,7 @@ import tifffile
 from cellmatchr.retraining import (collect_source_examples, plan_examples,
                                   project_runs, _prepare_pair,
                                   microsam_architecture, train_model)
-from cellmatchr.training_gallery import composite_preview
+from cellmatchr.training_gallery import composite_preview, project_preview_settings
 from cellmatchr.training_report import (build_report, object_scores, save_history)
 
 
@@ -143,6 +143,25 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertTrue((report_path.parent / "image_1_reviewed.png").is_file())
         self.assertTrue((report_path.parent / "image_1_after.png").is_file())
         self.assertEqual(raw_mask.read_bytes(), before)
+
+    def test_imported_preview_uses_its_own_colors_and_brightfield_mode(self):
+        project, run = self.project("imported")
+        folder = self.sample(run, "a", channel=0)
+        next(folder.glob("*_split_ch2.tif")).unlink()
+        project_file = project / "cellmatchr_project.json"
+        project_file.write_text(json.dumps({
+            "input_type": "vsi", "slide_signal_type": "brightfield",
+            "val_channel_colors": "red,green"}))
+        colors, brightfield = project_preview_settings(str(project))
+        self.assertEqual(colors[0], "red")
+        self.assertTrue(brightfield)
+        active_colors, active_brightfield = project_preview_settings(
+            str(project), str(project), {"val_channel_colors": "blue",
+                                         "slide_signal_type": "fluorescence"})
+        self.assertEqual(active_colors[0], "blue")
+        self.assertFalse(active_brightfield)
+        grayscale = np.asarray(composite_preview(str(folder), brightfield=True))
+        np.testing.assert_array_equal(grayscale[..., 0], grayscale[..., 1])
 
     def test_object_counts_use_one_to_one_matching(self):
         true = np.array([[1, 1, 0, 2, 2], [1, 1, 0, 2, 2]])

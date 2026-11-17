@@ -13,7 +13,15 @@ instructions, every workflow step, and answers to common questions.
 First, open a command window: **Terminal** on macOS (press **⌘ Space**, type
 `Terminal`, press Return), **PowerShell** on Windows (search for it in Start),
 or your Linux **Terminal** app. Type the commands below in that window, one
-line at a time. First, go to your Desktop using the line for your system.
+line at a time. **First, check whether Git is installed:**
+
+```bash
+git --version
+```
+
+If you see a version number, continue. If Git is not found,
+[install Git](https://git-scm.com/downloads), reopen the command window, and
+check again. Next, go to your Desktop using the line for your system.
 
 **macOS or Linux:**
 
@@ -27,15 +35,17 @@ cd ~/Desktop
 cd ([Environment]::GetFolderPath('Desktop'))
 ```
 
-Then clone CellMatchR onto the Desktop and enter its folder:
+The clone command below creates the app folder on your **Desktop by default**.
+To put it somewhere else, replace the Desktop `cd` command above with the
+path to an existing folder (for example, `cd ~/Documents` on macOS/Linux or
+`cd "D:\Apps"` on Windows). Then clone CellMatchR and enter its folder:
 
 ```bash
 git clone https://github.com/szhang99-bu/CellMatchR.git CellMatchR-app
 cd CellMatchR-app
 ```
 
-Cloning with Git allows later updates with `git pull`. If `git` is unavailable,
-[install Git](https://git-scm.com/downloads) first. **Code → Download ZIP**
+Cloning with Git allows later updates with `git pull`. **Code → Download ZIP**
 also works, but it cannot use `git pull`; each upgrade requires another ZIP.
 Already have the app folder? Open your command window **in that folder**
 instead of cloning again. The [user guide](docs/usage.md#install-launch-and-update)
@@ -43,9 +53,9 @@ shows how to find it.
 
 ### Windows
 
-1. On your Desktop, open the `CellMatchR-app` folder and double-click
-   **`setup-windows.cmd`**. This installs the app's own Conda-compatible
-   environment; no separate Conda installation is needed.
+1. Open the `CellMatchR-app` folder on your Desktop (or at the location you
+   chose) and double-click **`setup-windows.cmd`**. This installs the app's
+   own Conda-compatible environment; no separate Conda installation is needed.
 2. Double-click **Launch CellMatchR (Windows)**, the shortcut with the logo.
    **`run-windows.cmd`** also launches the app.
 
@@ -65,9 +75,8 @@ shows how to find it.
 
    If the file is not found, type `cd ` (with a space), drag the app
    folder from Finder into Terminal, press Return, and retry.
-3. On your Desktop, open `CellMatchR-app` (or the folder you already had)
-   and double-click the app that matches your
-   macOS version.
+3. Open `CellMatchR-app` on your Desktop (or at the location you chose) and
+   double-click the app that matches your macOS version.
    - **macOS 27 or later** — `CellMatchR (macOS 27+).app`
    - **macOS 26 or earlier** — `CellMatchR (macOS 26 and earlier).app`
 

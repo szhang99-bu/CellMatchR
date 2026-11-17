@@ -23,42 +23,118 @@ the full workflow and answers common questions.
 
 ## Install, launch, and update
 
-### Get the repository
+### Where to type the commands
 
-Install [Git](https://git-scm.com/downloads) if needed, then clone the repository
-in a terminal or PowerShell:
+| Computer | Open a command window |
+|---|---|
+| macOS | Press **⌘ Space**, type **Terminal**, then press Return. |
+| Windows | Open **Start**, type **PowerShell**, and open it. |
+| Linux | Open the **Terminal** app from your applications menu. |
 
-```bash
-git clone https://github.com/szhang99-bu/CellMatchR.git
-cd CellMatchR
-```
+Type each line in a code block into that window and press Return or Enter.
+The command window shows where you are and prints results or errors. You do
+not type the word `bash` above a code block.
 
-Cloning retains Git history, so future code updates can be obtained with
-`git pull`. **Code → Download ZIP** works for an initial install if Git is not
-available, but a ZIP is a snapshot: it cannot be updated with `git pull`, and
-you must download and replace the application files again for each upgrade.
-Keep project output folders separate from the application checkout when
-possible, especially if you use ZIP downloads.
+### Get an updateable copy of CellMatchR
 
-### Set up your platform
-
-| Platform | First setup | Launch |
-|---|---|---|
-| Windows 11 | Double-click `setup-windows.cmd` in the checkout. It creates the runtime and a desktop shortcut. | Double-click **Launch CellMatchR (Windows)** or `run-windows.cmd`. |
-| macOS | Install [Miniforge](https://github.com/conda-forge/miniforge#install), then run `conda env create -f environment.yml` in the checkout. | Open the `.app` matching your macOS version from inside the CellMatchR folder. |
-| Linux | Install Miniforge, then run the commands below. | Open **CellMatchR (Linux)** from the app menu or run `bash run-linux.sh`. |
-
-Linux setup from the repository folder:
+In your command window, run `git --version`. If it prints a version number,
+Git is ready. If Git is not found, [install Git](https://git-scm.com/downloads)
+and reopen the command window. Then type these lines, one at a time:
 
 ```bash
-PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
-  conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml
-bash scripts/install_linux_launcher.sh
+cd ~
+git clone https://github.com/szhang99-bu/CellMatchR.git CellMatchR-app
+cd CellMatchR-app
 ```
 
-The macOS app choices are `CellMatchR (macOS 27+).app` and
-`CellMatchR (macOS 26 and earlier).app`. Keep the chosen `.app` inside the
-checkout: its launcher looks for the code and environment there.
+`cd ~` takes you to your home folder. `git clone` creates a **CellMatchR-app**
+folder there; the last `cd` enters it. On a Mac or Linux computer that folder
+is `~/CellMatchR-app`. On Windows it is in your user folder. The app folder
+has a different name from the shared model library at `~/CellMatchR/Models`;
+trained models therefore stay outside the Git checkout. Cloning retains Git
+history, allowing later updates with `git pull`.
+
+**Already have an app folder?** Do not clone it again. Open a command
+window and enter that existing folder instead:
+
+- **macOS:** Type `cd ` including the space, drag the CellMatchR app folder from
+  Finder onto the Terminal window, then press Return. Finder inserts its full
+  path, including spaces in folder names.
+- **Windows:** Open the CellMatchR app folder in File Explorer. Click the address
+  bar, type `powershell`, and press Enter. PowerShell opens in that folder.
+- **Linux:** Use your file manager's **Open in Terminal** option for the
+  app folder, or run `cd /full/path/to/CellMatchR-app` in Terminal.
+
+To confirm you are in the right folder, type `pwd`, then `ls environment.yml`.
+The first command prints your current location; the second should list the
+`environment.yml` file. If you see *file not found*, enter the CellMatchR
+app folder and try again. Run environment commands only after this check.
+
+**Code → Download ZIP** works if Git is unavailable, but a ZIP cannot use
+`git pull`; every upgrade requires downloading and replacing application
+files. Extract the ZIP first, enter the extracted folder as above, and keep
+project output folders separate from the application folder when possible.
+
+### Windows setup
+
+The Windows setup script installs a Conda-compatible micromamba environment
+for CellMatchR. You do **not** need to install Conda or Miniforge separately
+for this Windows workflow.
+
+1. In File Explorer, open the CellMatchR app folder. If you used `cd ~` above,
+   paste `%USERPROFILE%\CellMatchR-app` into File Explorer's address bar.
+2. Double-click `setup-windows.cmd` and wait for it to report completion. It
+   creates the app environment and a desktop shortcut.
+3. Double-click **Launch CellMatchR (Windows)**. `run-windows.cmd` in the
+   app folder is another way to start it.
+
+### macOS setup
+
+1. In **Terminal**, type `conda --version`. A version number means Conda is
+   available. Existing Miniforge, Miniconda, or Anaconda installations can be
+   used if this command works. If it says `command not found`, check whether
+   you already installed Conda but have not initialized it for Terminal; see
+   your Conda installer's shell setup instructions before installing a second
+   copy.
+2. If Conda is absent, install [Miniforge's macOS package](https://github.com/conda-forge/miniforge#macos-pkg-installers).
+   In **Apple menu → About This Mac**, check whether the chip is Apple Silicon
+   or Intel and choose the corresponding `.pkg`. During installation, select
+   shell initialization. Close Terminal, open it again, and check
+   `conda --version` once more. Continue only when it prints a version.
+3. Enter the app folder if needed, then type `ls environment.yml` to
+   confirm you are beside the file. Create the app environment:
+
+   ```bash
+   conda env create -f environment.yml
+   ```
+
+   This creates an environment named `cellmatchr`. If you have already set it
+   up, `conda env list` shows it; you can skip creating it again. To update an
+   existing environment after a code update, use the command below under
+   [Update an existing Git installation](#update-an-existing-git-installation).
+4. In Finder choose **Go → Go to Folder**, enter `~/CellMatchR-app` if you cloned
+   into your home folder, and open the app matching your macOS version:
+   `CellMatchR (macOS 27+).app` or
+   `CellMatchR (macOS 26 and earlier).app`. If your checkout is elsewhere,
+   navigate to that folder in Finder instead. Keep the `.app` inside the
+   app folder because it launches the code stored there.
+
+### Linux setup
+
+1. In Terminal, type `conda --version`. If it prints a version, continue. If
+   Conda is absent, follow the [Miniforge Linux installation instructions](https://github.com/conda-forge/miniforge#unix-like-platforms-macos-linux--wsl),
+   close and reopen Terminal, then check `conda --version` again.
+2. Enter the app folder and confirm `ls environment.yml` finds the
+   file. Run:
+
+   ```bash
+   PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
+     conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml
+   bash scripts/install_linux_launcher.sh
+   ```
+
+3. Open **CellMatchR (Linux)** from the applications menu, or run
+   `bash run-linux.sh` from the app folder to see a terminal log.
 
 ### Update an existing Git installation
 
@@ -428,6 +504,22 @@ backend and chosen options.
 **Why clone instead of downloading the ZIP?** A clone can be updated with
 `git pull`; a ZIP has no Git history and must be downloaded again for each
 version. Both can launch the app after platform setup.
+
+**How do I know whether Conda is already installed?** On macOS or Linux,
+open Terminal and run `conda --version`. A version number means the command
+is available. On Windows, `setup-windows.cmd` installs CellMatchR's own
+Conda-compatible runtime, so a separate Conda installation is unnecessary.
+
+**Conda is installed, but Terminal says `command not found`.** Close and
+reopen Terminal. If the message remains, Conda may not be initialized for
+your shell; use your existing distribution's shell initialization instructions.
+Avoid installing a second Conda distribution until you have checked this.
+
+**`environment.yml` was not found. Where should I run the command?** In the
+CellMatchR application folder, not in your image or project folder. Run
+`pwd` to see your location and `ls environment.yml` to confirm the file is
+there. On macOS you can type `cd `, drag the folder from Finder into Terminal,
+and press Return.
 
 **Will `git pull` update my existing projects and models?** It updates tracked
 application files in the checkout. Projects stored elsewhere and the shared

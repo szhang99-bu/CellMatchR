@@ -7,8 +7,16 @@ colocalization. CellMatchR supports Cellpose-SAM, Micro-SAM, and StarDist.
 
 ## Install and launch
 
-Download and extract the ZIP from **Code → Download ZIP**, or clone the repository.
-Open a terminal in the CellMatchR folder for the commands below.
+Clone with Git so you can update later with `git pull`:
+
+```bash
+git clone https://github.com/szhang99-bu/CellMatchR.git
+cd CellMatchR
+```
+
+If you cannot use Git, **Code → Download ZIP** also works, but the ZIP has no
+update history: to upgrade, you must download and replace the files again.
+Then follow the instructions for your platform below.
 
 ### Windows
 
@@ -53,5 +61,5 @@ Open a terminal in the CellMatchR folder for the commands below.
    and a colocalization workbook.
 5. **Retrain** in Step 7 if you want to fine-tune a model on reviewed masks.
 
-See the [user guide](docs/usage.md) for file formats, GPU and StarDist setup,
-CLI commands, and troubleshooting.
+For detailed, step-by-step instructions, file formats, model choices, updating,
+and troubleshooting, see the [user guide](docs/usage.md).

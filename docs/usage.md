@@ -421,30 +421,75 @@ and input folder in the summary before starting a long run.
 ## Step 7: Retrain a model
 
 Use completed human validation from Step 4. Choose the reviewed segmentation
-run, one channel, the backend, a starting model, and a **new model name**.
-Training uses corrected masks and decisions: YES objects become targets;
-NO/ARTIFACT objects are background. Resolve MAYBE objects first. Keep at least
-two reviewed samples so a separate validation set is possible.
+run, one channel, the model family to train, a starting model, and a **new model
+name**. Corrected masks provide the examples: YES objects become targets;
+NO/ARTIFACT objects are background. Resolve MAYBE objects first. The masks can
+have been created with **any** model family. For example, reviewed Micro-SAM
+masks can teach a Cellpose model.
 
-**Starting model to fine-tune** means the model whose weights training begins
-from; it is not a save location. The resulting named model is saved separately
-in the shared library at `~/CellMatchR/Models` and does not replace the built-in
-or earlier model. A saved model can be selected as the starting model for a
-later training round and in Step 3 for future projects. **Select for future
-segmentation** sets the new model as the current segmentation choice; models
-remain available in the dropdown even when that option is left off.
+**Initialize weights from** selects the starting model *within* the model
+family being trained. It is not a save location and does not determine which
+reviewed masks are used. Choose a built-in model or a saved fine-tuned model in
+the dropdown. **Show advanced settings** contains an option to browse for an
+external checkpoint. The named result is saved separately in the shared
+library at `~/CellMatchR/Models`; it does not replace the built-in or earlier
+model. You can select it for a later training round or in Step 3 for any
+project. **Select the new model for this project's next segmentation runs**
+also makes it the current choice after training.
+
+### Build the training image library
+
+The current project's selected run and channel are included automatically.
+To include another project, click **Add another project**, browse to its
+`cellmatchr_project.json`, and choose its reviewed segmentation run and
+channel. Repeat for as many projects as you need. The project path is taken
+from the selected file's folder, which also works for projects moved from
+another computer. Other projects are read as sources; training results are
+written to the **current** project. Click **Refresh image library** after
+changing the sources.
+
+The library shows a color overlay of saved image channels without mask
+outlines. Each preview lists approximate original proposals, reviewed
+incorrect predictions, and final YES cells. Uncheck an image to exclude it
+from this run. An image appears only after review is complete and every
+current object has a resolved decision. The log lists skipped images and why.
+The listed counts help spot an unusual sample before starting; inspect the
+mask in Step 4 when a count is surprising.
+
+### Choose a validation approach
+
+You must choose one of these before **Start Retraining** becomes available:
+
+| Choice | What stays out of training | When to use it |
+|---|---|---|
+| **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two reviewed images are available. This gives an independent before/after check. |
+| **Reserve a small patch** | A randomly chosen patch around reviewed incorrect predictions; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects. Set the desired number of incorrect predictions beside the selection button. |
+| **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
+
+Choose a holdout that resembles the images you intend to process later.
+An independent holdout stays untouched by training; reserve more projects or
+images for a stronger future comparison when possible.
+
+After training, Step 7 reveals the training curve and reviewed reference,
+before, and after segmentation images below the log. The captions compare
+recall, missed cells, and false positives against the reviewed mask at an
+object IoU threshold of 0.5. Use **Open report folder** to inspect the full
+saved report in the current project's `Training_Reports` folder. The model
+remains in the shared model library even if report generation fails; the log
+and report folder explain that failure. Compare missed cells first when recall
+is your priority, then inspect false positives and actual mask shapes.
 
 ### Training presets
 
 | Preset | What it changes | Good first check |
 |---|---|---|
-| **High recall** | Repeats training samples with human-added missed cells; 20 epochs, 25% validation. | Look for fewer missed cells on held-out images. |
-| **Default training** | Uses each reviewed sample once; 20 epochs, 20% validation. | Compare with the starting model. |
-| **High precision** | Repeats samples with rejected false predictions; 20 epochs, 25% validation. | Verify recall has not fallen. |
+| **High recall** | Repeats training samples with human-added missed cells; 20 epochs. | Look for fewer missed cells on held-out images. |
+| **Default training** | Uses each reviewed sample once; 20 epochs. | Compare with the starting model. |
+| **High precision** | Repeats samples with rejected false predictions; 20 epochs. | Verify recall has not fallen. |
 | **Gentle follow-up** | Continues a saved model with 8 epochs and a lower learning rate. | Check for a small, stable change. |
 | **Recall follow-up** | Gentle continuation emphasizing missed-cell samples. | Check held-out recall. |
 | **Precision follow-up** | Gentle continuation emphasizing rejected samples. | Check held-out false positives and recall. |
-| **Short trial** | Runs 5 epochs with a 20% validation split. | Verify the data and training setup. |
+| **Short trial** | Runs 5 epochs. | Verify the data and training setup. |
 
 Presets are starting points, not performance guarantees. Compare predictions
 against held-out human annotations before adopting a new model. If missed
@@ -456,7 +501,7 @@ appropriate analysis filters.
 ### Advanced settings and devices
 
 **Show advanced settings** exposes learning rate, batch size, patch size
-(where supported), validation percentage, sample focus, and an external
+(where supported), sample focus, and an external
 starting model file or folder. StarDist offers MAE or MSE distance loss;
 Cellpose and Micro-SAM use their built-in losses. Micro-SAM can freeze or
 unfreeze its image encoder; the current default keeps it frozen. StarDist

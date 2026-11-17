@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import hashlib
 import importlib.util
 import json
 import os
@@ -227,6 +228,90 @@ def _decisions(path: str) -> dict[int, str]:
     return result
 
 
+def _logged_ids(path: Path, field: str) -> set[int]:
+    """Read optional editor provenance without rejecting older projects."""
+    if not path.is_file():
+        return set()
+    try:
+        with path.open(newline="", encoding="utf-8") as source:
+            return {int(row[field]) for row in csv.DictReader(source, delimiter="\t")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+
+
+def example_id(project: str, seg_run: str, channel: int, sample: str) -> str:
+    """Stable identifier for a reviewed image across projects and platforms."""
+    identity = json.dumps([os.path.normcase(os.path.realpath(project)),
+                           seg_run, int(channel), sample], ensure_ascii=False)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def microsam_architecture(model_name: str) -> str:
+    """Recover the SAM backbone for a built-in or previously saved model."""
+    match = re.match(r"^(vit_[blh])(?:_|$)", str(model_name))
+    if match:
+        return match.group(1)
+    model_file = Path(model_name).expanduser()
+    if model_file.is_file():
+        record_file = model_file.parent / "model.json"
+        try:
+            with record_file.open(encoding="utf-8") as source:
+                record = json.load(source)
+            if record.get("backend") == "microsam":
+                value = record.get("microsam_architecture") or record.get("base_model", "")
+                match = re.match(r"^(vit_[blh])(?:_|$)", str(value))
+                if match:
+                    return match.group(1)
+        except (OSError, ValueError, TypeError):
+            pass
+    return "vit_b"  # Older custom checkpoints were always loaded as vit_b.
+
+
+def project_runs(project_file: str) -> list[dict]:
+    """List valid segmentation runs in a project file's actual folder."""
+    path = Path(project_file).expanduser().resolve()
+    if path.name != "cellmatchr_project.json" or not path.is_file():
+        raise ValueError("Choose a project's cellmatchr_project.json file")
+    with path.open(encoding="utf-8") as source:
+        settings = json.load(source)
+    if not isinstance(settings, dict):
+        raise ValueError(f"Project settings are invalid: {path}")
+    runs = []
+    for folder in path.parent.iterdir():
+        if folder.is_dir() and not folder.is_symlink() and folder.name.startswith("Segmentation"):
+            channels = available_channels(str(folder))
+            if channels:
+                runs.append({"name": folder.name, "channels": channels})
+    return sorted(runs, key=lambda item: item["name"])
+
+
+def collect_source_examples(sources: list[dict]) -> tuple[list[dict], list[str]]:
+    """Read reviewed images from one or more projects, never altering sources."""
+    examples, skipped, seen = [], [], set()
+    for source in sources:
+        project = Path(source["project"]).expanduser().resolve()
+        run = str(source["seg_run"])
+        channel = int(source["channel"])
+        if (not project.is_dir() or os.path.basename(run) != run or
+                not run.startswith("Segmentation") or channel < 0):
+            raise ValueError(f"Invalid training source: {project} / {run} / channel {channel}")
+        folder = project / run
+        if not folder.is_dir() or folder.is_symlink():
+            raise FileNotFoundError(f"Segmentation run not found: {folder}")
+        found, omitted = collect_examples(str(folder), channel)
+        title = str(source.get("name") or project.name)
+        skipped.extend(f"{title} / {run} / ch{channel}: {reason}" for reason in omitted)
+        for item in found:
+            key = example_id(str(project), run, channel, item["sample"])
+            if key in seen:
+                continue
+            seen.add(key)
+            item.update({"key": key, "project": str(project),
+                         "project_name": title, "seg_run": run, "channel": channel})
+            examples.append(item)
+    return examples, skipped
+
+
 def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[str]]:
     """Find completely reviewed raw/mask pairs, with explicit YES decisions."""
     root = Path(seg_folder)
@@ -265,11 +350,18 @@ def collect_examples(seg_folder: str, channel: int) -> tuple[list[dict], list[st
         if not accepted:
             skipped.append(f"{sample.name}: no accepted cells to train on")
             continue
+        additions = _logged_ids(sample / f"_manual_additions_ch{channel}.tsv", "label_id")
+        deletions = _logged_ids(sample / f"_manual_deletions_ch{channel}.tsv", "label_id")
+        accepted_additions = additions & accepted
         examples.append({"sample": sample.name, "raw": raw, "mask": mask,
                          "accepted_ids": sorted(accepted),
+                         "rejected_ids": sorted(present - accepted),
                          "rejected_count": len(present - accepted),
-                         "manual_added_count": _accepted_manual_additions(
-                             sample, channel, accepted)})
+                         "manual_added_count": len(accepted_additions),
+                         "original_count": len(present - additions) + len(deletions),
+                         "incorrect_count": len(present - accepted) + len(deletions),
+                         "final_count": len(accepted),
+                         "deletion_count": len(deletions)})
     return examples, skipped
 
 
@@ -300,6 +392,110 @@ def _focus_training_pairs(pairs: list[tuple[str, str]], examples: list[dict],
     return weighted
 
 
+def _patch_validation_split(example: dict, target_incorrect: int
+                            ) -> tuple[list[dict], dict, dict]:
+    """Reserve a spatial patch; training strips never contain its pixels."""
+    labels = read_tiff(example["mask"])
+    if labels.ndim != 2:
+        raise ValueError(f"{example['sample']}: patch validation needs a 2D mask")
+    rejected = [int(value) for value in example.get("rejected_ids", [])
+                if np.any(labels == value)]
+    if not rejected:
+        raise ValueError("Patch validation needs at least one reviewed NO or ARTIFACT "
+                         "object in the selected image")
+    rng = np.random.default_rng(42)
+    centers = {}
+    for value in rejected:
+        y, x = np.where(labels == value)
+        centers[value] = (float(y.mean()), float(x.mean()))
+    anchor = rejected[int(rng.integers(len(rejected)))]
+    ay, ax = centers[anchor]
+    chosen = sorted(rejected, key=lambda value:
+                    (centers[value][0] - ay) ** 2 + (centers[value][1] - ax) ** 2
+                    )[:max(1, target_incorrect)]
+    accepted_centers = {}
+    for value in example["accepted_ids"]:
+        y, x = np.where(labels == value)
+        if y.size:
+            accepted_centers[int(value)] = (float(y.mean()), float(x.mean()))
+    if not accepted_centers:
+        raise ValueError("The patch candidate has no accepted cells")
+    closest_yes = min(accepted_centers, key=lambda value:
+                      (accepted_centers[value][0] - ay) ** 2 +
+                      (accepted_centers[value][1] - ax) ** 2)
+    selected = np.isin(labels, chosen + [closest_yes])
+    ys, xs = np.where(selected)
+    height, width = labels.shape
+    patch_h = min(height, max(256, int(ys.max() - ys.min() + 65)))
+    patch_w = min(width, max(256, int(xs.max() - xs.min() + 65)))
+    y0 = max(0, min(height - patch_h, int((ys.min() + ys.max()) / 2 - patch_h / 2)))
+    x0 = max(0, min(width - patch_w, int((xs.min() + xs.max()) / 2 - patch_w / 2)))
+    y1, x1 = y0 + patch_h, x0 + patch_w
+    heldout = dict(example, crop=(y0, y1, x0, x1))
+    heldout_ids = set(np.unique(labels[y0:y1, x0:x1]).tolist()) - {0}
+    strips = ((0, y0, 0, width), (y1, height, 0, width),
+              (y0, y1, 0, x0), (y0, y1, x1, width))
+    training = []
+    for box in strips:
+        top, bottom, left, right = box
+        if bottom - top < 64 or right - left < 64:
+            continue
+        cropped = labels[top:bottom, left:right]
+        trainable_ids = [value for value in example["accepted_ids"]
+                         if value not in heldout_ids and np.any(cropped == value)]
+        if not trainable_ids:
+            continue
+        training.append(dict(example, crop=box, accepted_ids=trainable_ids,
+                             sample=f"{example['sample']} [outside holdout {len(training)+1}]"))
+    contained = set(np.unique(labels[y0:y1, x0:x1]).tolist()) & set(rejected)
+    return training, heldout, {"crop": [y0, y1, x0, x1],
+                               "incorrect_objects_in_patch": len(contained)}
+
+
+def plan_examples(examples: list[dict], validation_mode: str,
+                  validation_key: str = "", patch_target_incorrect: int = 3,
+                  validation_percent: int = 20
+                  ) -> tuple[list[dict], list[dict], dict]:
+    """Create an explicit split, including the disclosed in-sample option."""
+    if not examples:
+        raise ValueError("No reviewed images are selected for training")
+    if validation_mode == "automatic":
+        if len(examples) < 2:
+            raise ValueError("At least two reviewed images are needed")
+        count = max(1, round(len(examples) * validation_percent / 100))
+        return examples[:-count], examples[-count:], {"mode": "automatic"}
+    if validation_mode == "whole_image":
+        if len(examples) < 2:
+            raise ValueError("Whole-image holdout needs at least two selected images")
+        matches = [item for item in examples if item["key"] == validation_key]
+        if len(matches) != 1:
+            raise ValueError("Click one image in the library to reserve it for validation")
+        return [item for item in examples if item["key"] != validation_key], matches, {
+            "mode": "whole_image", "heldout_key": validation_key}
+    if validation_mode == "training_image":
+        # Deliberately reuse a training image. This is not independent validation.
+        choice = next((item for item in examples if item["key"] == validation_key), examples[0])
+        return examples, [choice], {"mode": "training_image", "heldout_key": choice["key"],
+                                     "independent": False}
+    if validation_mode == "patch":
+        if not 1 <= patch_target_incorrect <= 50:
+            raise ValueError("Incorrect predictions per patch must be 1–50")
+        candidates = ([item for item in examples if item["key"] == validation_key]
+                      if validation_key else examples)
+        candidates = [item for item in candidates if item.get("rejected_ids")]
+        if not candidates:
+            raise ValueError("Patch validation needs an image with reviewed NO or ARTIFACT objects")
+        choice = candidates[int(np.random.default_rng(42).integers(len(candidates)))]
+        strips, heldout, details = _patch_validation_split(choice, patch_target_incorrect)
+        training = [item for item in examples if item["key"] != choice["key"]] + strips
+        if not training:
+            raise ValueError("The validation patch leaves no trainable cells outside it; "
+                             "choose another image or use the all-data option")
+        return training, [heldout], {"mode": "patch", "heldout_key": choice["key"],
+                                      "independent": True, **details}
+    raise ValueError("Choose a validation approach before starting training")
+
+
 def _prepare_pair(example: dict, destination: Path, index: int,
                   preprocess_mode: str) -> tuple[str, str]:
     from .segmentation import preprocess_tile_for_sam
@@ -308,6 +504,11 @@ def _prepare_pair(example: dict, destination: Path, index: int,
     mask = read_tiff(example["mask"])
     if raw.ndim != 2 or mask.ndim != 2 or raw.shape != mask.shape:
         raise ValueError(f"{example['sample']}: raw image and mask must be matching 2D arrays")
+    if example.get("crop"):
+        y0, y1, x0, x1 = example["crop"]
+        raw, mask = raw[y0:y1, x0:x1], mask[y0:y1, x0:x1]
+        if not raw.size:
+            raise ValueError(f"{example['sample']}: empty training crop")
     processed, _rgb = preprocess_tile_for_sam(raw, mode=preprocess_mode)
     curated = np.where(np.isin(mask, example["accepted_ids"]), mask, 0)
     image_path = destination / f"image_{index:04d}.tif"
@@ -332,7 +533,7 @@ def _train_cellpose(train_pairs, val_pairs, output: Path, epochs: int,
     model = models.CellposeModel(gpu=use_gpu,
                                 pretrained_model=base_model or "cpsam")
     settings = advanced or {}
-    model_path, _loss, _val_loss = train.train_seg(
+    model_path, loss, val_loss = train.train_seg(
         model.net, train_data=x_train, train_labels=y_train,
         test_data=x_val, test_labels=y_val, n_epochs=epochs,
         learning_rate=settings.get("learning_rate", 1e-5),
@@ -340,6 +541,8 @@ def _train_cellpose(train_pairs, val_pairs, output: Path, epochs: int,
         bsize=settings.get("patch_size", 256), min_train_masks=1,
         save_path=str(output), model_name="cellmatchr_cellpose",
     )
+    from .training_report import save_history
+    save_history(output, {"train_loss": loss, "val_loss": val_loss})
     return str(model_path)
 
 
@@ -364,7 +567,8 @@ def _train_microsam(train_pairs, val_pairs, output: Path, epochs: int,
         )
 
     checkpoint = base_model if base_model and os.path.isfile(base_model) else None
-    model_type = "vit_b" if checkpoint else (base_model or "vit_b_lm")
+    model_type = (microsam_architecture(base_model) if checkpoint else
+                  (base_model or "vit_b_lm"))
     train_sam(
         name="cellmatchr_microsam", model_type=model_type,
         train_loader=loader(train_pairs, True),
@@ -379,7 +583,8 @@ def _train_microsam(train_pairs, val_pairs, output: Path, epochs: int,
     if not best.is_file():
         raise RuntimeError("Micro-SAM training finished without a best checkpoint")
     exported = output / "cellmatchr_microsam.pth"
-    export_custom_sam_model(best, model_type="vit_b", save_path=exported,
+    export_custom_sam_model(best, model_type=microsam_architecture(model_type),
+                            save_path=exported,
                             with_segmentation_decoder=True)
     return str(exported)
 
@@ -413,8 +618,11 @@ def _train_stardist(train_pairs, val_pairs, output: Path, epochs: int,
     y_train = [read_tiff(p[1]) for p in train_pairs]
     x_val = [read_tiff(p[0]).astype(np.float32) / 255 for p in val_pairs]
     y_val = [read_tiff(p[1]) for p in val_pairs]
-    trained.train(x_train, y_train, validation_data=(x_val, y_val),
-                  epochs=epochs, steps_per_epoch=max(1, len(x_train) * 4))
+    history = trained.train(x_train, y_train, validation_data=(x_val, y_val),
+                            epochs=epochs, steps_per_epoch=max(1, len(x_train) * 4))
+    if isinstance(getattr(history, "history", None), dict):
+        from .training_report import save_history
+        save_history(output, history.history)
     return str(output / "cellmatchr_stardist")
 
 
@@ -424,7 +632,12 @@ TRAINERS = {"microsam": _train_microsam, "cellpose": _train_cellpose,
 
 def train_model(project: str, seg_run: str, channel: int, backend: str,
                 epochs: int, base_model: str = "", preprocess_mode: str = "local_bg_subtract",
-                model_name: str = "", advanced: dict | None = None) -> dict:
+                model_name: str = "", advanced: dict | None = None,
+                sources: list[dict] | None = None,
+                excluded_keys: set[str] | None = None,
+                validation_mode: str = "automatic", validation_key: str = "",
+                patch_target_incorrect: int = 3,
+                generate_report: bool = False) -> dict:
     if backend not in BACKENDS:
         raise ValueError(f"Choose one of: {', '.join(BACKENDS)}")
     if epochs < 1 or epochs > 500:
@@ -451,11 +664,23 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         raise ValueError("Choose a segmentation run inside the project")
     project_path = Path(project).resolve()
     seg_folder = project_path / seg_run
-    examples, skipped = collect_examples(str(seg_folder), channel)
+    if sources is None:
+        examples, skipped = collect_examples(str(seg_folder), channel)
+        for item in examples:
+            item.update({"key": example_id(str(project_path), seg_run, channel,
+                                            item["sample"]),
+                         "project": str(project_path),
+                         "project_name": project_path.name,
+                         "seg_run": seg_run, "channel": channel})
+    else:
+        examples, skipped = collect_source_examples(sources)
     for reason in skipped:
         print(f"[SKIP] {reason}", flush=True)
-    if len(examples) < 2:
-        raise ValueError("At least two fully validated samples with YES cells are needed for training")
+    excluded = set(excluded_keys or ())
+    examples = [item for item in examples if item["key"] not in excluded]
+    train_examples, val_examples, split = plan_examples(
+        examples, validation_mode, validation_key, patch_target_incorrect,
+        advanced.get("validation_percent", 20))
     print(f"Reviewed targets: {sum(len(e['accepted_ids']) for e in examples)} YES; "
           f"{sum(e['rejected_count'] for e in examples)} NO/ARTIFACT across "
           f"{len(examples)} samples", flush=True)
@@ -487,17 +712,16 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
     output.mkdir()
     stage = Path(tempfile.mkdtemp(prefix=".training_data_", dir=output))
     try:
-        pairs = [_prepare_pair(example, stage, i, preprocess_mode)
-                 for i, example in enumerate(examples)]
-        # Keep whole samples apart so validation does not reuse training pixels.
-        n_val = max(1, len(pairs) // 5) if "validation_percent" not in advanced else max(
-            1, round(len(pairs) * advanced["validation_percent"] / 100))
-        train_pairs, val_pairs = pairs[:-n_val], pairs[-n_val:]
+        train_pairs = [_prepare_pair(example, stage, i, preprocess_mode)
+                       for i, example in enumerate(train_examples)]
+        val_pairs = [_prepare_pair(example, stage, i + len(train_examples), preprocess_mode)
+                     for i, example in enumerate(val_examples)]
         focus = advanced.get("sampling_focus", "none")
-        train_pairs = _focus_training_pairs(train_pairs, examples[:-n_val], focus)
-        print(f"Training {backend}: {len(examples) - n_val} training samples "
+        train_pairs = _focus_training_pairs(train_pairs, train_examples, focus)
+        print(f"Training {backend}: {len(train_examples)} training samples "
               f"({len(train_pairs)} presentations; focus={focus}); "
-              f"validation: {len(val_pairs)}; channel {channel}", flush=True)
+              f"validation: {len(val_pairs)} ({split['mode']}); channel {channel}",
+              flush=True)
         path = TRAINERS[backend](train_pairs, val_pairs, output, epochs, base_model, advanced)
         result = {"backend": backend, "model_path": path, "channel": channel,
                   "model_relative_path": str(Path(path).relative_to(output)),
@@ -510,10 +734,33 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                   "history_complete": history_complete,
                   "segmentation_run": seg_run, "preprocess": preprocess_mode,
                   "epochs": epochs, "advanced": advanced,
-                  "training_samples": [e["sample"] for e in examples[:-n_val]],
-                  "validation_samples": [e["sample"] for e in examples[-n_val:]],
+                  "training_samples": [e["sample"] for e in train_examples],
+                  "validation_samples": [e["sample"] for e in val_examples],
+                  "training_sources": sources or [{"project": str(project_path),
+                                                   "seg_run": seg_run, "channel": channel}],
+                  "excluded_keys": sorted(excluded), "validation_plan": split,
                   "skipped": skipped, "base_model": base_model,
+                  "microsam_architecture": (microsam_architecture(base_model)
+                                            if backend == "microsam" else None),
                   "completed_at": datetime.now().isoformat(timespec="seconds")}
+        if generate_report:
+            try:
+                from .training_report import build_report
+                report_path = build_report(project_path, output, result,
+                                           val_examples, base_model, preprocess_mode)
+                result["report_path"] = str(report_path)
+                print(f"[REPORT] {report_path}", flush=True)
+            except Exception as exc:
+                report_folder = project_path / "Training_Reports" / output.name
+                report_folder.mkdir(parents=True, exist_ok=True)
+                report_path = report_folder / "report.json"
+                result["report_path"] = str(report_path)
+                result["report_error"] = f"{type(exc).__name__}: {exc}"
+                report_path.write_text(json.dumps({
+                    "status": "report_error", "model_path": path,
+                    "message": result["report_error"], "validation_plan": split,
+                    "training_sources": result["training_sources"]}, indent=2) + "\n")
+                print(f"[REPORT ERROR] {result['report_error']}; {report_path}", flush=True)
         (output / "model.json").write_text(json.dumps(result, indent=2) + "\n")
         print(f"[COMPLETE] Trained model: {path}", flush=True)
         return result
@@ -538,6 +785,13 @@ def main() -> None:
     parser.add_argument("--loss", choices=("mae", "mse"))
     parser.add_argument("--freeze-encoder", choices=("yes", "no"))
     parser.add_argument("--sampling-focus", choices=("none", "missed_cells", "rejected_cells"))
+    parser.add_argument("--sources-json", help="JSON list of project/run/channel sources")
+    parser.add_argument("--exclude-key", action="append", default=[])
+    parser.add_argument("--validation-mode", choices=("automatic", "whole_image",
+                                                       "patch", "training_image"),
+                        default="automatic")
+    parser.add_argument("--validation-key", default="")
+    parser.add_argument("--patch-target-incorrect", type=int, default=3)
     args = parser.parse_args()
     advanced = {key: getattr(args, key) for key in
                 ("learning_rate", "batch_size", "patch_size", "validation_percent",
@@ -545,8 +799,14 @@ def main() -> None:
                 if getattr(args, key) is not None}
     if args.freeze_encoder is not None:
         advanced["freeze_encoder"] = args.freeze_encoder == "yes"
+    sources = json.loads(args.sources_json) if args.sources_json else None
+    if sources is not None and not isinstance(sources, list):
+        parser.error("--sources-json must contain a list")
     train_model(args.project, args.seg_run, args.channel, args.backend,
-                args.epochs, args.base_model, args.preprocess, args.model_name, advanced)
+                args.epochs, args.base_model, args.preprocess, args.model_name, advanced,
+                sources, set(args.exclude_key), args.validation_mode,
+                args.validation_key, args.patch_target_incorrect,
+                generate_report=True)
 
 
 if __name__ == "__main__":

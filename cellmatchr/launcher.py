@@ -5107,7 +5107,8 @@ class CellMatchrLauncher:
         backend_var = tk.StringVar(value=self.config.get("seg_backend", "microsam"))
         channels = str(self.config.get("seg_channels") or "1").split(",")
         channel_var = tk.StringVar(value=channels[0].strip())
-        model_name_var = tk.StringVar(value="")
+        model_name_var = tk.StringVar(
+            value=f"{backend_var.get()} ch{channel_var.get()} {datetime.now():%Y-%m-%d}")
         epochs_var = tk.StringVar(value="20")
         preprocess_var = tk.StringVar(value=self.config.get("seg_preprocess_mode")
                                      or "local_bg_subtract")
@@ -5123,24 +5124,15 @@ class CellMatchrLauncher:
                                                  sticky="w", pady=4)
             widget.grid(row=number, column=1, sticky="ew", padx=8, pady=4)
 
-        row(0, "Reviewed segmentation run:", ttk.Combobox(
+        row(0, "Reviewed masks from:", ttk.Combobox(
             grid, textvariable=run_var, values=variants, state="readonly"))
         channel_box = ttk.Combobox(grid, textvariable=channel_var,
                                    state="readonly")
         row(1, "Channel to train:", channel_box)
         self._bind_combobox_scroll(channel_box)
-        row(2, "Model to fine-tune:", ttk.Combobox(
+        row(2, "Model family to train:", ttk.Combobox(
             grid, textvariable=backend_var,
             values=("microsam", "cellpose", "stardist"), state="readonly"))
-        row(3, "Training epochs:", tk.Entry(grid, textvariable=epochs_var,
-                                             bg=BG, fg=FG,
-                                             insertbackground=FG, relief="flat"))
-        row(4, "Preprocessing:", ttk.Combobox(
-            grid, textvariable=preprocess_var,
-            values=("local_bg_subtract", "local_bg_subtract_mild",
-                    "raw_percentile", "tile_clahe_mild", "tile_clahe",
-                    "brightfield_invert"),
-            state="readonly"))
         starting_choice = tk.StringVar()
         starting_options = {}
         starting_keys = {"microsam": "seg_custom_model_path",
@@ -5150,14 +5142,15 @@ class CellMatchrLauncher:
                                for kind, key in starting_keys.items()}
         starting_box = ttk.Combobox(grid, textvariable=starting_choice,
                                     state="readonly")
-        row(5, "Starting model to fine-tune:", starting_box)
+        row(3, "Initialize weights from:", starting_box)
         self._bind_combobox_scroll(starting_box)
-        row(6, "New model name:", tk.Entry(grid, textvariable=model_name_var,
+        row(4, "Save new model as:", tk.Entry(grid, textvariable=model_name_var,
                                              bg=BG, fg=FG,
                                              insertbackground=FG, relief="flat"))
-        tk.Label(card, text=("Choose a built-in or previously trained model above. "
-                             "Your named result is saved separately in the shared CellMatchR model library. "
-                             "Train one channel at a time; choose another channel for another model."),
+        tk.Label(card, text=("Reviewed masks supply the teaching examples. They can come from "
+                             "Micro-SAM, Cellpose, or StarDist even when you train another model family. "
+                             "Initialize weights from chooses the starting model within the family "
+                             "you will train. Your named result is saved separately in the shared library."),
                  bg=CARD, fg=MUTED, font=FONT, wraplength=750,
                  justify="left").pack(anchor="w", pady=(5, 2))
         from .retraining import model_library_root
@@ -5198,9 +5191,20 @@ class CellMatchrLauncher:
         advanced_grid = tk.Frame(advanced_card, bg=CARD)
         advanced_grid.pack(fill="x")
         advanced_grid.grid_columnconfigure(1, weight=1)
+        tk.Label(advanced_grid, text="Training epochs:", bg=CARD, fg=FG,
+                 font=FONT, anchor="w", width=22).grid(row=0, column=0, sticky="w", pady=3)
+        tk.Entry(advanced_grid, textvariable=epochs_var, bg=BG, fg=FG,
+                 insertbackground=FG, relief="flat", width=14).grid(
+                     row=0, column=1, sticky="w", pady=3)
+        tk.Label(advanced_grid, text="Preprocessing:", bg=CARD, fg=FG,
+                 font=FONT, anchor="w", width=22).grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Combobox(advanced_grid, textvariable=preprocess_var,
+                     values=("local_bg_subtract", "local_bg_subtract_mild",
+                             "raw_percentile", "tile_clahe_mild", "tile_clahe",
+                             "brightfield_invert"), state="readonly", width=24).grid(
+                                 row=1, column=1, sticky="w", pady=3)
         advanced_vars = {key: tk.StringVar(value="") for key in
-                         ("learning_rate", "batch_size", "patch_size",
-                          "validation_percent")}
+                         ("learning_rate", "batch_size", "patch_size")}
         sampling_focus_var = tk.StringVar(value="none")
         from .retraining import TRAINING_PRESETS
         preset_var = tk.StringVar(value="Default training")
@@ -5226,8 +5230,6 @@ class CellMatchrLauncher:
             if backend_var.get() == "stardist":
                 rate = 1e-4 if preset_var.get().endswith("follow-up") else ""
             advanced_vars["learning_rate"].set(str(rate) if rate != "" else "")
-            advanced_vars["validation_percent"].set(
-                str(recipe["validation_percent"]))
             sampling_focus_var.set(recipe["sampling_focus"])
 
         backend_var.trace_add("write", apply_preset)
@@ -5236,15 +5238,14 @@ class CellMatchrLauncher:
             ("Learning rate:", "learning_rate", "default: Cellpose/Micro-SAM 1e-5; StarDist model default"),
             ("Batch size:", "batch_size", "blank = model default"),
             ("Patch size (px):", "patch_size", "blank = model default; multiple of 16"),
-            ("Validation samples (%):", "validation_percent", "blank = about 20%"),
         )
         advanced_rows = {}
         for index, (caption, key, hint) in enumerate(advanced_labels):
             label = tk.Label(advanced_grid, text=caption, bg=CARD, fg=FG,
                              font=FONT, anchor="w", width=22)
-            label.grid(row=index, column=0, sticky="w", pady=3)
+            label.grid(row=index + 2, column=0, sticky="w", pady=3)
             field = tk.Frame(advanced_grid, bg=CARD)
-            field.grid(row=index, column=1, sticky="ew", pady=3)
+            field.grid(row=index + 2, column=1, sticky="ew", pady=3)
             advanced_rows[key] = (label, field)
             tk.Entry(field, textvariable=advanced_vars[key], bg=BG, fg=FG,
                      insertbackground=FG, relief="flat", width=14).pack(side="left")
@@ -5533,19 +5534,278 @@ class CellMatchrLauncher:
                                        "(available in every project)"),
                        variable=use_var, bg=CARD, fg=FG, selectcolor=BG,
                        activebackground=CARD, font=FONT).pack(anchor="w", pady=(8, 4))
-        actions = tk.Frame(card, bg=CARD)
+
+        # An imported project is a source of reviewed masks, not a place where
+        # training writes results. The current project remains the report home.
+        sources_card = self._card(parent, "Training projects")
+        tk.Label(sources_card, text=("The current project is included automatically. "
+                                     "Add other reviewed projects to train from more images."),
+                 bg=CARD, fg=MUTED, font=FONT, wraplength=730,
+                 justify="left").pack(anchor="w")
+        imported_rows = []
+        imported_frame = tk.Frame(sources_card, bg=CARD)
+        imported_frame.pack(fill="x", pady=(6, 2))
+        gallery_state = {"examples": [], "sources": "", "generation": 0,
+                         "excluded": set(), "photos": [], "choosing": False}
+        start_button_ref = [None]
+
+        def source_specs():
+            from .retraining import available_channels
+            result = []
+            current = self.config.get("project_output_folder", "").strip()
+            if current and run_var.get() and channel_var.get():
+                folder = os.path.join(current, run_var.get())
+                if int(channel_var.get()) in available_channels(folder):
+                    result.append({"project": current, "name":
+                                   self.config.get("project_name") or os.path.basename(current),
+                                   "seg_run": run_var.get(), "channel": int(channel_var.get())})
+            for entry in imported_rows:
+                file = entry["file"].get().strip()
+                if file:
+                    if not os.path.isfile(file):
+                        raise ValueError(f"Project file not found: {file}")
+                    if not entry["run"].get() or not entry["channel"].get():
+                        raise ValueError(f"Choose a run and channel for {file}")
+                    result.append({"project": os.path.dirname(os.path.abspath(file)),
+                                   "name": os.path.basename(os.path.dirname(file)),
+                                   "seg_run": entry["run"].get(),
+                                   "channel": int(entry["channel"].get())})
+            if not result:
+                raise ValueError("Choose a reviewed run in this project or add another project")
+            return result
+
+        def add_project_row():
+            row_frame = tk.Frame(imported_frame, bg=CARD)
+            row_frame.pack(fill="x", pady=3)
+            file_var = tk.StringVar()
+            run_choice = tk.StringVar()
+            channel_choice = tk.StringVar()
+            entry = {"frame": row_frame, "file": file_var,
+                     "run": run_choice, "channel": channel_choice, "runs": []}
+            imported_rows.append(entry)
+            path_row = tk.Frame(row_frame, bg=CARD)
+            path_row.pack(fill="x")
+            tk.Entry(path_row, textvariable=file_var, state="readonly",
+                     readonlybackground=BG, fg=FG, relief="flat").pack(
+                         side="left", fill="x", expand=True)
+            choices = tk.Frame(row_frame, bg=CARD)
+            choices.pack(fill="x", pady=(3, 0))
+            tk.Label(choices, text="Reviewed run:", bg=CARD, fg=MUTED,
+                     font=FONT).pack(side="left")
+            run_box = ttk.Combobox(choices, textvariable=run_choice,
+                                  state="readonly", width=36)
+            run_box.pack(side="left", padx=(4, 10))
+            tk.Label(choices, text="Channel:", bg=CARD, fg=MUTED,
+                     font=FONT).pack(side="left")
+            channel_box = ttk.Combobox(choices, textvariable=channel_choice,
+                                      state="readonly", width=6)
+            channel_box.pack(side="left", padx=4)
+
+            def run_changed(_event=None):
+                chosen = next((item for item in entry["runs"]
+                               if item["name"] == run_choice.get()), None)
+                values = [str(value) for value in chosen["channels"]] if chosen else []
+                channel_box.configure(values=values)
+                preferred = channel_var.get()
+                channel_choice.set(preferred if preferred in values else
+                                   values[0] if values else "")
+                refresh_gallery()
+
+            def browse_project():
+                from .retraining import project_runs
+                file = filedialog.askopenfilename(
+                    parent=self.root, title="Choose cellmatchr_project.json",
+                    filetypes=[("CellMatchR project", "cellmatchr_project.json"),
+                               ("JSON files", "*.json")])
+                if not file:
+                    return
+                try:
+                    runs = project_runs(file)
+                    if not runs:
+                        raise ValueError("No segmentation run with predicted channels was found")
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    messagebox.showerror("Cannot add project", str(exc), parent=self.root)
+                    return
+                entry["runs"] = runs
+                file_var.set(file)
+                run_box.configure(values=[item["name"] for item in runs])
+                preferred = run_var.get()
+                run_choice.set(preferred if preferred in [item["name"] for item in runs]
+                               else runs[-1]["name"])
+                run_changed()
+
+            tk.Button(path_row, text="Browse project file…", command=browse_project,
+                      bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left", padx=5)
+            def remove_project():
+                imported_rows.remove(entry)
+                row_frame.destroy()
+                refresh_gallery()
+            tk.Button(path_row, text="Remove", command=remove_project,
+                      bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left")
+            run_box.bind("<<ComboboxSelected>>", run_changed)
+            channel_box.bind("<<ComboboxSelected>>", lambda _event: refresh_gallery())
+
+        tk.Button(sources_card, text="＋ Add another project", command=add_project_row,
+                  bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                  padx=10, pady=5).pack(anchor="w", pady=(4, 0))
+
+        gallery_card = self._card(parent, "Images available for training")
+        tk.Label(gallery_card, text=("Uncheck images that should not be used. Previews combine "
+                                     "all saved channels without mask outlines. Counts show "
+                                     "original proposals, incorrect predictions, and final YES cells."),
+                 bg=CARD, fg=MUTED, font=FONT, wraplength=740,
+                 justify="left").pack(anchor="w", pady=(0, 4))
+        gallery_summary = tk.Label(gallery_card, text="Checking reviewed images…",
+                                   bg=CARD, fg=MUTED, font=FONT, anchor="w")
+        gallery_summary.pack(anchor="w", pady=(0, 4))
+        gallery_canvas = tk.Canvas(gallery_card, bg=CARD, height=390,
+                                   highlightthickness=0)
+        gallery_scroll = ttk.Scrollbar(gallery_card, orient="vertical",
+                                      command=gallery_canvas.yview)
+        gallery_canvas.configure(yscrollcommand=gallery_scroll.set)
+        gallery_scroll.pack(side="right", fill="y")
+        gallery_canvas.pack(side="left", fill="both", expand=True)
+        gallery_grid = tk.Frame(gallery_canvas, bg=CARD)
+        gallery_window = gallery_canvas.create_window(
+            (0, 0), window=gallery_grid, anchor="nw")
+        gallery_canvas.bind("<Configure>", lambda event:
+                            gallery_canvas.itemconfigure(gallery_window, width=event.width))
+        gallery_grid.bind("<Configure>", lambda _event:
+                          gallery_canvas.configure(scrollregion=gallery_canvas.bbox("all")))
+
+        validation_card = self._card(parent, "Choose how to validate training")
+        tk.Label(validation_card, text="Choose one approach before training starts.",
+                 bg=CARD, fg=FG, font=FONT_BOLD).pack(anchor="w", pady=(0, 4))
+        validation_mode_var = tk.StringVar(value="")
+        validation_key_var = tk.StringVar(value="")
+        patch_target_var = tk.StringVar(value="3")
+        validation_hint = tk.Label(validation_card, text="No approach selected yet.",
+                                   bg=CARD, fg=MUTED, font=FONT, wraplength=730,
+                                   justify="left")
+        for mode, title, explanation in (
+            ("whole_image", "Reserve one whole image (recommended)",
+             "Keep a chosen image out of training; compare before and after on it."),
+            ("patch", "Reserve a small patch (small dataset)",
+             "Choose a random patch around reviewed incorrect predictions; "
+             "its pixels stay out of training."),
+            ("training_image", "Use all images for training (very small dataset)",
+             "Evaluate on a trained image. Results are in-sample, not independent validation."),
+        ):
+            tk.Radiobutton(validation_card, text=title, variable=validation_mode_var,
+                           value=mode, bg=CARD, fg=FG, selectcolor=BG,
+                           activebackground=CARD, font=FONT_BOLD).pack(anchor="w")
+            tk.Label(validation_card, text=explanation, bg=CARD, fg=MUTED,
+                     font=("Segoe UI", 8), wraplength=700,
+                     justify="left").pack(anchor="w", padx=(22, 0), pady=(0, 4))
+        choose_row = tk.Frame(validation_card, bg=CARD)
+        choose_row.pack(anchor="w", pady=(3, 2))
+        def choose_holdout():
+            validation_mode_var.set("whole_image")
+            gallery_state["choosing"] = True
+            validation_hint.config(text="Click the preview of the image to reserve below.",
+                                   fg=ACCENT)
+        tk.Button(choose_row, text="Choose held-out image from library",
+                  command=choose_holdout, bg=ACTIVE, fg=FG,
+                  font=FONT, relief="flat").pack(side="left")
+        tk.Label(choose_row, text="Incorrect predictions to include in a patch:",
+                 bg=CARD, fg=MUTED, font=FONT).pack(side="left", padx=(15, 4))
+        tk.Entry(choose_row, textvariable=patch_target_var, bg=BG, fg=FG,
+                 insertbackground=FG, relief="flat", width=4).pack(side="left")
+        validation_hint.pack(anchor="w", pady=(4, 6))
+        actions = tk.Frame(validation_card, bg=CARD)
         actions.pack(anchor="w", pady=6)
-        status = tk.Label(card, text=("Ready to check reviewed samples." if variants else
-                                      "Open a project with a segmentation run to train. "
-                                      "Model Manager is available under Advanced settings."),
-                          bg=CARD, fg=MUTED, font=FONT, wraplength=700,
+        status = tk.Label(validation_card, text="Checking reviewed samples…",
+                          bg=CARD, fg=MUTED, font=FONT, wraplength=720,
                           justify="left")
         status.pack(anchor="w", pady=(3, 0))
+
         log_card = self._card(parent, "Retraining Log")
         log_box = scrolledtext.ScrolledText(
             log_card, bg="#0d0d15", fg="#a6e3a1", font=FONT_MONO,
             height=16, relief="flat", wrap="word")
         log_box.pack(fill="both", expand=True)
+        # Deliberately not packed until training has produced a report.
+        result_card = tk.Frame(parent, bg=CARD, padx=14, pady=12)
+        result_photos = []
+
+        def show_report(report_path):
+            for child in result_card.winfo_children():
+                child.destroy()
+            result_photos.clear()
+            result_card.pack(fill="x", pady=(10, 6))
+            tk.Label(result_card, text="Training result", bg=CARD, fg=ACCENT,
+                     font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
+            try:
+                with open(report_path, encoding="utf-8") as source:
+                    report = json.load(source)
+            except (OSError, ValueError) as exc:
+                tk.Label(result_card, text=f"Could not read report: {exc}",
+                         bg=CARD, fg=RED, font=FONT).pack(anchor="w")
+                return
+            if report.get("status") == "report_error":
+                tk.Label(result_card, text=report.get("message", "Report generation failed"),
+                         bg=CARD, fg=RED, font=FONT, wraplength=720,
+                         justify="left").pack(anchor="w")
+            else:
+                plan = report.get("validation_plan", {})
+                label = ("In-sample check — this image was used for training"
+                         if plan.get("mode") == "training_image" else
+                         "Reserved image/patch — not used for training")
+                tk.Label(result_card, text=label, bg=CARD, fg=YELLOW if
+                         plan.get("mode") == "training_image" else GREEN,
+                         font=FONT_BOLD).pack(anchor="w", pady=(0, 4))
+                for entry in report.get("validation", []):
+                    before, after = entry["before"], entry["after"]
+                    caption = (f"{entry['sample']}:  recall {before['recall']:.1%} → "
+                               f"{after['recall']:.1%}; missed cells "
+                               f"{before['missed_cell']} → {after['missed_cell']}; "
+                               f"false positives {before['false_positive']} → "
+                               f"{after['false_positive']}")
+                    tk.Label(result_card, text=caption, bg=CARD, fg=FG,
+                             font=FONT, wraplength=730,
+                             justify="left").pack(anchor="w", pady=2)
+                if _PIL:
+                    names = ["learning_curve.png"]
+                    for index in range(len(report.get("validation", []))):
+                        names.extend((f"image_{index+1}_reviewed.png",
+                                      f"image_{index+1}_before.png",
+                                      f"image_{index+1}_after.png"))
+                    image_row = tk.Frame(result_card, bg=CARD)
+                    image_row.pack(fill="x", pady=(8, 4))
+                    for position, name in enumerate(names[:10]):
+                        file = os.path.join(os.path.dirname(report_path), name)
+                        if not os.path.isfile(file):
+                            continue
+                        try:
+                            with Image.open(file) as original:
+                                preview = original.copy()
+                            preview.thumbnail((350, 245), Image.Resampling.LANCZOS)
+                            photo = ImageTk.PhotoImage(preview)
+                            result_photos.append(photo)
+                            cell = tk.Frame(image_row, bg=CARD)
+                            cell.grid(row=position // 2, column=position % 2,
+                                      sticky="nw", padx=4, pady=4)
+                            tk.Label(cell, text=name.replace("_", " ").removesuffix(".png"),
+                                     bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
+                            tk.Label(cell, image=photo, bg=CARD).pack(anchor="w")
+                        except (OSError, ValueError):
+                            continue
+            tk.Label(result_card, text=f"Saved report: {report_path}", bg=CARD,
+                     fg=MUTED, font=FONT, wraplength=730,
+                     justify="left").pack(anchor="w", pady=(5, 2))
+            def open_report_folder():
+                folder = os.path.dirname(report_path)
+                try:
+                    if sys.platform == "darwin":
+                        subprocess.Popen(["open", folder])
+                    elif sys.platform == "win32":
+                        os.startfile(folder)
+                    else:
+                        subprocess.Popen(["xdg-open", folder])
+                except OSError as exc:
+                    messagebox.showerror("Report folder", str(exc), parent=self.root)
+            tk.Button(result_card, text="Open report folder", command=open_report_folder,
+                      bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(anchor="w")
 
         def log(line):
             try:
@@ -5554,38 +5814,148 @@ class CellMatchrLauncher:
             except tk.TclError:
                 pass
 
-        def check_data():
+        def update_start_state(*_):
+            included = [item for item in gallery_state["examples"]
+                        if item["key"] not in gallery_state["excluded"]]
+            mode = validation_mode_var.get()
+            key = validation_key_var.get()
+            ready = bool(gallery_state["sources"] and included and mode)
+            if mode == "whole_image":
+                ready = ready and len(included) >= 2 and any(
+                    item["key"] == key for item in included)
+            elif mode == "patch":
+                ready = ready and any(item.get("rejected_ids") for item in included)
+            if start_button_ref[0] is not None:
+                start_button_ref[0].config(state="normal" if ready else "disabled")
+            if mode == "whole_image":
+                selected = next((item for item in included if item["key"] == key), None)
+                validation_hint.config(
+                    text=(f"Reserved: {selected['project_name']} / {selected['sample']}"
+                          if selected else "Click ‘Choose held-out image’, then click a preview."),
+                    fg=ACCENT if selected else MUTED)
+            elif mode == "patch":
+                validation_hint.config(text="A reviewed incorrect prediction anchors a random "
+                                       "patch. The report records its exact location.", fg=MUTED)
+            elif mode == "training_image":
+                validation_hint.config(text="All selected images train the model. The result "
+                                       "will be labeled in-sample, not held-out.", fg=YELLOW)
+            elif not gallery_state["choosing"]:
+                validation_hint.config(text="No approach selected yet.", fg=MUTED)
+
+        validation_mode_var.trace_add("write", update_start_state)
+
+        def render_gallery():
+            for child in gallery_grid.winfo_children():
+                child.destroy()
+            gallery_state["photos"] = []
+            items = gallery_state["examples"]
+            if not items:
+                tk.Label(gallery_grid, text="No fully reviewed images found in these runs.",
+                         bg=CARD, fg=YELLOW, font=FONT).grid(row=0, column=0,
+                                                              sticky="w", pady=10)
+            for index, item in enumerate(items):
+                tile = tk.Frame(gallery_grid, bg=ACTIVE, padx=8, pady=7)
+                tile.grid(row=index // 2, column=index % 2, sticky="nsew",
+                          padx=4, pady=4)
+                image = item.get("preview")
+                if image is not None and _PIL:
+                    photo = ImageTk.PhotoImage(image)
+                    gallery_state["photos"].append(photo)
+                    picture = tk.Label(tile, image=photo, bg=ACTIVE,
+                                       cursor="hand2")
+                else:
+                    picture = tk.Label(tile, text="Preview unavailable", bg=BG,
+                                       fg=MUTED, width=45, height=10,
+                                       cursor="hand2")
+                picture.pack(anchor="center")
+                def reserve(_event=None, selected=item):
+                    if selected["key"] in gallery_state["excluded"]:
+                        return
+                    if gallery_state["choosing"] or validation_mode_var.get() == "whole_image":
+                        validation_key_var.set(selected["key"])
+                        validation_mode_var.set("whole_image")
+                        gallery_state["choosing"] = False
+                        update_start_state()
+                picture.bind("<Button-1>", reserve)
+                included = tk.BooleanVar(value=item["key"] not in gallery_state["excluded"])
+                def toggle(selected=item, variable=included):
+                    if variable.get():
+                        gallery_state["excluded"].discard(selected["key"])
+                    else:
+                        gallery_state["excluded"].add(selected["key"])
+                    update_start_state()
+                    count = len(items) - len(gallery_state["excluded"] &
+                                             {entry["key"] for entry in items})
+                    gallery_summary.config(text=f"{count} of {len(items)} image(s) included")
+                tk.Checkbutton(tile, text=f"{item['project_name']} / {item['sample']} "
+                               f"(ch{item['channel']})", variable=included,
+                               command=toggle, bg=ACTIVE, fg=FG, selectcolor=BG,
+                               activebackground=ACTIVE, font=FONT_BOLD,
+                               wraplength=330, justify="left").pack(anchor="w")
+                tk.Label(tile, text=(f"Original proposals: ~{item['original_count']}  ·  "
+                                     f"Incorrect: {item['incorrect_count']}  ·  "
+                                     f"Final YES cells: {item['final_count']}"),
+                         bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
+                         wraplength=330, justify="left").pack(anchor="w")
+            for column in (0, 1):
+                gallery_grid.grid_columnconfigure(column, weight=1)
+            count = len(items) - len(gallery_state["excluded"] &
+                                     {entry["key"] for entry in items})
+            gallery_summary.config(text=f"{count} of {len(items)} image(s) included")
+            update_start_state()
+
+        def refresh_gallery(*_):
+            gallery_state["generation"] += 1
+            generation = gallery_state["generation"]
             try:
-                channel = int(channel_var.get())
-                if channel < 0:
-                    raise ValueError("Channel must be 0 or higher")
-                path = os.path.join(self.config["project_output_folder"], run_var.get())
-            except (ValueError, OSError) as exc:
+                specs = source_specs()
+            except (ValueError, OSError, KeyError) as exc:
+                gallery_state["sources"] = ""
+                gallery_state["examples"] = []
+                render_gallery()
                 status.config(text=str(exc), fg=RED)
                 return
+            gallery_state["sources"] = ""
+            update_start_state()
             check_btn.config(state="disabled")
             status.config(text="Checking reviewed samples…", fg=ACCENT)
             def worker():
                 try:
-                    from .retraining import collect_examples
-                    examples, skipped = collect_examples(path, channel)
+                    from .retraining import collect_source_examples
+                    from .training_gallery import composite_preview
+                    examples, skipped = collect_source_examples(specs)
+                    colors = {index: color.strip() for index, color in enumerate(
+                        self.config.get("val_channel_colors", "").split(",")) if color.strip()}
+                    for item in examples:
+                        try:
+                            item["preview"] = composite_preview(
+                                os.path.dirname(item["mask"]), color_names=colors)
+                        except (OSError, ValueError, ImportError):
+                            item["preview"] = None
                     def finished():
+                        if generation != gallery_state["generation"]:
+                            return
                         try:
                             check_btn.config(state="normal")
+                            gallery_state["sources"] = json.dumps(specs, sort_keys=True)
+                            gallery_state["examples"] = examples
+                            render_gallery()
                             yes_count = sum(len(item["accepted_ids"]) for item in examples)
-                            rejected_count = sum(item["rejected_count"] for item in examples)
+                            rejected_count = sum(item["incorrect_count"] for item in examples)
                             status.config(text=(f"{len(examples)} reviewed sample(s) ready "
-                                                f"({yes_count} YES cells, {rejected_count} NO/ARTIFACT); "
-                                                f"{len(skipped)} skipped. At least two samples are needed."),
-                                          fg=GREEN if len(examples) >= 2 else YELLOW)
+                                                f"({yes_count} YES cells, {rejected_count} "
+                                                f"incorrect predictions); {len(skipped)} skipped."),
+                                          fg=GREEN if examples else YELLOW)
                             for reason in skipped:
                                 log("Skipped: " + reason)
                         except tk.TclError:
                             pass
                     self.root.after(0, finished)
-                except (ValueError, OSError, RuntimeError) as exc:
+                except (ValueError, OSError, RuntimeError, KeyError) as exc:
                     error = str(exc)
                     def failed():
+                        if generation != gallery_state["generation"]:
+                            return
                         try:
                             check_btn.config(state="normal")
                             status.config(text=error, fg=RED)
@@ -5594,11 +5964,31 @@ class CellMatchrLauncher:
                     self.root.after(0, failed)
             threading.Thread(target=worker, daemon=True).start()
 
+        def check_data():
+            refresh_gallery()
+
         def start_training():
             if self._is_running("Model Retraining"):
                 status.config(text="Training is already running.", fg=YELLOW)
                 return
             try:
+                specs = source_specs()
+                if json.dumps(specs, sort_keys=True) != gallery_state["sources"]:
+                    raise ValueError("Refresh the image library after changing projects or channels")
+                included = [item for item in gallery_state["examples"]
+                            if item["key"] not in gallery_state["excluded"]]
+                mode = validation_mode_var.get()
+                if not mode:
+                    raise ValueError("Choose how to validate training below the image library")
+                if not included:
+                    raise ValueError("Include at least one reviewed image")
+                holdout = validation_key_var.get() if mode == "whole_image" else ""
+                if mode == "whole_image" and (len(included) < 2 or not any(
+                        item["key"] == holdout for item in included)):
+                    raise ValueError("Choose a held-out image and keep another image for training")
+                patch_target = int(patch_target_var.get()) if mode == "patch" else 3
+                if mode == "patch" and not 1 <= patch_target <= 50:
+                    raise ValueError("Incorrect predictions per patch must be 1–50")
                 channel = int(channel_var.get())
                 epochs = int(epochs_var.get())
                 if channel < 0 or not 1 <= epochs <= 500:
@@ -5646,10 +6036,17 @@ class CellMatchrLauncher:
             chosen_preprocess = preprocess_var.get()
             use_trained_model = use_var.get()
             cmd = [sys.executable, "-m", "cellmatchr.retraining",
-                   "--project", project, "--seg-run", run_var.get(),
+                   "--project", project, "--seg-run", run_var.get() or "Segmentation",
                    "--channel", str(channel), "--backend", backend,
                    "--epochs", str(epochs), "--base-model", base_var.get().strip(),
-                   "--preprocess", chosen_preprocess, "--model-name", model_name]
+                   "--preprocess", chosen_preprocess, "--model-name", model_name,
+                   "--sources-json", json.dumps(specs),
+                   "--validation-mode", mode,
+                   "--patch-target-incorrect", str(patch_target)]
+            if holdout:
+                cmd.extend(("--validation-key", holdout))
+            for key in sorted(gallery_state["excluded"]):
+                cmd.extend(("--exclude-key", key))
             for key, value in advanced.items():
                 flag = "--" + key.replace("_", "-")
                 if key == "freeze_encoder":
@@ -5661,6 +6058,7 @@ class CellMatchrLauncher:
 
             def worker():
                 model_path = ""
+                report_path = ""
                 try:
                     proc = subprocess.Popen(
                         cmd, cwd=os.path.dirname(os.path.dirname(self._script("retraining.py"))),
@@ -5671,9 +6069,12 @@ class CellMatchrLauncher:
                         clean = line.rstrip()
                         if clean.startswith("[COMPLETE] Trained model: "):
                             model_path = clean.partition(": ")[2]
+                        elif clean.startswith("[REPORT] "):
+                            report_path = clean.removeprefix("[REPORT] ")
                         self.root.after(0, log, clean)
                     proc.wait()
                     def finished():
+                        resolved_report_path = report_path
                         setup_error = None
                         if proc.returncode == 0 and model_path and use_trained_model:
                             try:
@@ -5698,6 +6099,15 @@ class CellMatchrLauncher:
                             start_btn.config(state="normal", text="Start Retraining")
                             if proc.returncode == 0 and model_path:
                                 refresh_starting_models(prefer_path=model_path)
+                                if not resolved_report_path:
+                                    try:
+                                        with open(os.path.join(os.path.dirname(model_path),
+                                                               "model.json"), encoding="utf-8") as source:
+                                            resolved_report_path = json.load(source).get("report_path", "")
+                                    except (OSError, ValueError):
+                                        pass
+                                if resolved_report_path:
+                                    show_report(resolved_report_path)
                                 message = (f"Training complete: {model_name}. "
                                            + ("Open Step 3 to select it. " if not use_trained_model else
                                               "It is selected for future segmentation. ")
@@ -5721,16 +6131,20 @@ class CellMatchrLauncher:
                     self.root.after(0, failed)
             threading.Thread(target=worker, daemon=True).start()
 
-        check_btn = tk.Button(actions, text="Check Training Data", command=check_data,
+        check_btn = tk.Button(actions, text="Refresh image library", command=check_data,
                               bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
                               padx=12, pady=7,
-                              state="normal" if variants else "disabled")
+                              state="normal")
         check_btn.pack(side="left", padx=(0, 8))
         start_btn = tk.Button(actions, text="Start Retraining", command=start_training,
                               bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD,
                               relief="flat", padx=12, pady=7,
-                              state="normal" if variants else "disabled")
+                              state="disabled")
         start_btn.pack(side="left")
+        start_button_ref[0] = start_btn
+        run_var.trace_add("write", lambda *_: refresh_gallery())
+        channel_var.trace_add("write", lambda *_: refresh_gallery())
+        refresh_gallery()
 
     def _launch_vsi(self) -> None:
         # Guard: don't allow re-launch while already running

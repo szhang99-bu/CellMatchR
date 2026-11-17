@@ -1984,8 +1984,10 @@ def main():
             # checkpoints pre-date this rename, so we fix the keys on first run).
             _patch_decoder_checkpoints(MODEL_TYPE)
 
+            from .retraining import microsam_architecture
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
-                model_type="vit_b" if CUSTOM_MODEL_PATH else MODEL_TYPE,
+                model_type=(microsam_architecture(CUSTOM_MODEL_PATH)
+                            if CUSTOM_MODEL_PATH else MODEL_TYPE),
                 device=device,
                 checkpoint=CUSTOM_MODEL_PATH or None,
             )

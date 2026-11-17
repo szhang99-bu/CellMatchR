@@ -5085,6 +5085,7 @@ class CellMatchrLauncher:
     # ==================================================================
 
     def _build_retraining_step(self, parent) -> None:
+        button_fg = "#1e1e2e" if sys.platform == "darwin" else FG
         self._section_header(
             parent, "Step 7 — Retrain Models",
             "Use completed human validation to fine-tune a model for future runs.")
@@ -5181,7 +5182,7 @@ class CellMatchrLauncher:
                 messagebox.showerror("Model library", f"Could not open {folder}: {exc}",
                                      parent=self.root)
         tk.Button(library_row, text="Open Model Library",
-                  command=open_model_library, bg=ACTIVE, fg=FG,
+                  command=open_model_library, bg=ACTIVE, fg=button_fg,
                   font=FONT, relief="flat", padx=8).pack(side="right")
 
         def refresh_channels(*_):
@@ -5289,7 +5290,7 @@ class CellMatchrLauncher:
             if selected:
                 manual_path_var.set(selected)
         tk.Button(manual_row, text="Browse…", command=browse_base,
-                  bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left", padx=6)
+                  bg=ACTIVE, fg=button_fg, font=FONT, relief="flat").pack(side="left", padx=6)
         tk.Label(advanced_card, text=("Choose a model file or folder here only if it is "
                                       "not already in the dropdown above."),
                  bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(anchor="w")
@@ -5415,14 +5416,14 @@ class CellMatchrLauncher:
 
             table.bind("<<TreeviewSelect>>", show_selected)
             tk.Button(buttons, text="Refresh", command=reload_models,
-                      bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=12).pack(side="left")
+                      bg=ACTIVE, fg=button_fg, font=FONT, relief="flat", padx=12).pack(side="left")
             tk.Button(buttons, text="Delete Selected Model…", command=delete_selected,
                       bg=RED, fg="#1e1e2e", font=FONT_BOLD,
                       relief="flat", padx=12).pack(side="right")
             reload_models()
 
         tk.Button(advanced_card, text="Model Manager…", command=open_model_manager,
-                  bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                  bg=ACTIVE, fg=button_fg, font=FONT_BOLD, relief="flat",
                   padx=10, pady=5).pack(anchor="w", pady=(10, 3))
 
         def manual_path_changed(*_):
@@ -5479,7 +5480,7 @@ class CellMatchrLauncher:
                 advanced_card.pack(fill="x", pady=(4, 10), after=advanced_button)
                 advanced_button.config(text="Hide advanced settings ▾")
         advanced_button = tk.Button(card, text="Show advanced settings ▸",
-                                    command=toggle_advanced, bg=ACTIVE, fg=FG,
+                                    command=toggle_advanced, bg=ACTIVE, fg=button_fg,
                                     font=FONT, relief="flat", padx=10, pady=5)
         advanced_button.pack(anchor="w", pady=(7, 0))
 
@@ -5643,18 +5644,18 @@ class CellMatchrLauncher:
                 run_changed()
 
             tk.Button(path_row, text="Browse project file…", command=browse_project,
-                      bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left", padx=5)
+                      bg=ACTIVE, fg=button_fg, font=FONT, relief="flat").pack(side="left", padx=5)
             def remove_project():
                 imported_rows.remove(entry)
                 row_frame.destroy()
                 refresh_gallery()
             tk.Button(path_row, text="Remove", command=remove_project,
-                      bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(side="left")
+                      bg=ACTIVE, fg=button_fg, font=FONT, relief="flat").pack(side="left")
             run_box.bind("<<ComboboxSelected>>", run_changed)
             channel_box.bind("<<ComboboxSelected>>", lambda _event: refresh_gallery())
 
         tk.Button(sources_card, text="＋ Add another project", command=add_project_row,
-                  bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                  bg=ACTIVE, fg=button_fg, font=FONT_BOLD, relief="flat",
                   padx=10, pady=5).pack(anchor="w", pady=(4, 0))
 
         gallery_card = self._card(parent, "Images available for training")
@@ -5709,7 +5710,8 @@ class CellMatchrLauncher:
         ):
             tk.Radiobutton(validation_card, text=title, variable=validation_mode_var,
                            value=mode, bg=CARD, fg=FG, selectcolor=BG,
-                           activebackground=CARD, font=FONT_BOLD).pack(anchor="w")
+                           tristatevalue="__unset__", activebackground=CARD,
+                           font=FONT_BOLD).pack(anchor="w")
             tk.Label(validation_card, text=explanation, bg=CARD, fg=MUTED,
                      font=("Segoe UI", 8), wraplength=700,
                      justify="left").pack(anchor="w", padx=(22, 0), pady=(0, 4))
@@ -5721,7 +5723,7 @@ class CellMatchrLauncher:
             validation_hint.config(text="Click the preview of the image to reserve below.",
                                    fg=ACCENT)
         tk.Button(choose_row, text="Choose held-out image from library",
-                  command=choose_holdout, bg=ACTIVE, fg=FG,
+                  command=choose_holdout, bg=ACTIVE, fg=button_fg,
                   font=FONT, relief="flat").pack(side="left")
         tk.Label(choose_row, text="Target incorrect predictions per patch (approx.):",
                  bg=CARD, fg=MUTED, font=FONT).pack(side="left", padx=(15, 4))
@@ -5822,7 +5824,7 @@ class CellMatchrLauncher:
                 except OSError as exc:
                     messagebox.showerror("Report folder", str(exc), parent=self.root)
             tk.Button(result_card, text="Open report folder", command=open_report_folder,
-                      bg=ACTIVE, fg=FG, font=FONT, relief="flat").pack(anchor="w")
+                      bg=ACTIVE, fg=button_fg, font=FONT, relief="flat").pack(anchor="w")
 
         def log(line):
             try:
@@ -6170,7 +6172,7 @@ class CellMatchrLauncher:
             threading.Thread(target=worker, daemon=True).start()
 
         check_btn = tk.Button(actions, text="Refresh image library", command=check_data,
-                              bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+                              bg=ACTIVE, fg=button_fg, font=FONT_BOLD, relief="flat",
                               padx=12, pady=7,
                               state="normal")
         check_btn.pack(side="left", padx=(0, 8))

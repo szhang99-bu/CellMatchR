@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
+import gc
 import hashlib
 import importlib.util
 import json
@@ -16,6 +17,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -521,6 +523,23 @@ def _prepare_pair(example: dict, destination: Path, index: int,
     return str(image_path), str(label_path)
 
 
+def _remove_staging_data(stage: Path) -> None:
+    """Release dataset readers before deleting training TIFFs on Windows."""
+    for attempt in range(8):
+        gc.collect()
+        try:
+            shutil.rmtree(stage)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if attempt == 7:
+                print(f"[WARNING] Could not remove temporary training data {stage}: {exc}",
+                      flush=True)
+            else:
+                time.sleep(0.25)
+
+
 def _train_cellpose(train_pairs, val_pairs, output: Path, epochs: int,
                     base_model: str, advanced: dict | None = None) -> str:
     from cellpose import models, train
@@ -774,7 +793,7 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
         print(f"[COMPLETE] Trained model: {path}", flush=True)
         return result
     finally:
-        shutil.rmtree(stage, ignore_errors=True)
+        _remove_staging_data(stage)
 
 
 def main() -> None:

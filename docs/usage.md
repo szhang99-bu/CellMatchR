@@ -437,6 +437,10 @@ model. You can select it for a later training round or in Step 3 for any
 project. **Select the new model for this project's next segmentation runs**
 also makes it the current choice after training.
 
+![Step 7 starting model and new model name controls, circled in red](images/step7-model-setup.png)
+
+*The red circles mark the starting weights and the name of the separate new model.*
+
 ### Build the training image library
 
 The current project's selected run and channel are included automatically.
@@ -456,6 +460,13 @@ current object has a resolved decision. The log lists skipped images and why.
 The listed counts help spot an unusual sample before starting; inspect the
 mask in Step 4 when a count is surprising.
 
+![Step 7 image library and Add another project control, circled in red](images/step7-image-library.png)
+
+*Use **Add another project** to bring in more reviewed data. Uncheck an image
+to leave it out of this run. The Mac screenshot uses real VSI slide scanner
+crops with illustrative review labels; the displayed counts are examples, not
+measured model accuracy.*
+
 ### Choose a validation approach
 
 You must choose one of these before **Start Retraining** becomes available:
@@ -465,6 +476,11 @@ You must choose one of these before **Start Retraining** becomes available:
 | **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two reviewed images are available. This gives an independent before/after check. |
 | **Reserve a small patch** | A randomly chosen patch around marked NO/ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects still visible in the mask. Set an approximate target beside the selection button. The report records the actual count. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
+
+![Step 7 validation approach choices and held-out image button, circled in red](images/step7-validation-choice.png)
+
+*The red circles mark the three choices and the button for picking a whole
+image to hold out. Training stays unavailable until a choice is complete.*
 
 Choose a holdout that resembles the images you intend to process later.
 An independent holdout stays untouched by training; reserve more projects or

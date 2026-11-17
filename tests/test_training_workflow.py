@@ -96,7 +96,10 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.sample(run, "a")
         examples, _ = collect_source_examples([
             {"project": str(project), "seg_run": run.name, "channel": 1}])
-        train, val, plan = plan_examples(examples, "patch", patch_target_incorrect=1)
+        with patch("cellmatchr.retraining.secrets.randbits", return_value=123456):
+            train, val, plan = plan_examples(
+                examples, "patch", patch_target_incorrect=1)
+        self.assertEqual(plan["random_seed"], 123456)
         self.assertTrue(train)
         y0, y1, x0, x1 = plan["crop"]
         for entry in train:

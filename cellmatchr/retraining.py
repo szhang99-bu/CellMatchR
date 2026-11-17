@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import time
@@ -29,6 +30,7 @@ from .roi_editor import _find_mask, _find_raw
 from .validation_state import get_change_state, get_validation_tsv_path
 
 BACKENDS = ("microsam", "cellpose", "stardist")
+DEFAULT_PATCH_TARGET_INCORRECT = 8
 PREPROCESS_MODES = ("local_bg_subtract", "local_bg_subtract_mild",
                     "raw_percentile", "tile_clahe_mild", "tile_clahe",
                     "brightfield_invert")
@@ -396,7 +398,8 @@ def _focus_training_pairs(pairs: list[tuple[str, str]], examples: list[dict],
     return weighted
 
 
-def _patch_validation_split(example: dict, target_incorrect: int
+def _patch_validation_split(example: dict, target_incorrect: int,
+                            rng: np.random.Generator
                             ) -> tuple[list[dict], dict, dict]:
     """Reserve a spatial patch; training strips never contain its pixels."""
     labels = read_tiff(example["mask"])
@@ -407,7 +410,6 @@ def _patch_validation_split(example: dict, target_incorrect: int
     if not rejected:
         raise ValueError("Patch validation needs at least one reviewed NO or ARTIFACT "
                          "object in the selected image")
-    rng = np.random.default_rng(42)
     centers = {}
     for value in rejected:
         y, x = np.where(labels == value)
@@ -457,7 +459,8 @@ def _patch_validation_split(example: dict, target_incorrect: int
 
 
 def plan_examples(examples: list[dict], validation_mode: str,
-                  validation_key: str = "", patch_target_incorrect: int = 3,
+                  validation_key: str = "",
+                  patch_target_incorrect: int = DEFAULT_PATCH_TARGET_INCORRECT,
                   validation_percent: int = 20
                   ) -> tuple[list[dict], list[dict], dict]:
     """Create an explicit split, including the disclosed in-sample option."""
@@ -489,14 +492,17 @@ def plan_examples(examples: list[dict], validation_mode: str,
         candidates = [item for item in candidates if item.get("rejected_ids")]
         if not candidates:
             raise ValueError("Patch validation needs an image with reviewed NO or ARTIFACT objects")
-        choice = candidates[int(np.random.default_rng(42).integers(len(candidates)))]
-        strips, heldout, details = _patch_validation_split(choice, patch_target_incorrect)
+        random_seed = secrets.randbits(64)
+        rng = np.random.default_rng(random_seed)
+        choice = candidates[int(rng.integers(len(candidates)))]
+        strips, heldout, details = _patch_validation_split(
+            choice, patch_target_incorrect, rng)
         training = [item for item in examples if item["key"] != choice["key"]] + strips
         if not training:
             raise ValueError("The validation patch leaves no trainable cells outside it; "
                              "choose another image or use the all-data option")
         return training, [heldout], {"mode": "patch", "heldout_key": choice["key"],
-                                      "independent": True, "random_seed": 42,
+                                      "independent": True, "random_seed": random_seed,
                                       **details}
     raise ValueError("Choose a validation approach before starting training")
 
@@ -658,7 +664,7 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                 sources: list[dict] | None = None,
                 excluded_keys: set[str] | None = None,
                 validation_mode: str = "automatic", validation_key: str = "",
-                patch_target_incorrect: int = 3,
+                patch_target_incorrect: int = DEFAULT_PATCH_TARGET_INCORRECT,
                 generate_report: bool = False) -> dict:
     if backend not in BACKENDS:
         raise ValueError(f"Choose one of: {', '.join(BACKENDS)}")
@@ -819,7 +825,8 @@ def main() -> None:
                                                        "patch", "training_image"),
                         default="automatic")
     parser.add_argument("--validation-key", default="")
-    parser.add_argument("--patch-target-incorrect", type=int, default=3)
+    parser.add_argument("--patch-target-incorrect", type=int,
+                        default=DEFAULT_PATCH_TARGET_INCORRECT)
     args = parser.parse_args()
     advanced = {key: getattr(args, key) for key in
                 ("learning_rate", "batch_size", "patch_size", "validation_percent",

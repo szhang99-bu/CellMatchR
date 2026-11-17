@@ -441,6 +441,21 @@ also makes it the current choice after training.
 
 *The red circles mark the starting weights and the name of the separate new model.*
 
+### What each model and data control does
+
+| Control | What to choose and what happens |
+|---|---|
+| **Reviewed masks from** | Select the current project's segmentation run whose masks you corrected in Step 4. This supplies training labels; it does not choose the model whose weights will be changed. |
+| **Channel to train** | Choose one channel found in that run. Step 7 trains one channel at a time; train channels 0, 1, and 2 separately if you need all three. The menu updates when the reviewed run changes. |
+| **Model family to train** | Pick **Micro-SAM**, **Cellpose**, or **StarDist**. This controls the training software, compatible starting weights, and later Step 3 model choice. Reviewed masks can come from a different family. |
+| **Initialize weights from** | Choose a built-in model or a previously saved fine-tuned model **of the selected family**. Continuing a fine-tuned model creates a *new* model; the prior checkpoint stays available. Use **Other starting model** under advanced settings only for a compatible checkpoint that is not listed. |
+| **Save new model as** | Give the result a recognizable name. The suggested name includes family, channel, and date; you can replace it. The field accepts 1–60 characters without slashes, backslashes, tabs, or line breaks. Each run creates a separate folder, even if you reuse a display name. |
+| **Open Model Library** | Open `~/CellMatchR/Models` in Finder or your file manager. You do not need to choose a save path: this shared library is used by every project on this computer. |
+| **Select new model for this project's next segmentation runs** | After successful training, make the result the current Step 3 choice in this project. The model also appears in the model dropdown for other projects. The original model and earlier segmentation outputs remain available. |
+
+To compare models fairly, segment the same held-out image with each and
+compare both with its human-reviewed mask.
+
 ### Build the training image library
 
 The current project's selected run and channel are included automatically.
@@ -460,6 +475,14 @@ current object has a resolved decision. The log lists skipped images and why.
 The listed counts help spot an unusual sample before starting; inspect the
 mask in Step 4 when a count is surprising.
 
+**Refresh image library** after changing the selected run or channel, adding
+a project, or changing review data. The gallery may show fewer images than a
+segmentation run contains: only usable, fully reviewed images are offered.
+Unchecking an image excludes it from this training run; it does not delete
+the image or its validation. When choosing a whole-image holdout, click the
+**Choose held-out image from library** button and then that image's preview.
+Keep at least one other included image for training.
+
 ![Step 7 image library and Add another project control, circled in red](images/step7-image-library.png)
 
 *Use **Add another project** to bring in more reviewed data. Uncheck an image
@@ -474,17 +497,33 @@ You must choose one of these before **Start Retraining** becomes available:
 | Choice | What stays out of training | When to use it |
 |---|---|---|
 | **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two reviewed images are available. This gives an independent before/after check. |
-| **Reserve a small patch** | A randomly chosen patch around marked NO/ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects still visible in the mask. Set an approximate target beside the selection button. The report records the actual count. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
+| **Reserve a small patch** | A randomly chosen patch around marked NO/ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed incorrect objects still visible in the mask. The default target is 8 incorrect predictions; change the approximate target beside the selection button if needed. The report records the random seed, exact patch location, and actual count, which can be lower when few incorrect objects are available. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
 
 ![Step 7 validation approach choices and held-out image button, circled in red](images/step7-validation-choice.png)
 
 *The red circles mark the three choices and the button for picking a whole
-image to hold out. Training stays unavailable until a choice is complete.*
+image to hold out. Training stays unavailable until a choice is complete.
+The screenshot shows a manually entered patch target of 3; the current
+default is 8.*
 
 Choose a holdout that resembles the images you intend to process later.
 An independent holdout stays untouched by training; reserve more projects or
 images for a stronger future comparison when possible.
+
+The **Target incorrect predictions per patch (approx.)** field applies only
+to the small-patch option. Its default is **8**, and it accepts **1–50**.
+The app chooses a fresh random location around reviewed incorrect objects on
+each run. Eight is an approximate target, not a required count: nearby
+objects and image boundaries affect the actual patch. The report records the
+random seed, patch coordinates, and actual incorrect-object count so you can
+inspect exactly what was reserved. If the patch would leave no usable
+training cells, choose a whole-image holdout or include more reviewed data.
+
+**Start Retraining** becomes available when the selected images and
+validation choice are valid. Progress appears in **Retraining Log**. A
+training run can take substantially longer than the short trial preset;
+leave the app open until it reports completion or an error.
 
 After training, Step 7 reveals the training curve and reviewed reference,
 before, and after segmentation images below the log. The captions compare
@@ -497,15 +536,23 @@ is your priority, then inspect false positives and actual mask shapes.
 
 ### Training presets
 
-| Preset | What it changes | Good first check |
-|---|---|---|
-| **High recall** | Repeats training samples with human-added missed cells; 20 epochs. | Look for fewer missed cells on held-out images. |
-| **Default training** | Uses each reviewed sample once; 20 epochs. | Compare with the starting model. |
-| **High precision** | Repeats samples with rejected false predictions; 20 epochs. | Verify recall has not fallen. |
-| **Gentle follow-up** | Continues a saved model with 8 epochs and a lower learning rate. | Check for a small, stable change. |
-| **Recall follow-up** | Gentle continuation emphasizing missed-cell samples. | Check held-out recall. |
-| **Precision follow-up** | Gentle continuation emphasizing rejected samples. | Check held-out false positives and recall. |
-| **Short trial** | Runs 5 epochs. | Verify the data and training setup. |
+| Preset | Epochs and learning rate | Training sample focus | Good first check |
+|---|---|---|---|
+| **High recall** | 20; `1e-5` | Repeat samples with human-added missed cells. | Fewer missed cells on the holdout. |
+| **Default training** | 20; `1e-5` | Use each reviewed sample once. | Compare with the starting model. |
+| **High precision** | 20; `1e-5` | Repeat samples with rejected false predictions. | Check that recall has not fallen. |
+| **Gentle follow-up** | 8; `3e-6` | No extra repetition. | Small, stable change from a saved model. |
+| **Recall follow-up** | 8; `3e-6` | Repeat missed-cell samples. | Better held-out recall. |
+| **Precision follow-up** | 8; `3e-6` | Repeat rejected-prediction samples. | Fewer false positives without losing true cells. |
+| **Short trial** | 5; `1e-5` | No extra repetition. | Check data and training setup before a longer run. |
+
+The learning rates shown apply to Micro-SAM and Cellpose. For StarDist, the
+standard presets leave the pretrained model's learning rate in place, while
+the three follow-up presets set `1e-4`. Selecting a preset fills **Training
+epochs**, **Learning rate**, and **Training sample focus**; changing presets
+or model family can overwrite manual values in those fields. It does not
+change the separate validation choice or the segmentation detection
+thresholds. Choose the preset first, then make any advanced adjustments.
 
 Presets are starting points, not performance guarantees. Compare predictions
 against held-out human annotations before adopting a new model. If missed
@@ -516,13 +563,36 @@ appropriate analysis filters.
 
 ### Advanced settings and devices
 
-**Show advanced settings** exposes learning rate, batch size, patch size
-(where supported), sample focus, and an external
-starting model file or folder. StarDist offers MAE or MSE distance loss;
-Cellpose and Micro-SAM use their built-in losses. Micro-SAM can freeze or
-unfreeze its image encoder; the current default keeps it frozen. StarDist
-uses its own default learning rate unless a preset or override sets one.
-Change one setting at a time and compare on the same held-out images.
+Open **Show advanced settings** only when you need to adjust the recipe.
+These values affect training, not the masks you have already reviewed.
+
+| Setting | Meaning and practical effect |
+|---|---|
+| **Training epochs** | Number of passes through the training routine, from **1–500**. More epochs take longer and may help or overfit. The preset sets this first. A **Short trial** is a way to check the setup before committing to a longer run. |
+| **Preprocessing** | Image transformation used to prepare training inputs and recorded with the new model for later segmentation. Keep it consistent with the images and segmentation runs you intend to use. The initial value follows the current project's Step 3 preprocessing choice. See the mode table below. |
+| **Learning rate** | Size of each weight update. Larger values can change a model faster but may destabilize training; smaller values usually need more time. Enter a value greater than 0 and at most 1, such as `1e-5`. The preset fills this for Cellpose and Micro-SAM. A blank StarDist field uses that model's own default. |
+| **Batch size** | Number of image patches presented together for a training update. Leave blank for the backend default, or enter **1–64**. Larger batches may use more GPU or unified memory. Cellpose and Micro-SAM default to **1**; StarDist uses its pretrained configuration. |
+| **Patch size (px)** | Width and height of square training crops. Leave blank for the model default; otherwise enter **64–2048** in multiples of **16**. Smaller patches may fit in less memory but give less context. Cellpose uses a fixed **256-pixel** patch, so this control is hidden for Cellpose. Micro-SAM defaults to **256**; StarDist uses its pretrained configuration. This is a *training crop* and is different from the small patch reserved for validation. |
+| **Training sample focus** | `none` uses every training sample once. `missed_cells` repeats samples containing cells a person added; `rejected_cells` repeats samples containing rejected predictions. Repetition applies only to training examples, never to held-out validation data. It can shift emphasis but does not guarantee a higher recall or precision. |
+| **Other starting model** / **Browse** | Select a compatible checkpoint outside the dropdown: a **file** for Cellpose or Micro-SAM, a **model folder** for StarDist. This becomes the starting weight source, not the output location. The dropdown is easier for built-in and previously saved models. |
+| **StarDist distance loss** | **Model default** keeps the selected model's distance loss. `mae` and `mse` are alternate losses for predicted object distances. This control appears only for StarDist; Cellpose and Micro-SAM use their built-in training losses. |
+| **Micro-SAM: keep image encoder frozen** | On by default. It trains the remaining trainable parts while keeping the image encoder weights fixed. Turning it off also updates the encoder, which can use more memory and may need more varied examples. This control appears only for Micro-SAM. |
+| **Model Manager** | Opens the saved-model list and its training history; see [Manage saved models](#manage-saved-models). |
+
+| Preprocessing mode | What it does | Typical reason to choose it |
+|---|---|---|
+| `local_bg_subtract` | Removes a blurred local background, clips negative values, then rescales intensity. | Fluorescence with uneven background; stronger background removal. |
+| `local_bg_subtract_mild` | Uses a broader background estimate before rescaling. | A gentler local background correction. |
+| `raw_percentile` | Rescales the original intensity range without local background subtraction. | Preserve image structure when background removal harms it. |
+| `tile_clahe_mild` | Rescales intensity, then applies gentle local contrast enhancement. | Low contrast images needing modest local enhancement. |
+| `tile_clahe` | Uses stronger local contrast enhancement. | Test only when the mild option still leaves cells hard to see; it can also amplify texture. |
+| `brightfield_invert` | Rescales and internally inverts grayscale intensity for brightfield stains. | Dark stained cells on a pale slide-scanner background. The displayed image remains in its original colors; inversion is for model input. |
+
+The same preprocessing mode is stored with the trained model. For an
+apples-to-apples comparison, use the same reviewed examples and validation
+image when changing one advanced setting. Training presets do not set an
+inference sensitivity threshold; inspect held-out recall and false positives
+before changing downstream object filters.
 
 Training is memory intensive. **At least 16 GB of GPU memory or unified Mac
 memory is recommended** for a practical retraining workflow; the exact need

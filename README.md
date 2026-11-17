@@ -109,3 +109,20 @@ shows how to find it.
 
 For detailed, step-by-step instructions, file formats, model choices, updating,
 and troubleshooting, see the [user guide](docs/usage.md).
+
+## Retrain a model
+
+1. Finish **Step 4: Validation** for the images you want to use. Mark real
+   cells YES and incorrect predictions NO or ARTIFACT; resolve every MAYBE.
+2. Open **Step 7: Retrain Models**. Choose the reviewed run and one channel,
+   the model family, starting weights, a name for the new model, and a training
+   preset. You can add reviewed images from other projects and exclude images
+   from this run.
+3. Choose how to check the result. **Reserve one whole image** is recommended
+   when you have at least two reviewed images. Click **Start Retraining**, then
+   compare the saved before/after report with the human-reviewed masks.
+
+The new model is saved separately in the shared CellMatchR model library and
+can be selected for later training or segmentation in any project. See the
+[detailed Step 7 guide](docs/usage.md#step-7-retrain-a-model) for every control,
+advanced setting, validation choice, and result.

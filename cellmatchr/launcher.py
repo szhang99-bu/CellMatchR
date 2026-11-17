@@ -5691,11 +5691,12 @@ class CellMatchrLauncher:
         gallery_grid.bind("<Configure>", update_gallery_scroll)
 
         validation_card = self._card(parent, "Choose how to validate training")
+        from .retraining import DEFAULT_PATCH_TARGET_INCORRECT
         tk.Label(validation_card, text="Choose one approach before training starts.",
                  bg=CARD, fg=FG, font=FONT_BOLD).pack(anchor="w", pady=(0, 4))
         validation_mode_var = tk.StringVar(value="")
         validation_key_var = tk.StringVar(value="")
-        patch_target_var = tk.StringVar(value="3")
+        patch_target_var = tk.StringVar(value=str(DEFAULT_PATCH_TARGET_INCORRECT))
         validation_hint = tk.Label(validation_card, text="No approach selected yet.",
                                    bg=CARD, fg=MUTED, font=FONT, wraplength=730,
                                    justify="left")
@@ -6026,7 +6027,8 @@ class CellMatchrLauncher:
                 if mode == "whole_image" and (len(included) < 2 or not any(
                         item["key"] == holdout for item in included)):
                     raise ValueError("Choose a held-out image and keep another image for training")
-                patch_target = int(patch_target_var.get()) if mode == "patch" else 3
+                patch_target = (int(patch_target_var.get()) if mode == "patch" else
+                                DEFAULT_PATCH_TARGET_INCORRECT)
                 if mode == "patch" and not 1 <= patch_target <= 50:
                     raise ValueError("Incorrect predictions per patch must be 1–50")
                 channel = int(channel_var.get())

@@ -39,20 +39,36 @@ not type the word `bash` above a code block.
 
 In your command window, run `git --version`. If it prints a version number,
 Git is ready. If Git is not found, [install Git](https://git-scm.com/downloads)
-and reopen the command window. Then type these lines, one at a time:
+and reopen the command window. Move to your Desktop using the command for
+your system:
+
+**macOS or Linux Terminal:**
 
 ```bash
-cd ~
+cd ~/Desktop
+```
+
+**Windows PowerShell:**
+
+```powershell
+cd ([Environment]::GetFolderPath('Desktop'))
+```
+
+The Windows command finds your actual Desktop location, including a Desktop
+redirected to OneDrive. If `cd ~/Desktop` says the folder does not exist on
+Linux, open your Desktop in the file manager and choose **Open in Terminal**
+there. Now clone the repository and enter its folder:
+
+```bash
 git clone https://github.com/szhang99-bu/CellMatchR.git CellMatchR-app
 cd CellMatchR-app
 ```
 
-`cd ~` takes you to your home folder. `git clone` creates a **CellMatchR-app**
-folder there; the last `cd` enters it. On a Mac or Linux computer that folder
-is `~/CellMatchR-app`. On Windows it is in your user folder. The app folder
-has a different name from the shared model library at `~/CellMatchR/Models`;
-trained models therefore stay outside the Git checkout. Cloning retains Git
-history, allowing later updates with `git pull`.
+`git clone` creates **CellMatchR-app** on your Desktop; the last `cd` enters
+it. You can open the folder directly from the Desktop in Finder or File
+Explorer. The app folder has a different location from the shared model
+library at `~/CellMatchR/Models`, so trained models stay outside the Git
+checkout. Cloning retains Git history, allowing later updates with `git pull`.
 
 **Already have an app folder?** Do not clone it again. Open a command
 window and enter that existing folder instead:
@@ -81,8 +97,7 @@ The Windows setup script installs a Conda-compatible micromamba environment
 for CellMatchR. You do **not** need to install Conda or Miniforge separately
 for this Windows workflow.
 
-1. In File Explorer, open the CellMatchR app folder. If you used `cd ~` above,
-   paste `%USERPROFILE%\CellMatchR-app` into File Explorer's address bar.
+1. On your Desktop, open the `CellMatchR-app` folder in File Explorer.
 2. Double-click `setup-windows.cmd` and wait for it to report completion. It
    creates the app environment and a desktop shortcut.
 3. Double-click **Launch CellMatchR (Windows)**. `run-windows.cmd` in the
@@ -112,8 +127,8 @@ for this Windows workflow.
    up, `conda env list` shows it; you can skip creating it again. To update an
    existing environment after a code update, use the command below under
    [Update an existing Git installation](#update-an-existing-git-installation).
-4. In Finder choose **Go → Go to Folder**, enter `~/CellMatchR-app` if you cloned
-   into your home folder, and open the app matching your macOS version:
+4. On your Desktop, open `CellMatchR-app` in Finder and open the app matching
+   your macOS version:
    `CellMatchR (macOS 27+).app` or
    `CellMatchR (macOS 26 and earlier).app`. If your checkout is elsewhere,
    navigate to that folder in Finder instead. Keep the `.app` inside the

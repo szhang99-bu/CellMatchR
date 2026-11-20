@@ -3,7 +3,7 @@
 <img src="CellMatchr_Logo.png" width="120" alt="CellMatchR logo" />
 
 Segment cells in microscopy images, review predictions, and measure
-colocalization. CellMatchR supports Cellpose-SAM, Micro-SAM, and StarDist.
+colocalization. CellMatchR supports Cellpose-SAM, Micro-SAM, micro-SAM2, and StarDist.
 
 **New here?** The [full user guide](docs/usage.md) has detailed setup
 instructions, every workflow step, and answers to common questions.
@@ -159,7 +159,10 @@ cannot update a ZIP copy.
 1. **Create a project** and choose an output folder.
 2. **Select images.** Use **Confocal** to read images directly. Use **Slide scanner**
    to draw and name regions in a VSI, Leica slide-scanner LIF, TIFF, or BigTIFF.
-3. **Segment** the channels you want to measure.
+3. **Segment** the channels you want to measure. Choose **micro-SAM2** to try
+   the newer models. For Nissl, use **Brightfield stain** and start with
+   `hvit_b_cells`. The first run downloads the selected model and sets up
+   its separate environment. See the [model guide](docs/usage.md#step-3-segment-cells).
 4. **Review** the predictions and run **Analysis** to generate object tables
    and a colocalization workbook.
 5. **Retrain** in Step 7 if you want to fine-tune a model on corrected masks.

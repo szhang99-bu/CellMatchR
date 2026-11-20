@@ -283,15 +283,41 @@ use `0` because the RGB stain is combined into one cell signal.
 | Backend | Models shown in the app | Use it when |
 |---|---|---|
 | **Micro-SAM** | Built-in model types such as `vit_b_lm`, plus saved models | You want SAM-based masks or have a compatible fine-tuned checkpoint. |
+| **micro-SAM2** | `hvit_t_cells`, `hvit_s_cells`, `hvit_b_cells` (default), `hvit_l_cells` | Try Base first for Nissl brightfield, or Tiny for a smaller model. |
 | **Cellpose** | Cellpose-SAM (`cpsam`), Cellpose 2 (`cyto2`), Rat Nissl v2, plus saved models | You want Cellpose behavior or to compare its Nissl-specific option. |
 | **StarDist 2D** | Built-in `2D_versatile_fluo`, plus saved models | Cells are reasonably star-convex and StarDist dependencies are installed. |
 
-Select the **Segmentation backend** and then **Model for this run**. Saved
+Select the **Segmentation backend** and then choose the **Model type** or
+**Model for this run** shown for that backend. Saved
 models in the shared library appear in the dropdown; an external checkpoint
 can be browsed separately. Cellpose 2 and Rat Nissl v2 use a separate legacy
 runtime, which is prepared on first use. Rat Nissl v2 came from juvenile rat
 cresyl-violet images; test it on your own tissue before relying on it.
 Changing backend or model does not delete other segmentation runs.
+
+### Run micro-SAM2
+
+For Nissl, choose **Slide scanner → Brightfield stain** in Step 2, then
+choose **micro-SAM2 → hvit_b_cells** in Step 3. Use channel **0**. The model
+receives the original RGB pixels and applies its own normalization.
+Grayscale brightfield TIFFs use their original single channel. For
+fluorescence, each selected channel is segmented separately using its
+original intensity values. The **Preprocessing mode** box shows the input
+used by micro-SAM2. The **Parameter Wizard** uses the same model input and
+measures brightness in the saved channel.
+
+Starting the first run or opening the Parameter Wizard prepares a separate
+Python environment and downloads the chosen weights. Allow that step to
+finish with an internet connection. The runtime and built-in model cache live
+in `~/CellMatchR/MicroSAM2` and are reused across projects. Saved fine-tuned
+Micro-SAM models are still selected under **Micro-SAM**. Corrected micro-SAM2
+masks can be used in Step 7 to train the existing model families.
+
+Use a new output run when comparing the two versions. On a small comparison of
+published 20× Nissl fields, micro-SAM2 Base found more annotated objects with
+original RGB than either model using inverted grayscale. Results can vary
+with stain, tissue and scanner. Use **Test run** to inspect a representative
+image before running the batch.
 
 ### Adjust sensitivity and filtering
 
@@ -964,7 +990,7 @@ inspect these fields before running:
 
 | Module | Settings to check in the copied config |
 |---|---|
-| Segmentation | `input_type`, `input_root_folder`, `output_root_folder` (the chosen segmentation run folder), `seg_channels` (such as `"0,1"`), `seg_backend`, `seg_model_type` for Micro-SAM or the appropriate `seg_custom_model_path`, `seg_cellpose_model_path`, or `seg_stardist_model_path`, `seg_preprocess_mode`, `seg_resume`, `seg_dry_run`, and `seg_test_run`. |
+| Segmentation | `input_type`, `input_root_folder`, `output_root_folder` (the chosen segmentation run folder), `seg_channels` (such as `"0,1"`), `seg_backend`, `seg_model_type` for Micro-SAM or `seg_microsam2_model` for micro-SAM2, `seg_preprocess_mode`, `seg_resume`, `seg_dry_run`, and `seg_test_run`. For a custom checkpoint use `seg_custom_model_path`, `seg_cellpose_model_path`, or `seg_stardist_model_path` for its corresponding backend. |
 | Analysis | `ana_microsam_output_root` (the segmentation run to read), `output_root_folder` (the analysis folder to write), `ana_red_channel`, `ana_pv_channel`, and `apply_partial_validation`. |
 
 On macOS/Linux, one way to prepare a config is:
@@ -982,6 +1008,10 @@ python -m cellmatchr.segmentation --config "/absolute/path/to/MyProject/cli-conf
 ```
 
 The dry run lists the planned samples and channels without making masks.
+For micro-SAM2, set `"seg_backend": "microsam2"` and
+`"seg_microsam2_model": "hvit_b_cells"`. Brightfield uses `"input_type": "vsi"`,
+`"slide_signal_type": "brightfield"`, and `"seg_channels": "0"` with the
+converted TIFFs as input.
 When the plan is correct, set `"seg_dry_run": false` in the copied config
 and run the command again. Use a new output folder for a new segmentation
 run; `seg_resume` is for continuing the same run. To analyze that run, set

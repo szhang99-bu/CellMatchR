@@ -16,6 +16,10 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 from .config import (load_config, save_config, save_project_config,
                      load_project_config, CONFIG_PATH, DEFAULT_CONFIG)
 from .legacy_cellpose import segmentation_command
+from .microsam2 import (
+    DEFAULT_MODEL as MICROSAM2_DEFAULT_MODEL, DISPLAY_NAME as MICROSAM2_DISPLAY,
+    MODELS as MICROSAM2_MODELS, preprocessing_name as microsam2_preprocessing,
+)
 from .file_paths import filesystem_path, matching_paths, prediction_channel
 
 # Optional PIL for logo
@@ -163,7 +167,8 @@ def _segmentation_run_details(project_folder: str, run_name: str) -> str:
         if not isinstance(identity, dict):
             raise ValueError("run identity unavailable")
         backend = str(identity["backend"]).strip().lower()
-        method = {"microsam": "Micro-SAM", "cellpose": "Cellpose",
+        method = {"microsam": "Micro-SAM", "microsam2": MICROSAM2_DISPLAY,
+                  "cellpose": "Cellpose",
                   "stardist": "StarDist 2D"}.get(
             backend, backend)
         model = str(identity["model"])
@@ -449,6 +454,7 @@ class CellMatchrLauncher:
             "project_name", "project_output_folder",
             "input_type", "input_root_folder", "slide_signal_type",
             "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
+            "seg_microsam2_model",
             "seg_custom_model_path", "seg_cellpose_model_path", "seg_cellpose_variant",
             "seg_stardist_model_path",
             "val_mask_pattern", "val_channel_names", "val_channel_colors",
@@ -1125,7 +1131,7 @@ class CellMatchrLauncher:
     def _suggest_segmentation_suffix(self) -> str:
         """Give a new run a recognizable, collision-free name by default."""
         backend = str(self.config.get("seg_backend", "microsam")).strip().lower()
-        if backend not in ("microsam", "cellpose", "stardist"):
+        if backend not in ("microsam", "microsam2", "cellpose", "stardist"):
             backend = "microsam"
         if backend == "cellpose":
             variant = str(self.config.get("seg_cellpose_variant") or "cpsam").strip()
@@ -1165,8 +1171,11 @@ class CellMatchrLauncher:
     def _segmentation_identity_from_config(self) -> dict:
         """Match the identity stored in a new segmentation progress file."""
         backend = str(self.config.get("seg_backend") or "microsam").strip().lower()
-        model = (str(self.config.get("seg_model_type") or "vit_b_lm")
-                 if backend == "microsam" else
+        brightfield = (self.config.get("input_type") == "vsi" and
+                       self.config.get("slide_signal_type") == "brightfield")
+        model = (str(self.config.get("seg_microsam2_model") or MICROSAM2_DEFAULT_MODEL)
+                 if backend == "microsam2" else
+                 str(self.config.get("seg_model_type") or "vit_b_lm") if backend == "microsam" else
                  str(self.config.get("seg_cellpose_variant") or "cpsam")
                  if backend == "cellpose" else "2D_versatile_fluo")
         raw_channels = str(self.config.get("seg_channels") or "")
@@ -1175,10 +1184,12 @@ class CellMatchrLauncher:
         identity = {
             "backend": backend,
             "model": model,
-            "preprocess": str(self.config.get("seg_preprocess_mode") or
-                              "local_bg_subtract"),
+            "preprocess": (microsam2_preprocessing(brightfield) if backend == "microsam2"
+                           else str(self.config.get("seg_preprocess_mode") or "local_bg_subtract")),
             "channels": channels,
         }
+        if brightfield:
+            identity["slide_signal_type"] = "brightfield"
         key = {"microsam": "seg_custom_model_path",
                "cellpose": "seg_cellpose_model_path",
                "stardist": "seg_stardist_model_path"}.get(backend)
@@ -2148,6 +2159,7 @@ class CellMatchrLauncher:
             return
         profile_keys = (
             "seg_channels", "seg_backend", "seg_model_type", "seg_preprocess_mode",
+            "seg_microsam2_model",
             "seg_custom_model_path", "seg_cellpose_model_path",
             "seg_cellpose_variant", "seg_stardist_model_path",
             "seg_min_object_size", "seg_max_object_size", "seg_max_ratio",
@@ -2170,7 +2182,8 @@ class CellMatchrLauncher:
             mode = _brightfield_preprocess_for_model(
                 backend, self._vars["seg_cellpose_variant"].get(), model_path,
                 self.config.get("project_output_folder", ""))
-            self._vars["seg_preprocess_mode"].set(mode)
+            if backend != "microsam2":
+                self._vars["seg_preprocess_mode"].set(mode)
             for key in ("seg_min_object_size", "seg_max_object_size",
                         "seg_max_ratio", "seg_raw_mean_min", "seg_raw_mean_max"):
                 self._vars[key].set("0")
@@ -2212,7 +2225,7 @@ class CellMatchrLauncher:
         self._section_header(
             parent,
             "Step 3 — Segmentation",
-            "Configure and run MicroSAM tiled automatic segmentation.",
+            "Choose a model and segment cells in your images.",
         )
 
         # ── Input folder status ──────────────────────────────────────
@@ -2369,7 +2382,8 @@ class CellMatchrLauncher:
         model_card = self._card(parent, "Segmentation Settings")
 
         # ── Backend selector ─────────────────────────────────────────
-        _BK_DISPLAY = {"microsam": "Micro-SAM", "cellpose": "Cellpose",
+        _BK_DISPLAY = {"microsam": "Micro-SAM", "microsam2": MICROSAM2_DISPLAY,
+                       "cellpose": "Cellpose",
                        "stardist": "StarDist 2D"}
         _BK_REVERSE = {v: k for k, v in _BK_DISPLAY.items()}
         _bk_frame = tk.Frame(model_card, bg=CARD)
@@ -2407,15 +2421,17 @@ class CellMatchrLauncher:
 
         tk.Label(g, text="Model type:", bg=CARD, fg=FG, font=FONT).grid(
             row=2, column=0, sticky="w", pady=3)
+        sam1_models = ("vit_b_lm", "vit_l_lm", "vit_h_lm", "vit_b", "vit_l", "vit_h")
         _cb_model = ttk.Combobox(
             g, textvariable=self._vars["seg_model_type"],
-            values=["vit_b_lm", "vit_l_lm", "vit_h_lm", "vit_b", "vit_l", "vit_h"],
+            values=sam1_models,
             state="readonly", width=18,
         )
         _cb_model.grid(row=2, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_model)
 
-        choice_row = tk.Frame(model_card, bg=CARD)
+        legacy_model_card = tk.Frame(model_card, bg=CARD)
+        choice_row = tk.Frame(legacy_model_card, bg=CARD)
         choice_row.pack(fill="x", pady=(6, 2))
         tk.Label(choice_row, text="Model for this run:", bg=CARD, fg=FG,
                  font=FONT, width=24, anchor="w").pack(side="left")
@@ -2426,7 +2442,7 @@ class CellMatchrLauncher:
         model_choice_box.pack(side="left", padx=8, fill="x", expand=True)
         self._bind_combobox_scroll(model_choice_box)
 
-        custom_card = tk.Frame(model_card, bg=CARD)
+        custom_card = tk.Frame(legacy_model_card, bg=CARD)
         tk.Label(custom_card, text="Trained model (optional):", bg=CARD,
                  fg=FG, font=FONT).pack(anchor="w")
         model_path_row = tk.Frame(custom_card, bg=CARD)
@@ -2520,6 +2536,13 @@ class CellMatchrLauncher:
         )
         _cb_prep.grid(row=3, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_prep)
+        sam2_input = tk.StringVar(value="Original RGB" if is_brightfield else "Original channel")
+        sam2_hint = tk.Label(
+            model_card,
+            text=("Base is recommended for Nissl. The first run sets up micro-SAM2 "
+                  "and downloads the selected model."),
+            bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=650, justify="left",
+        )
         if is_brightfield:
             tk.Label(g, text=("Preprocessing changes model input only. Images and the "
                               "Parameter Wizard retain the original stain brightness."),
@@ -2574,14 +2597,22 @@ class CellMatchrLauncher:
         def _on_seg_backend_changed(*_):
             bk = _BK_REVERSE.get(self._seg_backend_disp.get(), "microsam")
             self._vars["seg_backend"].set(bk)
+            self._cellpose_frame.pack_forget()
+            if bk == "microsam2":
+                _cb_model.configure(textvariable=self._vars["seg_microsam2_model"],
+                                    values=MICROSAM2_MODELS, state="readonly")
+                _cb_prep.configure(textvariable=sam2_input, state="disabled")
+                legacy_model_card.pack_forget()
+                sam2_hint.pack(anchor="w", pady=(4, 8), after=g)
+                return
+            sam2_hint.pack_forget()
+            legacy_model_card.pack(fill="x", after=g)
+            _cb_model.configure(textvariable=self._vars["seg_model_type"],
+                                values=sam1_models,
+                                state="readonly" if bk == "microsam" else "disabled")
+            _cb_prep.configure(textvariable=self._vars["seg_preprocess_mode"], state="readonly")
             if bk == "cellpose":
                 self._cellpose_frame.pack(fill="x", pady=(6, 0))
-                try: _cb_model.configure(state="disabled")
-                except tk.TclError: pass
-            else:
-                self._cellpose_frame.pack_forget()
-                try: _cb_model.configure(state="readonly" if bk == "microsam" else "disabled")
-                except tk.TclError: pass
             selected_key[0] = model_keys[bk]
             custom_path.set(self._vars[selected_key[0]].get())
             refresh_model_choices(bk)
@@ -4978,12 +5009,17 @@ class CellMatchrLauncher:
         # ── Configuration Summary ──────────────────────────────────────
         summary_card = self._card(parent, "Configuration Summary")
         proj  = cfg.get("project_output_folder") or "—"
+        sam2_brightfield = (cfg.get("input_type") == "vsi" and
+                            cfg.get("slide_signal_type") == "brightfield")
         lines = [
             f"Project:         {cfg.get('project_name') or '—'}",
             f"Output folder:   {proj}",
             f"Input root:      {cfg.get('input_root_folder') or '—'}",
             f"Channels:        {cfg.get('seg_channels', '?')}",
-            (f"Backend:         StarDist 2D  /  {cfg.get('seg_preprocess_mode', '?')}"
+            (f"Backend:         {MICROSAM2_DISPLAY}  {cfg.get('seg_microsam2_model') or MICROSAM2_DEFAULT_MODEL}"
+             f"  /  {'Original RGB' if sam2_brightfield else 'Original channel'}"
+             if str(cfg.get('seg_backend')).lower() == 'microsam2'
+             else f"Backend:         StarDist 2D  /  {cfg.get('seg_preprocess_mode', '?')}"
              if str(cfg.get('seg_backend', 'microsam')).lower() == 'stardist'
              else f"Backend:         Cellpose {cfg.get('seg_cellpose_variant') or 'cpsam'}  (diameter "
              f"{cfg.get('seg_cellpose_diameter') or 'auto'})  /  {cfg.get('seg_preprocess_mode', '?')}"
@@ -5091,10 +5127,8 @@ class CellMatchrLauncher:
             "Use completed human validation to fine-tune a model for future runs.")
         card = self._card(parent, "Training data and model")
         tk.Label(card, text=(
-            "Finish validation for a channel first. All confirmed cell labels "
-            "(including YES and NO) are training targets by default. Only "
-            "ARTIFACT is an incorrect prediction. Resolve MAYBE first. "
-            "The original predictions and project files stay in place."),
+            "Use saved mask corrections or completed cell reviews from Step 4. "
+            "Complete individual cell review to train specific labels such as YES or NO."),
             bg=CARD, fg=MUTED, font=FONT, wraplength=720,
             justify="left").pack(anchor="w", pady=(0, 10))
         variants = self._find_variants(SUBFOLDER["seg"])
@@ -5105,7 +5139,10 @@ class CellMatchrLauncher:
         run_var = tk.StringVar(value=(self.config.get("seg_input_subfolder")
                                      if self.config.get("seg_input_subfolder") in variants
                                      else variants[-1] if variants else ""))
-        backend_var = tk.StringVar(value=self.config.get("seg_backend", "microsam"))
+        training_backends = ("microsam", "cellpose", "stardist")
+        segmentation_backend = self.config.get("seg_backend", "microsam")
+        backend_var = tk.StringVar(value=(segmentation_backend
+                                         if segmentation_backend in training_backends else "microsam"))
         channels = str(self.config.get("seg_channels") or "1").split(",")
         channel_var = tk.StringVar(value=channels[0].strip())
         model_name_date = datetime.now().strftime("%Y-%m-%d")
@@ -5141,7 +5178,7 @@ class CellMatchrLauncher:
         self._bind_combobox_scroll(channel_box)
         row(2, "Model family to train:", ttk.Combobox(
             grid, textvariable=backend_var,
-            values=("microsam", "cellpose", "stardist"), state="readonly"))
+            values=training_backends, state="readonly"))
         starting_choice = tk.StringVar()
         starting_options = {}
         starting_keys = {"microsam": "seg_custom_model_path",
@@ -5158,7 +5195,7 @@ class CellMatchrLauncher:
                                              insertbackground=FG, relief="flat"))
         tk.Label(card, text=("Saved mask corrections or completed cell reviews supply the teaching examples. "
                              "The masks can come from "
-                             "Micro-SAM, Cellpose, or StarDist even when you train another model family. "
+                             "Micro-SAM, micro-SAM2, Cellpose, or StarDist. "
                              "Initialize weights from chooses the starting model within the family "
                              "you will train. Your named result is saved separately in the shared library."),
                  bg=CARD, fg=MUTED, font=FONT, wraplength=750,
@@ -5528,12 +5565,14 @@ class CellMatchrLauncher:
         refresh_starting_models()
 
         def refresh_preprocess(*_):
+            from .retraining import PREPROCESS_MODES
+
             path = os.path.join(self.config.get("project_output_folder", ""),
                                 run_var.get(), "_run_progress.json")
             try:
                 with open(path) as source:
                     identity = json.load(source).get("run_identity", {})
-                if identity.get("preprocess"):
+                if identity.get("preprocess") in PREPROCESS_MODES:
                     preprocess_var.set(identity["preprocess"])
             except (OSError, ValueError, TypeError):
                 pass

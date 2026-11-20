@@ -21,8 +21,9 @@ DEFAULT_CONFIG: dict = {
 
     # --- Segmentation ---
     "seg_channels": "",
-    "seg_backend": "microsam",          # "microsam" | "cellpose" | "stardist"
+    "seg_backend": "microsam",          # "microsam" | "microsam2" | "cellpose" | "stardist"
     "seg_model_type": "vit_b_lm",       # Micro-SAM model (when backend == microsam)
+    "seg_microsam2_model": "hvit_b_cells",
     "seg_custom_model_path": "",       # optional fine-tuned Micro-SAM checkpoint
     "seg_cellpose_model_path": "",     # optional fine-tuned Cellpose checkpoint
     "seg_cellpose_variant": "cpsam",   # cpsam | cyto2 | rat_nissl_v2

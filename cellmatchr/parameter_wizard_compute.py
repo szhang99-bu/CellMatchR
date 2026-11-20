@@ -23,6 +23,7 @@ standalone:
 """
 
 import argparse
+from contextlib import ExitStack
 import json
 import os
 import sys
@@ -37,6 +38,7 @@ import numpy as np
 from cellmatchr import segmentation as seg
 from cellmatchr.config import DEFAULT_CONFIG
 from cellmatchr.file_paths import read_tiff
+from cellmatchr.microsam2 import DEFAULT_MODEL as MICROSAM2_DEFAULT_MODEL, MicroSam2
 
 
 def _load_cfg(path: str) -> dict:
@@ -71,7 +73,7 @@ def _find_first_sample(cfg: dict):
     return None, None, None
 
 
-def _setup_backend(cfg: dict):
+def _setup_backend(cfg: dict, resources):
     import torch
     if torch.cuda.is_available():
         device = "cuda"
@@ -80,6 +82,10 @@ def _setup_backend(cfg: dict):
     else:
         device = "cpu"
     print(f"[parameter_wizard_compute] Using device: {device}")
+
+    if cfg.get("seg_backend") == "microsam2":
+        model = cfg.get("seg_microsam2_model") or MICROSAM2_DEFAULT_MODEL
+        return None, None, None, None, resources.enter_context(MicroSam2(model, device))
 
     if cfg.get("seg_backend") == "cellpose":
         from cellpose import models as cp_models
@@ -95,7 +101,7 @@ def _setup_backend(cfg: dict):
                                    "for the Parameter Wizard. Start from the CellMatchR app.")
         print(f"[parameter_wizard_compute] Backend: Cellpose {variant}")
         return (None, None, cp_models.CellposeModel(
-            gpu=(device != "cpu"), pretrained_model=checkpoint or "cpsam"), None)
+            gpu=(device != "cpu"), pretrained_model=checkpoint or "cpsam"), None, None)
 
     if cfg.get("seg_backend") == "stardist":
         from stardist.models import StarDist2D
@@ -107,7 +113,7 @@ def _setup_backend(cfg: dict):
         else:
             model = StarDist2D.from_pretrained("2D_versatile_fluo")
         print("[parameter_wizard_compute] Backend: StarDist 2D")
-        return None, None, None, model
+        return None, None, None, model, None
 
     import micro_sam.automatic_segmentation
     model_type = cfg.get("seg_model_type", "vit_b_lm")
@@ -125,7 +131,7 @@ def _setup_backend(cfg: dict):
                 model_type="vit_b" if cfg.get("seg_custom_model_path") else model_type,
                 device=device,
                 checkpoint=str(cfg.get("seg_custom_model_path") or "").strip() or None)
-            return predictor, segmenter, None, None
+            return predictor, segmenter, None, None, None
         except Exception as exc:
             last_exc = exc
             print(f"[parameter_wizard_compute] Model load attempt {attempt}/3 failed: {exc}")
@@ -136,6 +142,11 @@ def _setup_backend(cfg: dict):
 
 
 def main() -> None:
+    with ExitStack() as resources:
+        _run(resources)
+
+
+def _run(resources):
     parser = argparse.ArgumentParser(description="CellMatchR Parameter Wizard -- compute stage")
     parser.add_argument("--config", required=True)
     parser.add_argument("--out-dir", required=True)
@@ -158,11 +169,13 @@ def main() -> None:
     print("[parameter_wizard_compute] Splitting channels...")
     brightfield = (cfg.get("input_type") == "vsi"
                    and cfg.get("slide_signal_type") == "brightfield")
-    split_paths = seg.save_raw_split_tiffs(
+    use_microsam2 = cfg.get("seg_backend") == "microsam2"
+    split_paths, native_brightfield = seg.prepare_prediction_channels(
         image_path, args.out_dir, base_name, lif_scene=lif_scene,
-        brightfield=brightfield)
+        brightfield=brightfield, use_microsam2=use_microsam2)
 
-    predictor, segmenter, cellpose_model, stardist_model = _setup_backend(cfg)
+    predictor, segmenter, cellpose_model, stardist_model, microsam2_model = _setup_backend(
+        cfg, resources)
 
     # Match the configured tiling/preprocessing exactly, and disable every
     # post-filter (size/ratio/intensity) so the user sees every object the
@@ -211,6 +224,8 @@ def main() -> None:
             seg.TILE_SHAPE_2D, seg.HALO_2D, seg.NDIM,
             debug_folder=None, cellpose_model=cellpose_model,
             stardist_model=stardist_model,
+            microsam2_model=microsam2_model,
+            native_brightfield=native_brightfield,
             min_size=0,
             **microsam_generate_kwargs,
         )

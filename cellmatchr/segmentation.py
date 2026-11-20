@@ -1,6 +1,7 @@
 import os
 import sys
 import gc
+from contextlib import ExitStack
 import torch
 from czifile import CziFile
 import numpy as np
@@ -23,6 +24,9 @@ else:
     # The launcher starts this file directly, so make its sibling package
     # available for the training-model registry used during prediction.
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from cellmatchr.microsam2 import DEFAULT_MODEL as MICROSAM2_DEFAULT_MODEL
+from cellmatchr.microsam2 import DISPLAY_NAME as MICROSAM2_DISPLAY, MicroSam2, preprocessing_name
 
 
 def _save_png(path, image):
@@ -106,6 +110,7 @@ CELLPOSE_CELLPROB_THRESHOLD = 0.0  # lower = more (smaller/dimmer) cells
 # =============================================================================
 
 MODEL_TYPE = "vit_b_lm"
+MICROSAM2_MODEL = MICROSAM2_DEFAULT_MODEL
 
 # Options:
 # "raw_percentile"
@@ -763,12 +768,16 @@ def segment_by_tiling(
     debug_folder=None,
     cellpose_model=None,
     stardist_model=None,
+    microsam2_model=None,
+    native_brightfield=None,
     **generate_kwargs
 ):
     if ndim != 2:
         raise ValueError("Only 2D supported")
 
     image_shape = image.shape
+    if native_brightfield is not None and native_brightfield.shape[:2] != image_shape:
+        raise ValueError("Brightfield model input does not match the grayscale channel")
     final_segmentation = np.zeros(image_shape, dtype=np.uint32)
 
     # This shows which final tile-core regions were actually written/covered.
@@ -804,7 +813,9 @@ def segment_by_tiling(
     _min_raw_max  = MIN_TILE_RAW_MAX * _sig_scale
     _bright_thresh = BRIGHT_PIXEL_THRESHOLD * _sig_scale
 
-    print(f"    Preprocess mode: {PREPROCESS_MODE}")
+    preprocess = (preprocessing_name(SLIDE_SIGNAL_TYPE == "brightfield")
+                  if microsam2_model is not None else PREPROCESS_MODE)
+    print(f"    Preprocess mode: {preprocess}")
     print(f"    Tiles: {len(coords)} | skip-empty: {do_skip_empty} | "
           f"data max≈{_gmax:.0f} (signal thresh scaled ×{_sig_scale:.3f})")
 
@@ -867,12 +878,17 @@ def segment_by_tiling(
 
         processed_tiles += 1
 
-        processed_uint8, tile_data_rgb = preprocess_tile_for_sam(
-            tile_data,
-            mode=PREPROCESS_MODE
-        )
+        if microsam2_model is None:
+            processed_uint8, tile_data_rgb = preprocess_tile_for_sam(
+                tile_data, mode=PREPROCESS_MODE)
+        elif should_save_debug_images():
+            processed_uint8 = robust_percentile_normalize_to_uint8(tile_data)
 
-        if stardist_model is not None:
+        if microsam2_model is not None:
+            model_input = (native_brightfield[tile_slices_global]
+                           if native_brightfield is not None else tile_data)
+            labeled_tile = microsam2_model.predict(model_input)
+        elif stardist_model is not None:
             labeled_tile, _details = stardist_model.predict_instances(
                 processed_uint8.astype(np.float32) / 255.0
             )
@@ -1357,8 +1373,8 @@ def _plan_work_items(input_files, input_root, return_collisions=False):
     return planned
 
 
-def _brightfield_gray(data: np.ndarray, axes_meta: str = "") -> np.ndarray:
-    """Return native-brightness grayscale from a slide-scanner RGB or gray TIFF."""
+def _brightfield_pixels(data: np.ndarray, axes_meta: str = "") -> np.ndarray:
+    """Read brightfield as YX grayscale or YXC RGB without changing pixel values."""
     if data.ndim == 2:
         return data
     if data.ndim != 3:
@@ -1377,11 +1393,19 @@ def _brightfield_gray(data: np.ndarray, axes_meta: str = "") -> np.ndarray:
     channels = np.moveaxis(data, channel_axis, -1)
     if channels.shape[-1] == 1:
         return channels[..., 0]
+    return channels[..., :3]
+
+
+def _brightfield_gray(data: np.ndarray, axes_meta: str = "") -> np.ndarray:
+    """Return native-brightness grayscale from a slide-scanner RGB or gray TIFF."""
+    channels = _brightfield_pixels(data, axes_meta)
+    if channels.ndim == 2:
+        return channels
     # Limit temporary memory for full-resolution ROI exports. The original
     # color TIFF is retained; only this single-channel working copy is gray.
     gray = np.empty(channels.shape[:2], dtype=data.dtype)
     for row in range(0, gray.shape[0], 1024):
-        rgb = np.ascontiguousarray(channels[row:row + 1024, :, :3])
+        rgb = np.ascontiguousarray(channels[row:row + 1024])
         gray[row:row + 1024] = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     return gray
 
@@ -1575,6 +1599,20 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None,
     return split_tiff_paths
 
 
+def prepare_prediction_channels(file_path, output_subfolder, base_name, lif_scene,
+                                brightfield, use_microsam2):
+    """Keep original stain colors available for micro-SAM2 and save gray for measurement."""
+    if not (brightfield and use_microsam2):
+        return save_raw_split_tiffs(file_path, output_subfolder, base_name,
+                                   lif_scene=lif_scene, brightfield=brightfield), None
+    with tifffile.TiffFile(filesystem_path(file_path)) as tif:
+        native = _brightfield_pixels(tif.asarray(), tif.series[0].axes)
+    gray = _brightfield_gray(native, "YXS")
+    paths = {}
+    _save_split_tiff(gray.astype(np.uint16), 0, output_subfolder, base_name, paths)
+    return paths, native
+
+
 def save_segmentation_tiff(output_path, result):
     """
     Save segmentation in ImageJ-compatible format when possible.
@@ -1720,16 +1758,18 @@ def _run_identity() -> dict:
     """Settings that must stay fixed when continuing one segmentation run."""
     identity = {
         "backend": SEG_BACKEND,
-        "model": (MODEL_TYPE if SEG_BACKEND == "microsam" else
+        "model": (MICROSAM2_MODEL if SEG_BACKEND == "microsam2" else
+                  MODEL_TYPE if SEG_BACKEND == "microsam" else
                   CELLPOSE_VARIANT if SEG_BACKEND == "cellpose" else "2D_versatile_fluo"),
-        "preprocess": PREPROCESS_MODE,
+        "preprocess": (preprocessing_name(SLIDE_SIGNAL_TYPE == "brightfield")
+                       if SEG_BACKEND == "microsam2" else PREPROCESS_MODE),
         "channels": list(CHANNELS_TO_PREDICT),
     }
     if SLIDE_SIGNAL_TYPE == "brightfield":
         identity["slide_signal_type"] = "brightfield"
     chosen = {"microsam": CUSTOM_MODEL_PATH,
               "cellpose": CELLPOSE_MODEL_PATH,
-              "stardist": STARDIST_MODEL_PATH}[SEG_BACKEND]
+              "stardist": STARDIST_MODEL_PATH}.get(SEG_BACKEND)
     if chosen:
         identity["custom_model"] = os.path.abspath(chosen)
     return identity
@@ -1889,6 +1929,11 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None,
 # =============================================================================
 
 def main():
+    with ExitStack() as resources:
+        return _run(resources)
+
+
+def _run(resources):
     global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX
     is_dry_run = DRY_RUN and not TEST_RUN
 
@@ -1931,7 +1976,7 @@ def main():
         print(f"  [PLAN] Requested channels: {CHANNELS_TO_PREDICT}")
         return 0
 
-    predictor, segmenter, cellpose_model, stardist_model = None, None, None, None
+    predictor = segmenter = cellpose_model = stardist_model = microsam2_model = None
 
     if not is_dry_run:
         if torch.cuda.is_available():
@@ -1942,7 +1987,9 @@ def main():
             device = "cpu"
         print(f"Using device: {device}")
 
-        if SEG_BACKEND == "cellpose":
+        if SEG_BACKEND == "microsam2":
+            microsam2_model = resources.enter_context(MicroSam2(MICROSAM2_MODEL, device))
+        elif SEG_BACKEND == "cellpose":
             print(f"Segmentation backend: Cellpose {CELLPOSE_VARIANT}")
             try:
                 from cellpose import models as _cp_models
@@ -2011,6 +2058,8 @@ def main():
     _total_samples = len(work_items)
     _completed = set()
     failures = 0
+    brightfield = INPUT_TYPE == "vsi" and SLIDE_SIGNAL_TYPE == "brightfield"
+    preprocess = preprocessing_name(brightfield) if microsam2_model is not None else PREPROCESS_MODE
     _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
                         finished=False, channels=CHANNELS_TO_PREDICT,
                         input_sources=input_sources)
@@ -2025,7 +2074,7 @@ def main():
         def _predict_path(ch):
             return filesystem_path(os.path.join(
                 output_subfolder,
-                f"{base_name}_predict_original_ch{ch}_{PREPROCESS_MODE}_tile2048.tif"))
+                f"{base_name}_predict_original_ch{ch}_{preprocess}_tile2048.tif"))
 
         # Resume: if every requested channel for this sample is already
         # segmented, skip it entirely (don't even re-read/re-split the file).
@@ -2043,12 +2092,13 @@ def main():
         try:
             os.makedirs(filesystem_path(output_subfolder), exist_ok=True)
 
-            split_tiff_paths = save_raw_split_tiffs(
+            split_tiff_paths, native_brightfield = prepare_prediction_channels(
                 file_path,
                 output_subfolder,
                 base_name,
                 lif_scene=lif_scene,
-                brightfield=(INPUT_TYPE == "vsi" and SLIDE_SIGNAL_TYPE == "brightfield"),
+                brightfield=brightfield,
+                use_microsam2=microsam2_model is not None,
             )
 
             for ch_to_predict in CHANNELS_TO_PREDICT:
@@ -2085,10 +2135,10 @@ def main():
                 )
 
                 _backend_tag = {"cellpose": "cellpose", "stardist": "stardist",
-                                "microsam": "microSAM"}[SEG_BACKEND]
+                                "microsam": "microSAM", "microsam2": MICROSAM2_DISPLAY}[SEG_BACKEND]
                 debug_folder = os.path.join(
                     output_subfolder,
-                    f"DEBUG_{_backend_tag}_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048"
+                    f"DEBUG_{_backend_tag}_ch{ch_to_predict}_{preprocess}_tile2048"
                 )
 
                 print(f"    Running custom tiled {_backend_tag} prediction.")
@@ -2105,6 +2155,8 @@ def main():
                     debug_folder=debug_folder,
                     cellpose_model=cellpose_model,
                     stardist_model=stardist_model,
+                    microsam2_model=microsam2_model,
+                    native_brightfield=native_brightfield,
                     **generate_kwargs
                 )
 
@@ -2119,12 +2171,12 @@ def main():
                 if SAVE_FINAL_QC_OVERLAY:
                     qc_overlay_path = os.path.join(
                         output_subfolder,
-                        f"{base_name}_QC_overlay_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048.png"
+                        f"{base_name}_QC_overlay_ch{ch_to_predict}_{preprocess}_tile2048.png"
                     )
 
                     qc_mask_path = os.path.join(
                         output_subfolder,
-                        f"{base_name}_QC_binary_mask_ch{ch_to_predict}_{PREPROCESS_MODE}_tile2048.png"
+                        f"{base_name}_QC_binary_mask_ch{ch_to_predict}_{preprocess}_tile2048.png"
                     )
 
                     make_final_qc_overlay(
@@ -2151,6 +2203,7 @@ def main():
             traceback.print_exc()
             continue
         finally:
+            native_brightfield = None
             (MIN_OBJECT_SIZE, MAX_OBJECT_SIZE,
              MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX) = _saved_filters
             _free_memory()
@@ -2175,7 +2228,7 @@ def _apply_config(config_path: str) -> None:
     import json
     global ROOT_INPUT_FOLDER, MAIN_OUTPUT_FOLDER, CHANNELS_TO_PREDICT, PROJECT_OUTPUT_FOLDER
     global INPUT_TYPE, SLIDE_SIGNAL_TYPE
-    global MODEL_TYPE, PREPROCESS_MODE
+    global MODEL_TYPE, MICROSAM2_MODEL, PREPROCESS_MODE
     global MIN_OBJECT_SIZE, MAX_OBJECT_SIZE, MAX_MAJOR_MINOR_RATIO, RAW_MEAN_MIN, RAW_MEAN_MAX
     global TILE_SHAPE_2D, HALO_2D, FINAL_QC_DOWNSAMPLE
     global DRY_RUN, TEST_RUN, SKIP_SUBDIRS
@@ -2200,8 +2253,9 @@ def _apply_config(config_path: str) -> None:
         MAIN_OUTPUT_FOLDER = cfg["output_root_folder"]
 
     # Segmentation backend + Cellpose params
-    if str(cfg.get("seg_backend", "")).strip().lower() in ("microsam", "cellpose", "stardist"):
+    if str(cfg.get("seg_backend", "")).strip().lower() in ("microsam", "microsam2", "cellpose", "stardist"):
         SEG_BACKEND = str(cfg["seg_backend"]).strip().lower()
+    MICROSAM2_MODEL = str(cfg.get("seg_microsam2_model") or MICROSAM2_DEFAULT_MODEL)
     CUSTOM_MODEL_PATH = str(cfg.get("seg_custom_model_path") or "").strip()
     CELLPOSE_MODEL_PATH = str(cfg.get("seg_cellpose_model_path") or "").strip()
     CELLPOSE_VARIANT = str(cfg.get("seg_cellpose_variant") or "cpsam").strip().lower()

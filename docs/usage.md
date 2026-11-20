@@ -175,8 +175,9 @@ copy of anything important and resolve those changes before pulling; Git may
 stop rather than overwrite them. Project data and the shared model library
 are separate from the repository when you follow the setup above.
 
-After an update that changes dependencies, rerun `setup-windows.cmd` on Windows.
-On macOS run `conda env update -f environment.yml --prune`. On Linux run:
+Always refresh the app environment after pulling code: Git does not install or
+update Python packages. Rerun `setup-windows.cmd` on Windows. On macOS run
+`conda env update -f environment.yml --prune`. On Linux run:
 
 ```bash
 PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
@@ -718,6 +719,12 @@ and press Return.
 application files in the checkout. Projects stored elsewhere and the shared
 model library are not part of that checkout. Check `git status` before pulling
 if you edited application files locally.
+
+**Why update the environment after `git pull`?** Git updates the code but does
+not install its Python dependencies. Run the platform-specific environment
+step in [Update an existing Git installation](#update-an-existing-git-installation)
+after each pull. If segmentation fails, copy the full traceback from the run
+log so the failing step is visible.
 
 **I moved the CellMatchR folder and the launcher stopped working.** Keep the
 macOS `.app` inside the checkout. On Windows recreate the shortcut with

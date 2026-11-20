@@ -99,11 +99,17 @@ shows how to find it.
 
 ## Upgrade CellMatchR
 
+**Every upgrade has two parts: pull the new code, then update the app
+environment.** `git pull` does not install new Python packages or update
+existing ones. Do both parts even if you have updated CellMatchR before.
+
 Close CellMatchR and let any running analysis or training finish. Open the
-same Terminal or PowerShell app used for installation. **Go to your existing
-CellMatchR-app folder; do not clone a second copy.** These commands use the
-default Desktop location. If you installed elsewhere, replace that path with
-your app folder.
+same Terminal or PowerShell app used for installation. Go to your **existing**
+CellMatchR-app folder; do not clone a second copy. These commands use the
+default Desktop location. If you installed elsewhere or your Desktop is stored
+in a different location, use the actual path to your app folder. On macOS,
+you can type `cd ` (with a space), drag that folder from Finder into Terminal,
+and press Return.
 
 **macOS or Linux Terminal:**
 
@@ -128,9 +134,10 @@ this in the same window:
 git pull --ff-only
 ```
 
-Once the code is updated, refresh the app environment for your system:
+**Next, refresh the environment using the updated setup files:**
 
-- **Windows:** Double-click `setup-windows.cmd` in the updated app folder.
+- **Windows:** Double-click `setup-windows.cmd` in the updated app folder and
+  wait for **Setup complete**. This also refreshes an existing Windows runtime.
 - **macOS:** In Terminal, still in the app folder, run
   `conda env update -f environment.yml --prune`.
 - **Linux:** In Terminal, still in the app folder, run:
@@ -140,9 +147,12 @@ Once the code is updated, refresh the app environment for your system:
     conda env update --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml --prune
   ```
 
-Open CellMatchR as usual. Your projects and shared trained models remain in
-their own folders. If you installed from a ZIP instead of cloning, download
-and extract a new ZIP for each version; `git pull` cannot update a ZIP copy.
+Wait for the environment command to finish, then reopen CellMatchR. If it
+fails, copy the full error from the run log; the last line alone may not show
+the cause. Your projects and shared trained models remain in their own
+folders. If you installed from a ZIP instead of cloning, download and extract
+a new ZIP for each version, then refresh the environment as above; `git pull`
+cannot update a ZIP copy.
 
 ## Run your first project
 

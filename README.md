@@ -162,24 +162,25 @@ cannot update a ZIP copy.
 3. **Segment** the channels you want to measure.
 4. **Review** the predictions and run **Analysis** to generate object tables
    and a colocalization workbook.
-5. **Retrain** in Step 7 if you want to fine-tune a model on reviewed masks.
+5. **Retrain** in Step 7 if you want to fine-tune a model on corrected masks.
 
 For detailed, step-by-step instructions, file formats, model choices, updating,
 and troubleshooting, see the [user guide](docs/usage.md).
 
 ## Retrain a model
 
-1. Finish **Step 4: Validation** for the images you want to use. Give real
-   cells their cell labels (including YES or NO); mark incorrect predictions
-   ARTIFACT and resolve every MAYBE.
-2. Open **Step 7: Retrain Models**. Choose the reviewed run and one channel,
+1. In **Step 4**, save your mask corrections: erase false predictions and draw
+   missed cells. Individual cell verification is optional when training on all
+   cells left in the corrected mask. Complete it if you want to train only
+   selected cell labels such as YES or NO.
+2. Open **Step 7: Retrain Models**. Choose the corrected run and one channel,
    the model family, starting weights, a name for the new model, and a training
-   preset. Leave cell labels unselected to train on all confirmed cells, or
-   check multiple labels for a specialized model. You can add reviewed images
+   preset. Leave cell labels unselected to use all kept cells, or check multiple
+   labels from completed cell reviews for a specialized model. You can add images
    from other projects and exclude images from this run.
 3. Choose how to check the result. **Reserve one whole image** is recommended
-   when you have at least two reviewed images. Click **Start Retraining**, then
-   compare the saved before/after report with the human-reviewed masks.
+   when you have at least two corrected images. Click **Start Retraining**, then
+   compare the saved before/after report with the corrected masks.
 
 The new model is saved separately in the shared CellMatchR model library and
 can be selected for later training or segmentation in any project. See the

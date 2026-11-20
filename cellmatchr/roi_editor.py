@@ -625,8 +625,8 @@ class RoiEditorApp:
 
         # ── Instructions ──
         sidecar_hint = (
-            " On iPad Sidecar: Pencil draws, one finger pans, Pencil "
-            "double-tap switches Add/Erase."
+            " On iPad Sidecar: Pencil draws, one finger pans, two fingers "
+            "pinch to zoom, and Pencil double-tap switches Add/Erase."
             if sys.platform == "darwin" else ""
         )
         instr = QLabel(

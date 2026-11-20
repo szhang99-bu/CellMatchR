@@ -354,7 +354,8 @@ window shows raw images, predicted objects, and drawing layers.
 | Save changes | Click **Save & Next**. **Skip** leaves the image unchanged; **Previous** returns; **Finish** ends the session. |
 
 On a Mac using an iPad as a Sidecar display, Apple Pencil draws or erases, one
-finger pans, and Pencil double-tap switches tools. This behavior is enabled
+finger pans, two fingers pinch to zoom, and Pencil double-tap switches tools.
+This behavior is enabled
 only for Sidecar; normal Napari mouse controls remain available. **Test mode**
 in Step 4 processes one image and saves to a `DEBUG_` file so you can inspect
 the result before changing production masks. Napari's ordinary eraser on the
@@ -439,11 +440,15 @@ and input folder in the summary before starting a long run.
 
 ## Step 7: Retrain a model
 
-Use completed human validation from Step 4. Choose the reviewed segmentation
-run, one channel, the model family to train, a starting model, and a **new model
-name**. Corrected masks provide the examples: confirmed cell labels,
-including YES and NO, become targets by default; ARTIFACT is background.
-Resolve MAYBE objects first. The masks can
+Use masks saved after correction in Step 4, or masks with completed individual
+cell verification. Choose the segmentation run, one channel, the model family
+to train, a starting model, and a **new model name**. If you leave cell labels
+unselected, all cells left in a saved corrected mask become training targets;
+erased predictions and cells explicitly marked ARTIFACT become background.
+You do not need to verify every cell individually for this default mode. To
+train only YES, NO, or other selected labels, complete individual cell
+verification first. Resolve any explicitly marked MAYBE objects before training.
+The masks can
 have been created with **any** model family. For example, reviewed Micro-SAM
 masks can teach a Cellpose model.
 
@@ -465,9 +470,9 @@ also makes it the current choice after training.
 
 | Control | What to choose and what happens |
 |---|---|
-| **Reviewed masks from** | Select the current project's segmentation run whose masks you corrected in Step 4. This supplies training labels; it does not choose the model whose weights will be changed. |
+| **Masks to train from** | Select the current project's segmentation run whose masks you corrected in Step 4 or verified cell by cell. This supplies training targets; it does not choose the model whose weights will be changed. |
 | **Channel to train** | Choose one channel found in that run. Step 7 trains one channel at a time; train channels 0, 1, and 2 separately if you need all three. The menu updates when the reviewed run changes. |
-| **Cell labels to train** | Leave every box unchecked (the default) to use **all confirmed cells**. Check one or more labels to make only those cells training targets. Other valid cell types become background in this specialized model, so it may stop detecting them. ARTIFACT always remains background and cannot be selected as a cell label. |
+| **Cell labels to train** | Leave every box unchecked (the default) to use **all cells kept in a saved corrected mask**; individual cell verification is optional. Check one or more labels after completing cell-by-cell review to make only those cells training targets. Other valid cell types become background in this specialized model, so it may stop detecting them. Erased predictions and ARTIFACT remain background and cannot be selected as cell labels. |
 | **Model family to train** | Pick **Micro-SAM**, **Cellpose**, or **StarDist**. This controls the training software, compatible starting weights, and later Step 3 model choice. Reviewed masks can come from a different family. |
 | **Initialize weights from** | Choose a built-in model or a previously saved fine-tuned model **of the selected family**. Continuing a fine-tuned model creates a *new* model; the prior checkpoint stays available. Use **Other starting model** under advanced settings only for a compatible checkpoint that is not listed. |
 | **Save new model as** | Give the result a recognizable name. The suggested name includes family, channel, and date; you can replace it. The field accepts 1–60 characters without slashes, backslashes, tabs, or line breaks. Each run creates a separate folder, even if you reuse a display name. |
@@ -489,25 +494,27 @@ written to the **current** project. Click **Refresh image library** after
 changing the sources.
 
 The library shows a color overlay of saved image channels without mask
-outlines. Each completed image's card lists approximate original proposals,
-reviewed ARTIFACT/erased predictions, training target cells, and the count
-for each reviewed cell label (for example, YES and NO). The label counts show
-all confirmed cell types in that image, even when you select only some as
-training targets. Uncheck an image to exclude it
-from this run. An image appears only after review is complete and every
-current object has a resolved decision. The log lists skipped images and why.
+outlines. Each image card lists approximate original proposals,
+ARTIFACT/erased predictions, and training target cells. A corrected mask with
+no individual cell review is marked **Mask corrected**; every remaining cell
+is treated as a target in the default mode. An image with completed cell
+review also lists counts for each cell label (for example, YES and NO). Those
+counts show all confirmed cell types, even when you select only some as
+training targets. Uncheck an image to exclude it from this run. The log lists
+skipped images and why.
 The listed counts help spot an unusual sample before starting; inspect the
 mask in Step 4 when a count is surprising.
 
 **Refresh image library** after changing the selected run or channel, adding
-a project, or changing review data. The gallery may show fewer images than a
-segmentation run contains: only usable, fully reviewed images are offered.
-With selected cell labels, an image containing none of those labels is
-automatically left out. Unchecking an image excludes it from this training
-run; it does not delete the image or its validation. If some images still
-need verification, **Start Retraining** asks whether to train only on the
-finished images. Choose **No** to finish review first; choosing **Yes** does
-not change unfinished images. When choosing a whole-image holdout, click the
+a project, or saving mask corrections or cell decisions. The gallery may show
+fewer images than a segmentation run contains: uncorrected masks without
+completed cell review are skipped. With selected cell labels, corrected masks
+without completed cell review and images containing none of those labels are
+left out. Unchecking an image excludes it from this training run; it does not
+delete the image or its validation. If some images are not ready for your
+training choice, **Start Retraining** asks whether to use only the ready
+images. Choose **No** to correct or review more images first; choosing
+**Yes** does not change skipped images. When choosing a whole-image holdout, click the
 **Choose held-out image from library** button and then that image's preview.
 Keep at least one other included image for training.
 
@@ -524,8 +531,8 @@ You must choose one of these before **Start Retraining** becomes available:
 
 | Choice | What stays out of training | When to use it |
 |---|---|---|
-| **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two reviewed images are available. This gives an independent before/after check. |
-| **Reserve a small patch** | A randomly chosen patch around marked ARTIFACT objects; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has reviewed artifacts still visible in the mask. The default target is 8 incorrect predictions; change the approximate target beside the selection button if needed. The report records the random seed, exact patch location, and actual count, which can be lower when few artifacts are available. If every false prediction was erased, choose a whole-image holdout or the in-sample option instead. |
+| **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two corrected or fully verified images are available. This gives an independent before/after check. |
+| **Reserve a small patch** | A randomly chosen patch around an ARTIFACT or erased prediction; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has a known incorrect prediction. Erased predictions can anchor the patch when the original prediction mask was saved by the editor. The default target is 8 incorrect predictions; the report records the random seed, exact patch location, and actual count. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
 
 ![Step 7 validation approach choices and held-out image button, circled in red](images/step7-validation-choice.png)
@@ -541,26 +548,30 @@ images for a stronger future comparison when possible.
 
 The **Target incorrect predictions per patch (approx.)** field applies only
 to the small-patch option. Its default is **8**, and it accepts **1–50**.
-The app chooses a fresh random location around reviewed incorrect objects on
+The app chooses a fresh random location around known incorrect predictions on
 each run. Eight is an approximate target, not a required count: nearby
 objects and image boundaries affect the actual patch. The report records the
 random seed, patch coordinates, and actual incorrect-object count so you can
 inspect exactly what was reserved. If the patch would leave no usable
-training cells, choose a whole-image holdout or include more reviewed data.
+training cells, choose a whole-image holdout or include more corrected data.
 
 **Start Retraining** becomes available when the selected images and
 validation choice are valid. Progress appears in **Retraining Log**. A
 training run can take substantially longer than the short trial preset;
 leave the app open until it reports completion or an error.
 
-After training, Step 7 reveals the training curve and reviewed reference,
+After training, Step 7 reveals the training curve and corrected reference,
 before, and after segmentation images below the log. The captions compare
-recall, missed cells, and false positives against the reviewed mask at an
+recall, missed cells, and false positives against the corrected or verified mask at an
 object IoU threshold of 0.5. Use **Open report folder** to inspect the full
 saved report in the current project's `Training_Reports` folder. The model
 remains in the shared model library even if report generation fails; the log
 and report folder explain that failure. Compare missed cells first when recall
 is your priority, then inspect false positives and actual mask shapes.
+When the reference is a corrected mask without individual cell review, the
+report says so. Its remaining unreviewed predictions are assumed to be cells,
+so the score measures agreement with that mask rather than fully verified
+cell accuracy.
 For a specialized model, the report uses only selected labels as its reference;
 predictions on other real cell types can therefore appear as off-target
 detections in its score. Those cells are still present in the source review
@@ -571,7 +582,7 @@ and are never relabeled ARTIFACT.
 | Preset | Epochs and learning rate | Training sample focus | Good first check |
 |---|---|---|---|
 | **High recall** | 20; `1e-5` | Repeat samples with human-added missed cells. | Fewer missed cells on the holdout. |
-| **Default training** | 20; `1e-5` | Use each reviewed sample once. | Compare with the starting model. |
+| **Default training** | 20; `1e-5` | Use each ready corrected or verified sample once. | Compare with the starting model. |
 | **High precision** | 20; `1e-5` | Repeat samples with ARTIFACT or erased predictions. | Check that recall has not fallen. |
 | **Gentle follow-up** | 8; `3e-6` | No extra repetition. | Small, stable change from a saved model. |
 | **Recall follow-up** | 8; `3e-6` | Repeat missed-cell samples. | Better held-out recall. |
@@ -820,27 +831,31 @@ Saved models appear in the starting-model and future-segmentation dropdowns.
 under **Initialize weights from**, give the new result its own name, and
 review held-out predictions after training. The previous checkpoint remains.
 
-**Can I combine reviewed images from several projects?** Yes. Use **Add another
+**Can I combine corrected images from several projects?** Yes. Use **Add another
 project** in Step 7 for each additional `cellmatchr_project.json`, then choose
 its run and channel. The image library shows which project each sample came
 from. Uncheck any sample that should not enter this training run.
 
-**Why is an image absent from the training library?** Finish its Step 4 review,
-resolve MAYBE decisions, and check that its raw channel and mask exist in the
-selected segmentation run. Click **Refresh image library** and read the
-skipped-sample reasons in the log.
+**Why is an image absent from the training library?** Save a mask correction
+with the Step 4 editor, or complete individual cell review. Resolve any
+explicit MAYBE decisions, check that the raw channel and mask exist in the
+selected run, then click **Refresh image library**. Read the skipped-sample
+reasons in the log.
 
 **Can I train while some images are still awaiting review?** Yes. When you
-start retraining, CellMatchR asks whether to use only images whose review is
-complete. **Yes** excludes unfinished images from that training run; **No**
-cancels so you can finish review. Unfinished decisions are not treated as
-negative examples.
+train without selecting cell labels, a saved corrected mask is ready even if
+individual cell review is unfinished. Other uncorrected images are skipped.
+If you select cell labels, only completed cell reviews qualify. CellMatchR
+asks before using only ready images when the chosen runs also contain images
+that are not ready.
 
 **What if I leave all cell labels unchecked?** That is the default: every
-confirmed cell label is a training target. To make a model for specific cell
-types, check one or more labels. Samples with none of the chosen labels are
-skipped, and unchosen cell types become background only in the training copy
-of the masks. The original masks and review decisions stay intact.
+cell kept in a saved corrected mask or fully verified mask is a training
+target. An unverified original prediction that remains in a corrected mask
+is assumed to be a cell. To make a model for specific cell types, complete
+cell-by-cell review and check one or more labels. Samples with none of the
+chosen labels are skipped, and unchosen cell types become background only
+in the training copy of the masks. Original masks and decisions stay intact.
 
 **Can I train all selected channels together?** Step 7 trains one channel at
 a time. Select another channel and create another named model if needed.
@@ -990,7 +1005,7 @@ Copy-Item "C:\path\to\MyProject\cellmatchr_project.json" "C:\path\to\MyProject\c
 
 Retraining takes arguments directly instead of `--config`. This short trial
 trains Micro-SAM from the built-in `vit_b_lm` weights using channel 1 of an
-existing `Segmentation` run. It needs at least two fully reviewed images for
+existing `Segmentation` run. It needs at least two corrected or fully verified images for
 the automatic holdout; replace the project path, run name, and channel with
 your own:
 
@@ -1001,23 +1016,26 @@ python -m cellmatchr.retraining \
   --channel 1 \
   --backend microsam \
   --base-model vit_b_lm \
-  --model-name "All reviewed cells trial" \
+  --model-name "Corrected masks trial" \
   --epochs 5 \
   --validation-mode automatic
 ```
 
-With **no `--cell-label` option**, every confirmed cell label, including YES
-and NO, is a target. ARTIFACT is background; resolve MAYBE first. For a
-specialized model, add `--cell-label YES` or repeat the option, for example
+With **no `--cell-label` option**, every remaining cell in a saved corrected
+mask or fully verified mask is a target. Erased predictions and ARTIFACT are
+background; resolve explicitly marked MAYBE objects first. For a specialized
+model, complete individual cell review, then add `--cell-label YES` or repeat
+the option, for example
 `--cell-label YES --cell-label NO`. Only the named labels are targets; other
 valid cell types become background in the temporary training masks. Images
 with no selected target label are skipped. The source masks and review files
 are not changed. The training report records the selected labels.
 
-If any image in the selected run still needs review, the CLI stops before
-training. Add `--allow-completed-only` **only if** you want to train on the
-fully reviewed images and skip the unfinished ones; the app asks this as a
-Yes/No question. For a single usable image, use `--validation-mode training_image`
+If the run also contains uncorrected, unverified images, the CLI stops before
+training. Add `--allow-completed-only` to use ready images and skip the rest;
+the app asks this as a Yes/No question. With `--cell-label`, corrected images
+without completed cell reviews also count as not ready. For a single usable
+image, use `--validation-mode training_image`
 for an in-sample check, but that score does not measure performance on new
 images. See [Choose a validation approach](#choose-a-validation-approach)
 before judging a model. Training saves a **new** model under

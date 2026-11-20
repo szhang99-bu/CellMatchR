@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,8 +15,10 @@ from cellmatchr.retraining import (collect_source_examples, plan_examples,
                                   project_runs, _prepare_pair,
                                   microsam_architecture, select_training_labels,
                                   train_model)
+from cellmatchr.roi_editor import _preserve_prediction_baseline
 from cellmatchr.training_gallery import composite_preview, project_preview_settings
 from cellmatchr.training_report import (build_report, object_scores, save_history)
+from cellmatchr.validation_state import save_edited_mask
 
 
 class TrainingWorkflowTests(unittest.TestCase):
@@ -55,6 +58,90 @@ class TrainingWorkflowTests(unittest.TestCase):
             "label_id\tchannel\n9\t1\n")
         return folder
 
+    def corrected_without_cell_review(self, run, name, channel=1):
+        folder = self.sample(run, name, channel=channel, complete=False)
+        shutil.rmtree(folder / "ROI Validation Results")
+        mask_path = next(folder.glob(f"*_predict_original_ch{channel}*.tif"))
+        baseline_path = Path(_preserve_prediction_baseline(str(mask_path), channel))
+        before = tifffile.imread(mask_path)
+        corrected = before.copy()
+        corrected[corrected == 2] = 0
+        corrected[480:510, 480:510] = 4
+        save_edited_mask(str(mask_path), channel, before, corrected)
+        return folder, mask_path, baseline_path
+
+    def test_saved_erase_and_draw_can_train_without_cell_review(self):
+        project, run = self.project("current")
+        folder, mask_path, baseline_path = self.corrected_without_cell_review(run, "edited")
+        source = [{"project": str(project), "seg_run": run.name, "channel": 1}]
+        examples, skipped, unfinished = collect_source_examples(
+            source, with_review_status=True)
+        self.assertEqual((skipped, unfinished), ([], []))
+        example = examples[0]
+        self.assertEqual(example["review_level"], "mask_correction")
+        self.assertEqual(example["accepted_ids"], [1, 3, 4])
+        self.assertEqual(example["label_ids"], {})
+        self.assertEqual(example["manual_added_ids"], [4])
+        self.assertEqual(example["erased_prediction_ids"], [2])
+        self.assertEqual((example["original_count"], example["incorrect_count"]), (3, 1))
+        with tempfile.TemporaryDirectory() as stage:
+            _raw, labels_path = _prepare_pair(example, Path(stage), 0,
+                                              "raw_percentile")
+            self.assertEqual(set(np.unique(tifffile.imread(labels_path))), {0, 1, 3, 4})
+        with patch("cellmatchr.retraining.secrets.randbits", return_value=123456):
+            train, heldout, plan = plan_examples(examples, "patch", patch_target_incorrect=1)
+        self.assertTrue(train)
+        self.assertEqual(plan["incorrect_objects_in_patch"], 1)
+        self.assertEqual(heldout[0]["sample"], "edited")
+        mask_bytes, baseline_bytes = mask_path.read_bytes(), baseline_path.read_bytes()
+
+        def fake_trainer(train_pairs, _validation_pairs, output, *_args):
+            self.assertEqual(set(np.unique(tifffile.imread(train_pairs[0][1]))),
+                             {0, 1, 3, 4})
+            model = output / "weights.pth"
+            model.touch()
+            return str(model)
+
+        with patch.dict(os.environ, {"CELLMATCHR_MODEL_LIBRARY":
+                                  str(self.root / "models")}), \
+             patch.dict("cellmatchr.retraining.TRAINERS", {"cellpose": fake_trainer}):
+            result = train_model(str(project), run.name, 1, "cellpose", 1,
+                                 validation_mode="training_image", sources=source)
+        self.assertEqual(result["training_images"][0]["review_level"], "mask_correction")
+        corrected = tifffile.imread(mask_path)
+        with patch("cellmatchr.training_report._predict_mask",
+                   side_effect=[np.zeros_like(corrected), corrected]):
+            report_path = build_report(project, Path(result["model_path"]).parent,
+                                       result, examples, "", "raw_percentile")
+        report = json.loads(report_path.read_text())
+        self.assertEqual(report["validation"][0]["review_level"], "mask_correction")
+        self.assertEqual(mask_path.read_bytes(), mask_bytes)
+        self.assertEqual(baseline_path.read_bytes(), baseline_bytes)
+
+    def test_cell_label_training_excludes_unverified_corrected_masks(self):
+        project, run = self.project("current")
+        self.sample(run, "done")
+        self.corrected_without_cell_review(run, "edited")
+        source = [{"project": str(project), "seg_run": run.name, "channel": 1}]
+        with self.assertRaisesRegex(ValueError, "Confirm training on ready images"):
+            train_model(str(project), run.name, 1, "cellpose", 1,
+                        validation_mode="training_image", sources=source,
+                        selected_labels=["YES"])
+
+        def fake_trainer(_train, _validation, output, *_args):
+            model = output / "weights.pth"
+            model.touch()
+            return str(model)
+
+        with patch.dict(os.environ, {"CELLMATCHR_MODEL_LIBRARY":
+                                  str(self.root / "models")}), \
+             patch.dict("cellmatchr.retraining.TRAINERS", {"cellpose": fake_trainer}):
+            result = train_model(str(project), run.name, 1, "cellpose", 1,
+                                 validation_mode="training_image", sources=source,
+                                 selected_labels=["YES"], allow_completed_only=True)
+        self.assertEqual(result["training_samples"], ["done"])
+        self.assertEqual(result["selected_cell_labels"], ["YES"])
+
     def test_cell_label_selection_preserves_artifact_meaning(self):
         project, run = self.project("current")
         self.sample(run, "a")
@@ -88,7 +175,7 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.assertEqual([item["sample"] for item in examples], ["done"])
         self.assertEqual(len(skipped), 1)
         self.assertEqual(len(unfinished), 1)
-        with self.assertRaisesRegex(ValueError, "Confirm training on completed images"):
+        with self.assertRaisesRegex(ValueError, "Confirm training on ready images"):
             train_model(str(project), run.name, 1, "cellpose", 1,
                         validation_mode="training_image", sources=sources)
 

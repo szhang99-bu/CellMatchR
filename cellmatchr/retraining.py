@@ -41,12 +41,12 @@ TRAINING_PRESETS = {
         "sampling_focus": "missed_cells",
     },
     "Default training": {
-        "description": "Use every reviewed sample once with the standard learning rate and a separate validation set.",
+        "description": "Use every ready corrected or verified sample once with the standard learning rate and a separate validation set.",
         "epochs": 20, "learning_rate": 1e-5, "validation_percent": 20,
         "sampling_focus": "none",
     },
     "High precision": {
-        "description": "Repeat samples with ARTIFACT predictions. Check held-out recall so real cells are still found.",
+        "description": "Repeat samples with ARTIFACT or erased predictions. Check held-out recall so real cells are still found.",
         "epochs": 20, "learning_rate": 1e-5, "validation_percent": 25,
         "sampling_focus": "rejected_cells",
     },
@@ -56,12 +56,12 @@ TRAINING_PRESETS = {
         "sampling_focus": "none",
     },
     "Recall follow-up": {
-        "description": "Continue a saved model gently while repeating reviewed samples with manually added cells.",
+        "description": "Continue a saved model gently while repeating samples with manually added cells.",
         "epochs": 8, "learning_rate": 3e-6, "validation_percent": 25,
         "sampling_focus": "missed_cells",
     },
     "Precision follow-up": {
-        "description": "Continue a saved model gently while repeating samples with ARTIFACT predictions; check missed cells afterward.",
+        "description": "Continue a saved model gently while repeating samples with ARTIFACT or erased predictions; check missed cells afterward.",
         "epochs": 8, "learning_rate": 3e-6, "validation_percent": 25,
         "sampling_focus": "rejected_cells",
     },
@@ -292,7 +292,7 @@ def project_runs(project_file: str) -> list[dict]:
 
 
 def collect_source_examples(sources: list[dict], *, with_review_status: bool = False):
-    """Read reviewed images from one or more projects, never altering sources."""
+    """Read corrected or verified images from projects without altering sources."""
     examples, skipped, unfinished, seen = [], [], [], set()
     for source in sources:
         project = Path(source["project"]).expanduser().resolve()
@@ -321,7 +321,7 @@ def collect_source_examples(sources: list[dict], *, with_review_status: bool = F
 
 
 def collect_examples(seg_folder: str, channel: int, *, with_review_status: bool = False):
-    """Find fully reviewed pairs; only ARTIFACT is a false prediction."""
+    """Find verified masks or masks saved after correction in the editor."""
     root = Path(seg_folder)
     if not root.is_dir():
         raise FileNotFoundError(f"Segmentation run not found: {root}")
@@ -334,57 +334,69 @@ def collect_examples(seg_folder: str, channel: int, *, with_review_status: bool 
             skipped.append(f"{sample.name}: raw image or channel mask missing")
             continue
         state = get_change_state(str(sample), channel, mask)
-        if state["status"] in ("pending", "unknown") or not _review_complete(sample, channel):
-            reason = f"{sample.name}: finish channel {channel} validation first"
+        if state["status"] == "unknown":
+            reason = f"{sample.name}: mask changes need review in the editor"
+            skipped.append(reason)
+            unfinished.append(reason)
+            continue
+        labels = read_tiff(mask)
+        present = {int(v) for v in np.unique(labels) if v > 0}
+        baseline_path = _prediction_baseline_path(mask, channel)
+        baseline_exists = os.path.isfile(baseline_path)
+        baseline_ids = set()
+        corrected = False
+        if baseline_exists:
+            baseline = read_tiff(baseline_path)
+            if baseline.shape != labels.shape:
+                raise ValueError(f"{sample.name}: prediction baseline shape differs from edited mask")
+            baseline_ids = {int(value) for value in np.unique(baseline) if value > 0}
+            corrected = not np.array_equal(baseline, labels)
+        verified = (state["status"] != "pending"
+                    and _review_complete(sample, channel))
+        if not verified and not corrected:
+            reason = f"{sample.name}: correct the mask or finish channel {channel} validation"
             skipped.append(reason)
             unfinished.append(reason)
             continue
         review = get_validation_tsv_path(str(sample), channel)
-        if not review:
+        if verified and not review:
             reason = f"{sample.name}: validation decisions missing"
             skipped.append(reason)
             unfinished.append(reason)
             continue
-        decisions = _decisions(review)
-        labels = read_tiff(mask)
-        present = {int(v) for v in np.unique(labels) if v > 0}
-        if present - decisions.keys():
-            reason = f"{sample.name}: some current cells have no decision"
+        decisions = _decisions(review) if review else {}
+        if verified and (present - decisions.keys() or
+                         any(not decisions[v] for v in present)):
+            reason = f"{sample.name}: some current cells have no resolved decision"
             skipped.append(reason)
             unfinished.append(reason)
             continue
-        if any(not decisions[v] for v in present):
-            reason = f"{sample.name}: some current cells have an empty label"
-            skipped.append(reason)
-            unfinished.append(reason)
-            continue
-        if any(decisions[v] == "MAYBE" for v in present):
+        if any(decisions.get(v) == "MAYBE" for v in present):
             reason = f"{sample.name}: resolve MAYBE cells before training"
             skipped.append(reason)
             unfinished.append(reason)
             continue
-        accepted = {v for v in present if decisions[v] != "ARTIFACT"}
+        accepted = {v for v in present if decisions.get(v) != "ARTIFACT"}
         artifacts = present - accepted
         if not accepted:
-            skipped.append(f"{sample.name}: no labeled cells to train on")
+            skipped.append(f"{sample.name}: no cells to train on")
             continue
         additions = _logged_ids(sample / f"_manual_additions_ch{channel}.tsv", "label_id")
         deletions = _logged_ids(sample / f"_manual_deletions_ch{channel}.tsv", "label_id")
-        erased_ids = deletions - present
-        baseline_path = _prediction_baseline_path(mask, channel)
-        if os.path.isfile(baseline_path):
-            baseline = read_tiff(baseline_path)
-            if baseline.shape != labels.shape:
-                raise ValueError(f"{sample.name}: prediction baseline shape differs from edited mask")
-            original_count = len({int(value) for value in np.unique(baseline)
-                                  if value > 0})
+        if baseline_exists:
+            erased_ids = baseline_ids - present
+            original_count = len(baseline_ids)
+            additions |= present - baseline_ids
         else:
             # Older edited projects may have no pre-edit mask to consult.
+            erased_ids = deletions - present
             original_count = len(present - additions) + len(erased_ids)
         accepted_additions = additions & accepted
-        label_ids = {word: sorted(v for v in accepted if decisions[v] == word)
-                     for word in sorted({decisions[v] for v in accepted})}
+        label_ids = ({word: sorted(v for v in accepted if decisions[v] == word)
+                      for word in sorted({decisions[v] for v in accepted})}
+                     if verified else {})
         examples.append({"sample": sample.name, "raw": raw, "mask": mask,
+                         "review_level": "cell_labels" if verified else "mask_correction",
                          "accepted_ids": sorted(accepted),
                          "label_ids": label_ids,
                          "manual_added_ids": sorted(accepted_additions),
@@ -396,7 +408,7 @@ def collect_examples(seg_folder: str, channel: int, *, with_review_status: bool 
                          "incorrect_count": len(artifacts) + len(erased_ids),
                          "final_count": len(accepted),
                          "deletion_count": len(erased_ids),
-                         "prediction_baseline": baseline_path if os.path.isfile(baseline_path) else ""})
+                         "prediction_baseline": baseline_path if baseline_exists else ""})
     return (examples, skipped, unfinished) if with_review_status else (examples, skipped)
 
 
@@ -458,18 +470,27 @@ def _patch_validation_split(example: dict, target_incorrect: int,
     labels = read_tiff(example["mask"])
     if labels.ndim != 2:
         raise ValueError(f"{example['sample']}: patch validation needs a 2D mask")
-    rejected = [int(value) for value in example.get("rejected_ids", [])
-                if np.any(labels == value)]
-    if not rejected:
-        raise ValueError("Patch validation needs at least one reviewed ARTIFACT "
-                         "object in the selected image")
+    baseline_path = example.get("prediction_baseline")
+    baseline = read_tiff(baseline_path) if baseline_path else None
+    if baseline is not None and baseline.shape != labels.shape:
+        raise ValueError(f"{example['sample']}: prediction baseline shape differs from edited mask")
     centers = {}
-    for value in rejected:
+    for value in example.get("rejected_ids", []):
         y, x = np.where(labels == value)
-        centers[value] = (float(y.mean()), float(x.mean()))
-    anchor = rejected[int(rng.integers(len(rejected)))]
+        if y.size:
+            centers[int(value)] = (float(y.mean()), float(x.mean()))
+    if baseline is not None:
+        for value in example.get("erased_prediction_ids", []):
+            y, x = np.where(baseline == value)
+            if y.size:
+                centers[int(value)] = (float(y.mean()), float(x.mean()))
+    if not centers:
+        raise ValueError("Patch validation needs a reviewed ARTIFACT or erased "
+                         "prediction with a preserved original mask")
+    incorrect = sorted(centers)
+    anchor = incorrect[int(rng.integers(len(incorrect)))]
     ay, ax = centers[anchor]
-    chosen = sorted(rejected, key=lambda value:
+    chosen = sorted(incorrect, key=lambda value:
                     (centers[value][0] - ay) ** 2 + (centers[value][1] - ax) ** 2
                     )[:max(1, target_incorrect)]
     accepted_centers = {}
@@ -482,7 +503,10 @@ def _patch_validation_split(example: dict, target_incorrect: int,
     closest_yes = min(accepted_centers, key=lambda value:
                       (accepted_centers[value][0] - ay) ** 2 +
                       (accepted_centers[value][1] - ax) ** 2)
-    selected = np.isin(labels, chosen + [closest_yes])
+    selected = labels == closest_yes
+    for value in chosen:
+        selected |= ((baseline if baseline is not None and
+                      value in example.get("erased_prediction_ids", []) else labels) == value)
     ys, xs = np.where(selected)
     height, width = labels.shape
     patch_h = min(height, max(256, int(ys.max() - ys.min() + 65)))
@@ -506,7 +530,8 @@ def _patch_validation_split(example: dict, target_incorrect: int,
             continue
         training.append(dict(example, crop=box, accepted_ids=trainable_ids,
                              sample=f"{example['sample']} [outside holdout {len(training)+1}]"))
-    contained = set(np.unique(labels[y0:y1, x0:x1]).tolist()) & set(rejected)
+    contained = {value for value, (y, x) in centers.items()
+                 if y0 <= y < y1 and x0 <= x < x1}
     return training, heldout, {"crop": [y0, y1, x0, x1],
                                "incorrect_objects_in_patch": len(contained)}
 
@@ -518,10 +543,10 @@ def plan_examples(examples: list[dict], validation_mode: str,
                   ) -> tuple[list[dict], list[dict], dict]:
     """Create an explicit split, including the disclosed in-sample option."""
     if not examples:
-        raise ValueError("No reviewed images are selected for training")
+        raise ValueError("No corrected or verified images are selected for training")
     if validation_mode == "automatic":
         if len(examples) < 2:
-            raise ValueError("At least two reviewed images are needed")
+            raise ValueError("At least two training images are needed")
         count = max(1, round(len(examples) * validation_percent / 100))
         return examples[:-count], examples[-count:], {"mode": "automatic"}
     if validation_mode == "whole_image":
@@ -542,9 +567,13 @@ def plan_examples(examples: list[dict], validation_mode: str,
             raise ValueError("Incorrect predictions per patch must be 1–50")
         candidates = ([item for item in examples if item["key"] == validation_key]
                       if validation_key else examples)
-        candidates = [item for item in candidates if item.get("rejected_ids")]
+        candidates = [item for item in candidates if
+                      item.get("rejected_ids") or
+                      (item.get("erased_prediction_ids") and
+                       item.get("prediction_baseline"))]
         if not candidates:
-            raise ValueError("Patch validation needs an image with reviewed ARTIFACT objects")
+            raise ValueError("Patch validation needs an image with ARTIFACT or "
+                             "erased predictions whose original mask is preserved")
         random_seed = secrets.randbits(64)
         rng = np.random.default_rng(random_seed)
         choice = candidates[int(rng.integers(len(candidates)))]
@@ -759,9 +788,14 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
     else:
         examples, skipped, unfinished = collect_source_examples(
             sources, with_review_status=True)
+    if selected_labels:
+        unfinished.extend(
+            f"{item['project_name']} / {item['seg_run']} / ch{item['channel']} / "
+            f"{item['sample']}: individual cell labels not verified"
+            for item in examples if item["review_level"] != "cell_labels")
     if unfinished and not allow_completed_only:
-        raise ValueError(f"{len(unfinished)} image(s) still need verification or "
-                         "a resolved cell label. Confirm training on completed images only.")
+        raise ValueError(f"{len(unfinished)} image(s) are not ready for this "
+                         "training choice. Confirm training on ready images only.")
     for reason in skipped:
         print(f"[SKIP] {reason}", flush=True)
     excluded = set(excluded_keys or ())
@@ -771,11 +805,12 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
     for reason in label_skips:
         print(f"[SKIP] {reason}", flush=True)
     if not examples:
-        raise ValueError("No verified images contain training targets for the chosen labels")
+        raise ValueError("No corrected or verified images contain training targets "
+                         "for the chosen labels")
     train_examples, val_examples, split = plan_examples(
         examples, validation_mode, validation_key, patch_target_incorrect,
         advanced.get("validation_percent", 20))
-    print(f"Reviewed targets: {sum(len(e['accepted_ids']) for e in examples)} labeled cells; "
+    print(f"Training targets: {sum(len(e['accepted_ids']) for e in examples)} cells; "
           f"{sum(e['incorrect_count'] for e in examples)} incorrect predictions "
           "(ARTIFACT or erased) across "
           f"{len(examples)} samples", flush=True)
@@ -835,6 +870,7 @@ def train_model(project: str, seg_run: str, channel: int, backend: str,
                                        "seg_run": e["seg_run"],
                                        "channel": e["channel"],
                                        "sample": e["sample"],
+                                       "review_level": e["review_level"],
                                        "crop": e.get("crop"),
                                        "prediction_baseline": e.get("prediction_baseline", ""),
                                        "original_proposals": e["original_count"],
@@ -901,7 +937,7 @@ def main() -> None:
     parser.add_argument("--sources-json", help="JSON list of project/run/channel sources")
     parser.add_argument("--exclude-key", action="append", default=[])
     parser.add_argument("--allow-completed-only", action="store_true",
-                        help="Train only on fully verified images when some are unfinished")
+                        help="Use ready corrected or verified images when other images are unfinished")
     parser.add_argument("--cell-label", action="append", default=[],
                         help="Train selected cell labels; repeat for multiple labels")
     parser.add_argument("--validation-mode", choices=("automatic", "whole_image",

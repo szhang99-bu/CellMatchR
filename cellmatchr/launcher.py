@@ -5133,7 +5133,7 @@ class CellMatchrLauncher:
                                                  sticky="w", pady=4)
             widget.grid(row=number, column=1, sticky="ew", padx=8, pady=4)
 
-        row(0, "Reviewed masks from:", ttk.Combobox(
+        row(0, "Masks to train from:", ttk.Combobox(
             grid, textvariable=run_var, values=variants, state="readonly"))
         channel_box = ttk.Combobox(grid, textvariable=channel_var,
                                    state="readonly")
@@ -5156,7 +5156,8 @@ class CellMatchrLauncher:
         row(4, "Save new model as:", tk.Entry(grid, textvariable=model_name_var,
                                              bg=BG, fg=FG,
                                              insertbackground=FG, relief="flat"))
-        tk.Label(card, text=("Reviewed masks supply the teaching examples. They can come from "
+        tk.Label(card, text=("Saved mask corrections or completed cell reviews supply the teaching examples. "
+                             "The masks can come from "
                              "Micro-SAM, Cellpose, or StarDist even when you train another model family. "
                              "Initialize weights from chooses the starting model within the family "
                              "you will train. Your named result is saved separately in the shared library."),
@@ -5544,11 +5545,11 @@ class CellMatchrLauncher:
                        variable=use_var, bg=CARD, fg=FG, selectcolor=BG,
                        activebackground=CARD, font=FONT).pack(anchor="w", pady=(8, 4))
 
-        # An imported project is a source of reviewed masks, not a place where
+        # An imported project is a source of corrected masks, not a place where
         # training writes results. The current project remains the report home.
         sources_card = self._card(parent, "Training projects")
         tk.Label(sources_card, text=("The current project is included automatically. "
-                                     "Add other reviewed projects to train from more images."),
+                                     "Add other projects with corrected masks or completed cell reviews."),
                  bg=CARD, fg=MUTED, font=FONT, wraplength=730,
                  justify="left").pack(anchor="w")
         imported_rows = []
@@ -5581,7 +5582,7 @@ class CellMatchrLauncher:
                                    "seg_run": entry["run"].get(),
                                    "channel": int(entry["channel"].get())})
             if not result:
-                raise ValueError("Choose a reviewed run in this project or add another project")
+                raise ValueError("Choose a segmentation run in this project or add another project")
             return result
 
         def add_project_row():
@@ -5661,9 +5662,10 @@ class CellMatchrLauncher:
 
         labels_card = self._card(parent, "Cell labels to train")
         tk.Label(labels_card, text=(
-            "Leave every label unchecked to train on all verified cells (default). "
-            "Check one or more labels to train a specialized model for only those cells. "
-            "Other cell labels become background in that model; ARTIFACT is always background."),
+            "Leave every label unchecked (default) to train on all cells kept in a saved "
+            "corrected mask; individual cell verification is not required. Erased predictions "
+            "and ARTIFACT labels are background. Select labels only after completing individual "
+            "cell review; other cell types become background in that specialized model."),
             bg=CARD, fg=MUTED, font=FONT, wraplength=740,
             justify="left").pack(anchor="w", pady=(0, 5))
         label_choices_frame = tk.Frame(labels_card, bg=CARD)
@@ -5673,11 +5675,11 @@ class CellMatchrLauncher:
         gallery_card = self._card(parent, "Images available for training")
         tk.Label(gallery_card, text=("Uncheck images that should not be used. Previews combine "
                                      "all saved channels without mask outlines. Counts show "
-                                     "original proposals, ARTIFACT/erased predictions, verified cells, "
-                                     "and the count for each reviewed cell label."),
+                                     "original proposals, ARTIFACT/erased predictions, training cells, "
+                                     "and any completed cell-label counts."),
                  bg=CARD, fg=MUTED, font=FONT, wraplength=740,
                  justify="left").pack(anchor="w", pady=(0, 4))
-        gallery_summary = tk.Label(gallery_card, text="Checking reviewed images…",
+        gallery_summary = tk.Label(gallery_card, text="Checking corrected and reviewed images…",
                                    bg=CARD, fg=MUTED, font=FONT, anchor="w")
         gallery_summary.pack(anchor="w", pady=(0, 4))
         gallery_canvas = tk.Canvas(gallery_card, bg=CARD, height=390,
@@ -5717,7 +5719,7 @@ class CellMatchrLauncher:
             ("whole_image", "Reserve one whole image (recommended)",
              "Keep a chosen image out of training; compare before and after on it."),
             ("patch", "Reserve a small patch (small dataset)",
-             "Choose a random patch around reviewed incorrect predictions; "
+             "Choose a random patch around an ARTIFACT or erased prediction; "
              "its pixels stay out of training."),
             ("training_image", "Use all images for training (very small dataset)",
              "Evaluate on a trained image. Results are in-sample, not independent validation."),
@@ -5746,7 +5748,7 @@ class CellMatchrLauncher:
         validation_hint.pack(anchor="w", pady=(4, 6))
         actions = tk.Frame(validation_card, bg=CARD)
         actions.pack(anchor="w", pady=6)
-        status = tk.Label(validation_card, text="Checking reviewed samples…",
+        status = tk.Label(validation_card, text="Checking saved masks…",
                           bg=CARD, fg=MUTED, font=FONT, wraplength=720,
                           justify="left")
         status.pack(anchor="w", pady=(3, 0))
@@ -5788,8 +5790,12 @@ class CellMatchrLauncher:
                          font=FONT_BOLD).pack(anchor="w", pady=(0, 4))
                 for entry in report.get("validation", []):
                     before, after = entry["before"], entry["after"]
+                    reference = ("corrected mask (individual labels not verified)"
+                                 if entry.get("review_level") == "mask_correction" else
+                                 "cell-verified mask")
                     caption = (f"{os.path.basename(entry['project'])} / "
-                               f"{entry['sample']}:  recall {before['recall']:.1%} → "
+                               f"{entry['sample']} — {reference}:  "
+                               f"recall {before['recall']:.1%} → "
                                f"{after['recall']:.1%}; missed cells "
                                f"{before['missed_cell']} → {after['missed_cell']}; "
                                f"false positives {before['false_positive']} → "
@@ -5869,24 +5875,28 @@ class CellMatchrLauncher:
                     valid_target = 1 <= int(patch_target_var.get()) <= 50
                 except ValueError:
                     valid_target = False
-                ready = (ready and valid_target and
-                         any(item.get("rejected_ids") for item in included))
+                ready = (ready and valid_target and any(
+                    item.get("rejected_ids") or
+                    (item.get("erased_prediction_ids") and item.get("prediction_baseline"))
+                    for item in included))
             if start_button_ref[0] is not None:
                 start_button_ref[0].config(state="normal" if ready else "disabled")
             if mode == "whole_image":
                 selected = next((item for item in included if item["key"] == key), None)
                 validation_hint.config(
-                    text=("Include at least two reviewed images to reserve one."
+                    text=("Include at least two training images to reserve one."
                           if len(included) < 2 else
                           f"Reserved: {selected['project_name']} / {selected['sample']}"
                           if selected else "Click ‘Choose held-out image’, then click a preview."),
                     fg=ACCENT if selected else MUTED)
             elif mode == "patch":
                 hint = ("Enter a target from 1 to 50." if not valid_target else
-                        "No marked incorrect objects are available; erased objects "
-                        "alone cannot locate a patch." if not any(
-                            item.get("rejected_ids") for item in included) else
-                        "A marked incorrect object anchors a random patch. "
+                        "No ARTIFACT or erased prediction with a saved original mask "
+                        "is available to locate a patch." if not any(
+                            item.get("rejected_ids") or
+                            (item.get("erased_prediction_ids") and
+                             item.get("prediction_baseline")) for item in included) else
+                        "An ARTIFACT or erased prediction anchors a random patch. "
                         "The report records its exact location and count.")
                 validation_hint.config(text=hint, fg=MUTED)
             elif mode == "training_image":
@@ -5909,7 +5919,7 @@ class CellMatchrLauncher:
                     counts[word] = counts.get(word, 0) + len(ids)
             if not counts:
                 tk.Label(label_choices_frame,
-                         text="Labels appear after reviewed images are found.",
+                         text="Label choices appear after completed individual cell reviews.",
                          bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
                 return
             for word in sorted(counts):
@@ -5936,7 +5946,7 @@ class CellMatchrLauncher:
             gallery_state["photos"] = []
             items = gallery_state["examples"]
             if not items:
-                tk.Label(gallery_grid, text="No fully reviewed images found in these runs.",
+                tk.Label(gallery_grid, text="No saved corrected masks or completed cell reviews found.",
                          bg=CARD, fg=YELLOW, font=FONT).grid(row=0, column=0,
                                                               sticky="w", pady=10)
             for index, item in enumerate(items):
@@ -5995,7 +6005,10 @@ class CellMatchrLauncher:
                          wraplength=330, justify="left").pack(anchor="w")
                 label_counts = "  ·  ".join(
                     f"{word}: {len(ids)}" for word, ids in sorted(item["label_ids"].items()))
-                tk.Label(tile, text=f"Reviewed cell labels: {label_counts}",
+                review_note = (f"Completed cell labels: {label_counts}"
+                               if item["review_level"] == "cell_labels" else
+                               "Mask corrected; individual cell labels not required")
+                tk.Label(tile, text=review_note,
                          bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
                          wraplength=330, justify="left").pack(anchor="w")
             for column in (0, 1):
@@ -6021,7 +6034,7 @@ class CellMatchrLauncher:
             gallery_state["sources"] = ""
             update_start_state()
             check_btn.config(state="disabled")
-            status.config(text="Checking reviewed samples…", fg=ACCENT)
+            status.config(text="Checking corrected and reviewed masks…", fg=ACCENT)
             def worker():
                 try:
                     from .retraining import collect_source_examples
@@ -6055,10 +6068,13 @@ class CellMatchrLauncher:
                             render_gallery()
                             cell_count = sum(len(item["accepted_ids"]) for item in examples)
                             rejected_count = sum(item["incorrect_count"] for item in examples)
-                            status.config(text=(f"{len(examples)} reviewed sample(s) ready "
-                                                f"({cell_count} labeled cells, {rejected_count} "
-                                                f"incorrect predictions); "
-                                                f"{len(unfinished)} need verification, "
+                            mask_only_count = sum(item["review_level"] == "mask_correction"
+                                                  for item in examples)
+                            status.config(text=(f"{len(examples)} sample(s) ready "
+                                                f"({mask_only_count} corrected masks without "
+                                                f"cell-label review; {cell_count} training cells, "
+                                                f"{rejected_count} incorrect predictions); "
+                                                f"{len(unfinished)} not ready, "
                                                 f"{len(skipped) - len(unfinished)} other skipped."),
                                           fg=GREEN if examples else YELLOW)
                             for reason in skipped:
@@ -6095,7 +6111,7 @@ class CellMatchrLauncher:
                 if not mode:
                     raise ValueError("Choose how to validate training below the image library")
                 if not included:
-                    raise ValueError("Include at least one reviewed image")
+                    raise ValueError("Include at least one corrected or verified image")
                 holdout = validation_key_var.get() if mode == "whole_image" else ""
                 if mode == "whole_image" and (len(included) < 2 or not any(
                         item["key"] == holdout for item in included)):
@@ -6150,19 +6166,23 @@ class CellMatchrLauncher:
                     return
             chosen_preprocess = preprocess_var.get()
             use_trained_model = use_var.get()
-            unfinished = gallery_state["unfinished"]
+            unfinished = list(gallery_state["unfinished"])
+            if selected_cell_labels():
+                unfinished.extend(
+                    f"{item['sample']}: individual cell labels not verified"
+                    for item in gallery_state["examples"]
+                    if item["review_level"] != "cell_labels")
             allow_completed_only = False
             if unfinished:
                 allow_completed_only = messagebox.askyesno(
-                    "Some images are not fully verified",
-                    f"{len(unfinished)} image(s) still need verification or a "
-                    "resolved cell label.\n\n"
-                    f"Train using only the {len(included)} included, fully "
-                    "verified image(s)?\n\n"
-                    "No leaves everything as it is so you can finish review.",
+                    "Some images are not ready",
+                    f"{len(unfinished)} image(s) cannot be used with these training "
+                    "choices yet.\n\n"
+                    f"Train using the {len(included)} included, ready image(s) only?\n\n"
+                    "No cancels training so you can correct or review more images.",
                     parent=self.root, default=messagebox.NO)
                 if not allow_completed_only:
-                    status.config(text="Training canceled; finish verification or try again.",
+                    status.config(text="Training canceled; correct or review more images first.",
                                   fg=YELLOW)
                     return
             cmd = [sys.executable, "-m", "cellmatchr.retraining",

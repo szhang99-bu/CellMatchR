@@ -1062,7 +1062,7 @@ class VSINapariROIApp:
         if sys.platform == "darwin":
             sidecar_hint = QLabel(
                 "iPad Sidecar: draw ROIs with Pencil, drag one finger to pan, "
-                "double-tap Pencil to switch Draw/Select."
+                "pinch with two fingers to zoom, double-tap Pencil to switch Draw/Select."
             )
             sidecar_hint.setWordWrap(True)
             sidecar_hint.setStyleSheet("color: #aaaaaa; font-size: 10px;")

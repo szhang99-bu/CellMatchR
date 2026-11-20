@@ -272,7 +272,7 @@ class ParameterWizardApp:
             try:
                 self._sidecar_controls = install_sidecar_controls(self.viewer)
             except (ImportError, AttributeError, TypeError, RuntimeError) as exc:
-                print(f"[parameter_wizard] Sidecar finger pan unavailable: {exc}")
+                print(f"[parameter_wizard] Sidecar touch controls unavailable: {exc}")
         else:
             self.viewer.title = title
             for lyr in list(self.viewer.layers):

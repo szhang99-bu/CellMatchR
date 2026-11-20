@@ -198,6 +198,7 @@ def build_report(project: Path, output: Path, result: dict,
         validation_overlay(raw, original, folder / f"image_{index+1}_before.png")
         validation_overlay(raw, trained, folder / f"image_{index+1}_after.png")
         records.append({"project": example["project"], "sample": example["sample"],
+                        "review_level": example.get("review_level", "cell_labels"),
                         "crop": example.get("crop"), "before": before, "after": after})
     report = {"model": result["name"], "backend": result["backend"],
               "model_path": result["model_path"], "validation_plan":

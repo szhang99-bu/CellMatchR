@@ -8,6 +8,8 @@ the full workflow and answers common questions.
 ## Contents
 
 - [Install, launch, and update](#install-launch-and-update)
+  - [Update a Git installation](#update-an-existing-git-installation)
+  - [Update a ZIP installation](#update-a-zip-installation)
 - [Choose the right input](#choose-the-right-input)
 - [Step 1: Create or open a project](#step-1-create-or-open-a-project)
 - [Step 2: Select images and regions](#step-2-select-images-and-regions)
@@ -99,27 +101,37 @@ The first command prints your current location; the second should list the
 app folder and try again. Run environment commands only after this check.
 
 **Code → Download ZIP** works if Git is unavailable, but a ZIP cannot use
-`git pull`; every upgrade requires downloading and replacing application
-files. Extract the ZIP first, enter the extracted folder as above, and keep
-project output folders separate from the application folder when possible.
+`git pull`. Extract the ZIP before setup and keep project outputs outside the
+app folder. [Update a ZIP installation](#update-a-zip-installation)
 
 ### Windows setup
 
-The Windows setup script installs a Conda-compatible micromamba environment
-for CellMatchR. You do **not** need to install Conda or Miniforge separately
-for this Windows workflow.
+Use 64-bit Windows on an x64 Intel or AMD processor. Setup was verified on
+Windows 11. It downloads and installs the app's micromamba and Python
+environment.
 
 1. Open the `CellMatchR-app` folder on your Desktop (or at the location you
    chose) in File Explorer.
-2. Double-click `setup-windows.cmd` and wait for it to report completion. It
-   creates the app environment and a desktop shortcut.
-3. Double-click **Launch CellMatchR (Windows)**. `run-windows.cmd` in the
-   app folder is another way to start it.
+2. Double-click `setup-windows.cmd` and wait for **Setup complete**. Setup
+   creates the runtime at `%SystemDrive%\CellMatchR` (usually `C:\CellMatchR`)
+   and puts the launcher shortcut inside the app folder.
+3. In the app folder, double-click **Launch CellMatchR (Windows)**. You can
+   also double-click `run-windows.cmd`.
 
 Setup records the runtime, environment, and package cache paths in
 `setup-paths.txt` inside the runtime folder. For a custom runtime in a
 deeply nested folder, setup tries a shorter private cache to prevent
-package extraction errors. The runtime itself stays at the path you chose.
+package extraction errors.
+
+If you chose a custom runtime, set the same absolute folder path in PowerShell
+before running `.\setup-windows.cmd` or `.\run-windows.cmd`:
+
+```powershell
+$env:CELLMATCHR_WINDOWS_RUNTIME = 'D:\CellMatchR-runtime'
+```
+
+Replace the example path with the one you used at setup. If you installed in
+CPU-only mode, repeat `.\setup-windows.cmd -Device CPU` on upgrades.
 
 ### macOS setup
 
@@ -146,25 +158,30 @@ package extraction errors. The runtime itself stays at the path you chose.
    existing environment after a code update, use the command below under
    [Update an existing Git installation](#update-an-existing-git-installation).
 4. Open `CellMatchR-app` on your Desktop (or at the location you chose) in
-   Finder and open the app matching
-   your macOS version:
-   `CellMatchR (macOS 27+).app` or
-   `CellMatchR (macOS 26 and earlier).app`. If your checkout is elsewhere,
-   navigate to that folder in Finder instead. Keep the `.app` inside the
-   app folder because it launches the code stored there.
+   Finder. Use `CellMatchR (macOS 27+).app` on macOS 27 and later, or
+   `CellMatchR (macOS 26 and earlier).app` on macOS 26 and earlier. If macOS
+   asks for Desktop access, click **Allow** when your app or project is
+   stored there. Keep the `.app` inside the app folder because it runs
+   the code stored there.
+
+On an Intel Mac, choose Micro-SAM or Cellpose-SAM for segmentation.
+micro-SAM2's separate macOS environment requires a PyTorch wheel that is
+published for Apple Silicon. [PyTorch release files](https://pypi.org/project/torch/2.10.0/#files)
 
 ### Linux setup
 
 1. In Terminal, type `conda --version`. If it prints a version, continue. If
    Conda is absent, follow the [Miniforge Linux installation instructions](https://github.com/conda-forge/miniforge#unix-like-platforms-macos-linux--wsl),
-   close and reopen Terminal, then check `conda --version` again.
-2. Enter the app folder and confirm `ls environment.yml` finds the
-   file. Run:
+   choose shell initialization, reopen Terminal, then check
+   `conda --version` again.
+2. In Bash, enter the app folder and confirm `ls environment.yml` finds the
+   file. Run both commands below. The environment is created alongside the
+   app folder.
 
    ```bash
    PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
-     conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml
-   bash scripts/install_linux_launcher.sh
+     conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml &&
+     bash scripts/install_linux_launcher.sh
    ```
 
 3. Open **CellMatchR (Linux)** from the applications menu, or run
@@ -172,17 +189,18 @@ package extraction errors. The runtime itself stays at the path you chose.
 
 ### Update an existing Git installation
 
-Close CellMatchR and any running analysis or training first. In the app
-folder, run `git status --short`. If it prints nothing, run
-`git pull --ff-only` to update the code. If it lists files, check whether
-they are local app edits or project data you placed in the app folder. Keep a
-copy of anything important and resolve those changes before pulling; Git may
-stop rather than overwrite them. Project data and the shared model library
-are separate from the repository when you follow the setup above.
+Let analysis and training finish, then close CellMatchR. In the existing app
+folder, run `git status --short --branch`. The standard release is on
+`main`. Lines below the branch name list local changes or new files. Review
+those files and save any work you need to keep before updating. If you
+previously checked out a testing branch, run `git switch main` once your
+work is saved. Then run `git pull --ff-only`.
 
-Always refresh the app environment after pulling code: Git does not install or
-update Python packages. Rerun `setup-windows.cmd` on Windows. On macOS run
-`conda env update -f environment.yml --prune`. On Linux run:
+After pulling, refresh the app environment to install the required Python
+packages. Rerun `setup-windows.cmd` on Windows with your
+[original runtime settings](#windows-setup). On macOS, run
+`conda env update --name cellmatchr --file environment.yml --prune`.
+On Linux, run the following in Bash.
 
 ```bash
 PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
@@ -205,6 +223,16 @@ with the pins in `environment.yml` if model checksums or TIFF reads fail.
 If you moved the checkout, recreate the Windows shortcut with
 `.\setup-windows.cmd -ShortcutOnly` from PowerShell, or rerun
 `bash scripts/install_linux_launcher.sh` on Linux.
+
+### Update a ZIP installation
+
+Download the latest ZIP and extract it into a fresh folder beside your old
+app folder. Keep the old folder until you have moved any project data it
+contains. From the new app folder, follow the environment update commands
+above for your operating system. On Linux, run
+`bash scripts/install_linux_launcher.sh` from the new app folder to update
+the applications menu entry. Open the launcher in the new folder on macOS
+or Windows.
 
 ## Choose the right input
 

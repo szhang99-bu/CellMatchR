@@ -10,6 +10,8 @@ instructions, every workflow step, and answers to common questions.
 
 ## Install and launch
 
+Already installed CellMatchR? Go to [Upgrade CellMatchR](#upgrade-cellmatchr).
+
 First, open a command window: **Terminal** on macOS (press **⌘ Space**, type
 `Terminal`, press Return), **PowerShell** on Windows (search for it in Start),
 or your Linux **Terminal** app. Type the commands below in that window, one
@@ -35,6 +37,9 @@ cd ~/Desktop
 cd ([Environment]::GetFolderPath('Desktop'))
 ```
 
+If your Linux Desktop is elsewhere, right-click it in your file manager and
+choose **Open in Terminal**.
+
 The clone command below creates the app folder on your **Desktop by default**.
 To put it somewhere else, replace the Desktop `cd` command above with the
 path to an existing folder (for example, `cd ~/Documents` on macOS/Linux or
@@ -45,19 +50,19 @@ git clone https://github.com/szhang99-bu/CellMatchR.git CellMatchR-app
 cd CellMatchR-app
 ```
 
-Cloning with Git allows later updates with `git pull`. **Code → Download ZIP**
-also works, but it cannot use `git pull`; each upgrade requires another ZIP.
-Already have the app folder? Open your command window **in that folder**
-instead of cloning again. The [user guide](docs/usage.md#install-launch-and-update)
-shows how to find it.
+Cloning with Git allows later updates with `git pull`. If you use
+**Code → Download ZIP**, extract it before setup and download a fresh ZIP for
+each upgrade. [ZIP upgrade instructions](docs/usage.md#update-a-zip-installation)
 
 ### Windows
 
+Use 64-bit Windows on an x64 Intel or AMD processor. Setup installs its own
+Python environment, so you can start with just Git.
+
 1. Open the `CellMatchR-app` folder on your Desktop (or at the location you
-   chose) and double-click **`setup-windows.cmd`**. This installs the app's
-   own Conda-compatible environment; no separate Conda installation is needed.
-2. Double-click **Launch CellMatchR (Windows)**, the shortcut with the logo.
-   **`run-windows.cmd`** also launches the app.
+   chose) and double-click **`setup-windows.cmd`**. Wait for **Setup complete**.
+2. In the same folder, double-click **Launch CellMatchR (Windows)**.
+   You can also double-click **`run-windows.cmd`**.
 
 ### macOS
 
@@ -84,14 +89,14 @@ shows how to find it.
 
 1. In Terminal, run `conda --version`. If it is not found, install
    [Miniforge](https://github.com/conda-forge/miniforge#unix-like-platforms-macos-linux--wsl),
-   reopen Terminal, and check again.
-2. From the app folder (`ls environment.yml` should find the file),
+   choose shell initialization, reopen Terminal, and check again.
+2. In Bash, from the app folder (`ls environment.yml` should find the file),
    create the environment and add CellMatchR to your app menu:
 
    ```bash
    PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
-     conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml
-   bash scripts/install_linux_launcher.sh
+     conda env create --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml &&
+     bash scripts/install_linux_launcher.sh
    ```
 
 3. Open **CellMatchR (Linux)** from your app menu. For a terminal launch, run
@@ -102,8 +107,9 @@ shows how to find it.
 **Every upgrade has two parts: pull the new code, then update the app
 environment.** `git pull` does not install new Python packages or update
 existing ones. Do both parts even if you have updated CellMatchR before.
+[Upgrading a ZIP copy](docs/usage.md#update-a-zip-installation)
 
-Close CellMatchR and let any running analysis or training finish. Open the
+Let any running analysis or training finish, then close CellMatchR. Open the
 same Terminal or PowerShell app used for installation. Go to your **existing**
 CellMatchR-app folder; do not clone a second copy. These commands use the
 default Desktop location. If you installed elsewhere or your Desktop is stored
@@ -115,20 +121,20 @@ and press Return.
 
 ```bash
 cd ~/Desktop/CellMatchR-app
-git status --short
+git status --short --branch
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 cd (Join-Path ([Environment]::GetFolderPath('Desktop')) 'CellMatchR-app')
-git status --short
+git status --short --branch
 ```
 
-If `git status --short` prints nothing, the app folder has no local changes.
-If it lists files, [check the update guide](docs/usage.md#update-an-existing-git-installation)
-before pulling so you can keep your work. **When the folder is ready**, run
-this in the same window:
+For the standard release, the first line should show the `main` branch.
+If you see a different branch or files listed below the branch line, check the
+[update guide](docs/usage.md#update-an-existing-git-installation) before pulling.
+Then run this in the same window:
 
 ```bash
 git pull --ff-only
@@ -137,10 +143,11 @@ git pull --ff-only
 **Next, refresh the environment using the updated setup files:**
 
 - **Windows:** Double-click `setup-windows.cmd` in the updated app folder and
-  wait for **Setup complete**. This also refreshes an existing Windows runtime.
+  wait for **Setup complete**. If you set up a custom runtime or chose CPU-only
+  setup, [repeat those settings](docs/usage.md#windows-setup).
 - **macOS:** In Terminal, still in the app folder, run
-  `conda env update -f environment.yml --prune`.
-- **Linux:** In Terminal, still in the app folder, run:
+  `conda env update --name cellmatchr --file environment.yml --prune`.
+- **Linux:** In Bash, still in the app folder, run:
 
   ```bash
   PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
@@ -150,12 +157,9 @@ git pull --ff-only
   If your launcher uses a custom environment path, set `CELLMATCHR_LINUX_ENV`
   to that path before running the update.
 
-Wait for the environment command to finish, then reopen CellMatchR. If it
-fails, copy the full error from the run log; the last line alone may not show
-the cause. Your projects and shared trained models remain in their own
-folders. If you installed from a ZIP instead of cloning, download and extract
-a new ZIP for each version, then refresh the environment as above; `git pull`
-cannot update a ZIP copy.
+Wait for the environment update to finish, then reopen CellMatchR. Keep
+project outputs and shared trained models outside the app folder so they stay
+available across upgrades. [Troubleshooting](docs/usage.md#troubleshooting-by-symptom)
 
 ## Run your first project
 
@@ -165,7 +169,8 @@ cannot update a ZIP copy.
 3. **Segment** the channels you want to measure. Choose **micro-SAM2** to try
    the newer models. For Nissl, use **Brightfield stain** and start with
    `hvit_b_cells`. The first run downloads the selected model and sets up
-   its separate environment. See the [model guide](docs/usage.md#step-3-segment-cells).
+   its separate environment. On an Intel Mac, choose Micro-SAM or Cellpose-SAM.
+   [Model guide](docs/usage.md#step-3-segment-cells)
 4. **Review** the predictions and run **Analysis** to generate object tables
    and a colocalization workbook.
 5. **Retrain** in Step 7 if you want to fine-tune a model on corrected masks.

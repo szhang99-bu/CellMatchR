@@ -318,10 +318,17 @@ outline marks your choice and CellMatchR applies that model and its tested
 inference settings in Step 3.
 
 Use **Open Parameter Wizard** to set filters from the same patch. The
-regular **Parameter Wizard** button also reuses that prediction within the
-same app session while the input and model settings match. If you configured
-multiple channels, the wizard computes fresh masks only for the other
-channels. Without a matching preview, it uses the first image as usual.
+regular **Parameter Wizard** uses the same controls and also reuses that
+prediction while the input and model settings match. If you configured
+multiple channels, it computes fresh masks only for the other channels.
+Without a matching preview, it uses the first image as usual.
+
+Starting a full segmentation run after choosing a model saves the source
+patch, prediction images, masks and model settings under the project's
+`Model_Wizard_Previews/<segmentation run>` folder. When you reopen the
+project, **Model Selection Wizard** opens the saved comparison. Choose
+**Choose another patch or models** to run a new comparison. The **Parameter
+Wizard** can also reuse the saved mask after a restart.
 
 ### Run micro-SAM2
 

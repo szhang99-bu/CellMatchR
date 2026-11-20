@@ -14,7 +14,8 @@ from .model_wizard_compute import crop_box, display_image, patch_pixels, write_j
 
 
 class ModelWizard:
-    def __init__(self, root, config, models, defaults, apply_model, open_filters, track_process):
+    def __init__(self, root, config, models, defaults, apply_model, open_filters, track_process,
+                 saved=None, can_reuse=False):
         self.config = config
         self.models = models
         self.selected = list(defaults)
@@ -55,16 +56,39 @@ class ModelWizard:
         self.status.grid(row=0, column=0, columnspan=3, sticky="w")
         self.progress = ttk.Progressbar(self.footer, mode="indeterminate")
         self.progress.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(5, 9))
-        self.progress.start(12)
         self.primary = ttk.Button(self.footer, text="Compare models", command=self._compare, state="disabled")
         self.primary.grid(row=2, column=2, sticky="e", padx=(8, 0))
         self.close_button = ttk.Button(self.footer, text="Close", command=self.close)
         self.close_button.grid(row=2, column=1, sticky="e")
         self.window.grab_set()
 
+        if saved:
+            self.preview = saved["preview"]
+            self.job = saved["folder"]
+            self.box = saved["box"]
+            self.result_models = saved["models"]
+            self.chosen_model = saved["chosen"]
+            self.can_use_filters = can_reuse
+            self.channel = tk.StringVar(self.window, value=str(saved["channel"]))
+            self.size = tk.StringVar(self.window, value="1024")
+            self.progress.grid_remove()
+            self.window.update_idletasks()
+            self._show_results(saved["results"])
+        else:
+            self._prepare()
+
+    def _prepare(self):
+        self._clear()
+        self.box = self.center = None
+        self.heading.configure(text="Choose a patch")
+        self.status.configure(text="Opening the first image…")
+        self.primary.configure(state="disabled")
+        self.progress.configure(mode="indeterminate")
+        self.progress.grid()
+        self.progress.start(12)
         settings = self.scratch / "settings.json"
         try:
-            write_json(settings, config)
+            write_json(settings, self.config)
             self._start("prepare", settings)
         except (OSError, ValueError) as exc:
             self._show_error(f"Could not open the first image. {exc}")
@@ -163,6 +187,8 @@ class ModelWizard:
             first = next((part for part in requested if part in channels), next(iter(channels)))
             self.channel = tk.StringVar(self.window, value=first)
             self.size = tk.StringVar(self.window, value="1024")
+        elif self.channel.get() not in channels:
+            self.channel.set(next(iter(channels)))
         controls = ttk.Frame(self.body)
         controls.pack(fill="x", pady=(0, 7))
         ttk.Label(controls, text="Channel").pack(side="left")
@@ -328,6 +354,7 @@ class ModelWizard:
         self.stop_requested = False
         self.chosen_model = None
         self.can_use_filters = False
+        self.result_models = {name: self.models[name] for name in self.selected}
         self._set_picker_enabled(False)
         self.primary.configure(state="disabled")
         self.close_button.configure(text="Stop after current model")
@@ -336,6 +363,7 @@ class ModelWizard:
         self.progress.grid()
 
     def _show_results(self, results, zoom=None):
+        self.comparison_results = results
         self._clear()
         self.heading.configure(text=f"Compare predictions · Channel {self.channel.get()}")
         ttk.Label(self.body, text="Look for missed cells first. Click the preview you want to use.").pack(
@@ -401,13 +429,14 @@ class ModelWizard:
                 ttk.Button(card, text="View log", command=lambda path=result["log"]: self._show_log(path)).pack(anchor="w")
 
         successful = sum("overlay" in result for result in results)
-        self.status.configure(text=f"{successful} of {len(self.selected)} model previews ready."
+        self.status.configure(text=f"{successful} of {len(self.result_models)} model previews ready."
                               + (" Scroll sideways to see more models." if len(display) > 5 else ""))
         self.filter_button = ttk.Button(controls, text="Open Parameter Wizard", command=self._open_filters,
                                         state="disabled")
         self.filter_button.pack(side="right")
         self._mark_selection(selected)
-        self.primary.configure(text="Choose another patch or models", command=self._show_picker, state="normal")
+        picker = self._show_picker if "channels" in self.preview else self._prepare
+        self.primary.configure(text="Choose another patch or models", command=picker, state="normal")
 
     def _mark_selection(self, tiles):
         for name, tile in tiles.items():
@@ -418,15 +447,23 @@ class ModelWizard:
         if self.chosen_model:
             if self.can_use_filters:
                 message = "Open the Parameter Wizard to reuse this patch."
-            else:
+            elif self.channel.get() not in {part.strip() for part in self.config["seg_channels"].split(",")}:
                 message = f"Add channel {self.channel.get()} in Step 3 to reuse this patch."
+            else:
+                message = "The comparison uses different input or model settings."
             self.status.configure(text=f"Selected {self.chosen_model}. {message}")
         self.filter_button.configure(state="normal" if self.can_use_filters else "disabled")
 
     def _use_model(self, result, tiles):
         name = result["name"]
+        comparison = {
+            "original": str(self.job / "original.png"),
+            "results": self.comparison_results, "models": self.result_models,
+            "box": list(self.box), "channel": int(self.channel.get()),
+            "preview": self.preview,
+        }
         try:
-            self.can_use_filters = self.apply_model(self.models[name], result, int(self.channel.get()), self.preview)
+            self.can_use_filters = self.apply_model(self.result_models[name], result, comparison)
         except (OSError, ValueError) as error:
             messagebox.showerror("Could not select model", str(error), parent=self.window)
             return

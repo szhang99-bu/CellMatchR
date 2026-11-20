@@ -320,12 +320,6 @@ class ParameterWizardApp:
         stats = self._stats.get(int(value))
         if stats is None:
             return
-        if self.channel_entries[self._ch_idx].get("model_preview"):
-            top, left, bottom, right = stats["bbox"]
-            height, width = self._labels.shape
-            if top == 0 or left == 0 or bottom == height or right == width:
-                self.viewer.status = "This object touches the patch edge. Pick a fully visible object."
-                return
         key = self._pick_target
         raw_value = {
             "min_size": stats["area"], "max_size": stats["area"],
@@ -432,13 +426,11 @@ class ParameterWizardApp:
         self._clear_dock_layout()
         layout = self._dock_layout
 
-        patch_note = ("<br>Model comparison patch. Pick objects fully inside the patch."
-                      if self.channel_entries[self._ch_idx].get("model_preview") else "")
         layout.addWidget(QLabel(
             f"<b>Channel {ch}</b><br>"
             "Click a button, then click the matching object's outline in the "
             "image -- a colored box marks it there.<br>"
-            f"Leave any blank to disable that filter.{patch_note}"
+            "Leave any blank to disable that filter."
         ))
 
         self._pick_btns = {}

@@ -24,6 +24,7 @@ from .microsam2 import (
     MODELS as MICROSAM2_MODELS, preprocessing_name as microsam2_preprocessing,
 )
 from .file_paths import filesystem_path, matching_paths, prediction_channel
+from .model_wizard_archive import FOLDER as MODEL_PREVIEW_FOLDER
 
 # Optional PIL for logo
 try:
@@ -2702,8 +2703,12 @@ class CellMatchrLauncher:
         self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
         _on_seg_backend_changed()   # apply initial state
 
-        def apply_model_preview(settings, result, channel, preview):
+        def apply_model_preview(settings, result, comparison):
+            channel = comparison["channel"]
             backend = settings["seg_backend"]
+            checkpoint = settings.get(model_keys.get(backend))
+            if checkpoint and not os.path.exists(filesystem_path(checkpoint)):
+                raise ValueError("This checkpoint is unavailable on this computer.")
             self._seg_backend_disp.set(SEGMENTATION_BACKENDS[backend])
             if backend in model_keys:
                 custom_path.set(settings[model_keys[backend]])
@@ -2716,16 +2721,18 @@ class CellMatchrLauncher:
             self._sync_vars_to_config()
             save_config(self.config)
             save_project_config(self.config)
-            self._cache_selected_model_preview(settings, result, channel, preview)
-            return str(channel) in {part.strip() for part in self.config["seg_channels"].split(",")}
+            self._cache_selected_model_preview(settings, result, channel, comparison["preview"], comparison)
+            return self._preview_matches(self._model_preview_cache, self.config, self._configured_channels())
 
         wizard_row = tk.Frame(model_card, bg=CARD)
         wizard_row.pack(fill="x", pady=(7, 0))
+        project_folder = self.config.get("project_output_folder", "")
+        has_saved_preview = project_folder and (Path(project_folder) / MODEL_PREVIEW_FOLDER).is_dir()
         tk.Button(
             wizard_row, text="🪄  Model Selection Wizard",
             command=lambda: self._launch_model_wizard(apply_model_preview),
             bg=ACTIVE, fg=FG, relief="flat", font=FONT_BOLD, padx=12, pady=6,
-            state="normal" if input_ok and _PIL else "disabled",
+            state="normal" if _PIL and (input_ok or has_saved_preview) else "disabled",
         ).pack(side="left")
         tk.Label(wizard_row, text="Compare models on the same small patch before a full run.",
                  bg=CARD, fg=FG, font=FONT, wraplength=410, justify="left").pack(side="left", padx=10)
@@ -3781,6 +3788,8 @@ class CellMatchrLauncher:
             except tk.TclError:
                 pass
 
+        self._archive_model_preview(out, _seg_log_line)
+
         def _thread():
             try:
                 if (self.config.get("seg_backend") == "cellpose"
@@ -3838,22 +3847,42 @@ class CellMatchrLauncher:
             return
         self._sync_vars_to_config()
         input_folder = self.config.get("input_root_folder", "").strip()
-        if not os.path.isdir(input_folder):
+        from .model_wizard import ModelWizard
+        from .model_wizard_archive import load, saved
+
+        snapshot = self.config.copy()
+        project = snapshot.get("project_output_folder")
+        previews = list(saved(project))
+        review = next((item for item in previews if item["signature"].get("input_root_folder") == input_folder),
+                      previews[0] if previews else None)
+        recent = getattr(self, "_model_preview_cache", None)
+        if recent and recent["signature"].get("project_output_folder") == project and (
+                recent["signature"].get("input_root_folder") == input_folder and recent["archive"].is_dir()):
+            try:
+                review = load(recent["archive"])
+            except (OSError, KeyError, TypeError, ValueError):
+                pass
+        if review is None and not os.path.isdir(input_folder):
             messagebox.showwarning("Choose an input folder", "Select your images in Step 2.",
                                    parent=self.root)
             return
-        from .model_wizard import ModelWizard
 
-        snapshot = self.config.copy()
         try:
             models, defaults = _model_wizard_options(snapshot)
             self._model_wizard = ModelWizard(self.root, snapshot, models, defaults, apply_model,
-                                              self._launch_parameter_wizard, self._track_proc)
+                                              self._launch_parameter_wizard, self._track_proc,
+                                              saved=review, can_reuse=bool(review and self._preview_matches(
+                                                  self._archived_preview_key(review), snapshot,
+                                                  self._configured_channels())))
         except (OSError, ValueError) as error:
             messagebox.showerror("Could not open the Model Selection Wizard", str(error),
                                  parent=self.root)
 
-    def _cache_selected_model_preview(self, settings, result, channel, preview) -> None:
+    def _configured_channels(self):
+        return {int(part.strip()) for part in str(self.config.get("seg_channels") or "").split(",")
+                if part.strip().isdigit()}
+
+    def _cache_selected_model_preview(self, settings, result, channel, preview, comparison=None) -> None:
         from .model_wizard_compute import file_identity, write_json
 
         inputs = ("project_output_folder", "input_root_folder", "input_type",
@@ -3876,33 +3905,70 @@ class CellMatchrLauncher:
             "base_name": preview["sample"], "channels": [entry],
             "slide_signal_type": "brightfield" if preview["brightfield"] else "fluorescence",
         })
+        archive = dest / "comparison"
+        if comparison:
+            from .model_wizard_archive import capture
+            capture(archive, comparison, result, signature, model_identity)
         old = getattr(self, "_model_preview_cache", None)
         self._model_preview_cache = {
             "directory": directory, "manifest": str(manifest), "channel": channel,
             "signature": signature, "source": tuple(preview["source_path"]), "scene": preview["scene"],
-            "model": model_identity,
+            "model": model_identity, "archive": archive,
         }
         if old:
             old["directory"].cleanup()
 
-    def _matching_model_preview(self, config, channels):
-        cached = getattr(self, "_model_preview_cache", None)
+    @staticmethod
+    def _archived_preview_key(comparison):
+        preview = comparison["preview"]
+        return {"channel": comparison["channel"], "signature": comparison["signature"],
+                "source": tuple(preview["source_path"]), "scene": preview["scene"],
+                "model": tuple(comparison["model_identity"]) if comparison["model_identity"] else None}
+
+    def _preview_matches(self, cached, config, channels):
         if (not cached or cached["channel"] not in channels or
                 any(config.get(key) != value for key, value in cached["signature"].items())):
-            return None
+            return False
         from .model_wizard_compute import file_identity
 
         try:
             source = _first_confocal_preview_input(
                 config["input_root_folder"], self._INPUT_EXTS, bool(config["seg_skip_subdirs"]))
-            if (not source or source[1] != cached["scene"] or file_identity(source[0]) != cached["source"]
-                    or (cached["model"] and file_identity(cached["model"][0]) != cached["model"])
-                    or not all((Path(cached["directory"].name) / filename).is_file()
-                               for filename in ("raw.tif", "labels.tif", "parameter_wizard_manifest.json"))):
-                return None
+            return bool(source and source[1] == cached["scene"] and file_identity(source[0]) == cached["source"]
+                        and (not cached["model"] or file_identity(cached["model"][0]) == cached["model"]))
         except OSError:
-            return None
-        return cached
+            return False
+
+    def _matching_model_preview(self, config, channels):
+        cached = getattr(self, "_model_preview_cache", None)
+        if self._preview_matches(cached, config, channels):
+            dest = Path(cached["directory"].name)
+            if all((dest / name).is_file() for name in ("raw.tif", "labels.tif", "parameter_wizard_manifest.json")):
+                return cached
+        from .model_wizard_archive import saved
+
+        for comparison in saved(config.get("project_output_folder")):
+            if self._preview_matches(self._archived_preview_key(comparison), config, channels):
+                result = next(item for item in comparison["results"] if item["name"] == comparison["chosen"])
+                self._cache_selected_model_preview(comparison["models"][comparison["chosen"]],
+                                                   result, comparison["channel"], comparison["preview"])
+                return self._model_preview_cache
+        return None
+
+    def _archive_model_preview(self, out, log):
+        cached = getattr(self, "_model_preview_cache", None)
+        if (not cached or not cached["archive"].is_dir() or
+                any(self.config.get(key) for key in ("seg_test_run", "seg_dry_run", "seg_resume")) or
+                not self._preview_matches(cached, self.config, {cached["channel"]})):
+            return
+        from .model_wizard_archive import publish
+
+        try:
+            path = publish(cached["archive"], self.config["project_output_folder"], out)
+        except OSError as exc:
+            log(f"Could not save the model comparison: {exc}")
+        else:
+            log(f"Model comparison saved to {path}")
 
     def _launch_parameter_wizard(self) -> None:
         """Launch the Parameter Wizard: runs unfiltered segmentation on the
@@ -6624,6 +6690,7 @@ class CellMatchrLauncher:
         self.config["seg_resume"] = False
         save_config(self.config)
         save_project_config(self.config)
+        self._archive_model_preview(out, self._log)
         self._run_subprocess_in_log(self._script("segmentation.py"), "Segmentation")
 
     def _run_validation(self) -> None:
@@ -6836,6 +6903,8 @@ class CellMatchrLauncher:
         self._log(f"{'═'*60}")
         if backup_dir:
             self._log(f"Previous analysis saved at: {backup_dir}")
+        if seg_out:
+            self._archive_model_preview(seg_out, self._log)
         if self.config.get("val_enabled"):
             self._log("ℹ  Validation is interactive — use the Run button on the Validation row.")
         self._set_run_status("Pipeline running…", ACCENT)

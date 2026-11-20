@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ import numpy as np
 import tifffile
 
 from cellmatchr import model_wizard_compute as wizard
+from cellmatchr import model_wizard_archive as archives
 from cellmatchr import parameter_wizard_compute as parameters
 from cellmatchr.config import DEFAULT_CONFIG
 from cellmatchr.launcher import CellMatchrLauncher, _model_wizard_options
@@ -92,7 +94,9 @@ class ModelWizardTests(unittest.TestCase):
 
         launcher = object.__new__(CellMatchrLauncher)
         launcher.config = self.cfg
-        launcher._cache_selected_model_preview(choices[defaults[0]], first, 1, preview)
+        comparison = {"original": str(run / "original.png"), "results": progress["results"],
+                      "models": choices, "box": request["box"], "channel": 1, "preview": preview}
+        launcher._cache_selected_model_preview(choices[defaults[0]], first, 1, preview, comparison)
         self.addCleanup(launcher._model_preview_cache["directory"].cleanup)
         self.assertIsNone(launcher._matching_model_preview(self.cfg, {0}))
         self.assertIsNone(launcher._matching_model_preview(dict(self.cfg, seg_model_type="vit_l"), {1}))
@@ -121,6 +125,32 @@ class ModelWizardTests(unittest.TestCase):
         manifest = json.loads((target / "parameter_wizard_manifest.json").read_text())
         self.assertEqual([row["channel"] for row in manifest["channels"]], [1, 0])
         self.assertTrue(manifest["channels"][0]["model_preview"])
+
+        logs = []
+        output = self.root / "Segmentation"
+        self.cfg["seg_test_run"] = True
+        launcher._archive_model_preview(output, logs.append)
+        self.assertFalse((self.root / archives.FOLDER).exists())
+        self.cfg["seg_test_run"] = False
+        launcher._archive_model_preview(output, logs.append)
+        launcher._archive_model_preview(output, logs.append)
+        saved, = archives.saved(self.root)
+        self.assertEqual(saved["chosen"], defaults[0])
+        self.assertEqual(len(saved["results"]), 4)
+        self.assertFalse(output.exists())
+        relocated = self.root / "moved-comparison"
+        shutil.copytree(saved["folder"], relocated)
+        copied = archives.load(relocated)
+        self.assertEqual(Path(copied["original"]).parent, relocated.resolve())
+
+        reopened = object.__new__(CellMatchrLauncher)
+        reopened.config = self.cfg
+        self.assertIsNone(reopened._matching_model_preview(self.cfg, {0}))
+        self.assertIsNone(reopened._matching_model_preview(dict(self.cfg, seg_model_type="vit_l"), {1}))
+        restored = reopened._matching_model_preview(self.cfg, {1})
+        self.addCleanup(restored["directory"].cleanup)
+        raw = json.loads(Path(restored["manifest"]).read_text())["channels"][0]
+        np.testing.assert_array_equal(tifffile.imread(raw["labels"]), tifffile.imread(first["labels"]))
 
         self.source.unlink()
         self.assertIsNone(launcher._matching_model_preview(self.cfg, {1}))

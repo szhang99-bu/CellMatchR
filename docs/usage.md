@@ -295,6 +295,34 @@ runtime, which is prepared on first use. Rat Nissl v2 came from juvenile rat
 cresyl-violet images; test it on your own tissue before relying on it.
 Changing backend or model does not delete other segmentation runs.
 
+### Compare models on a patch
+
+Open **Model Selection Wizard** in Step 3. Choose the channel you plan to
+segment and click the first image to place a square. The second panel
+previews the selected patch at a larger scale. Use **1,024 pixels** to include
+more cells, or select **768** or **512** for a smaller area. Pick a patch
+that includes dim cells or uneven background as well as obvious cells.
+
+Click **Compare models** to run Micro-SAM, micro-SAM2, Cellpose-SAM and
+StarDist on the same patch. You can remove a model or add another built-in
+or saved model before starting. The progress bar advances as each model
+finishes. First use may install an optional runtime or download weights.
+If a model fails, use **View log** on its card. Other previews can still
+finish.
+
+The first panel shows the source patch. The other panels show proposed
+masks before size, shape and intensity filters. Click the source panel to
+zoom every preview to the same location. Look for visible cells the model
+missed, then check for excess masks. Click the prediction you prefer. A green
+outline marks your choice and CellMatchR applies that model and its tested
+inference settings in Step 3.
+
+Use **Open Parameter Wizard** to set filters from the same patch. The
+regular **Parameter Wizard** button also reuses that prediction within the
+same app session while the input and model settings match. If you configured
+multiple channels, the wizard computes fresh masks only for the other
+channels. Without a matching preview, it uses the first image as usual.
+
 ### Run micro-SAM2
 
 For Nissl, choose **Slide scanner → Brightfield stain** in Step 2, then

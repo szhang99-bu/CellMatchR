@@ -123,14 +123,18 @@ def _setup_backend(cfg: dict, resources):
           "hundred MB) and is cached at ~/Library/Caches/micro_sam/models for every future "
           "run, including normal Run Segmentation.")
     seg._patch_decoder_checkpoints(model_type)
+    checkpoint = str(cfg.get("seg_custom_model_path") or "").strip() or None
+    if checkpoint:
+        from cellmatchr.retraining import microsam_architecture
+        model_type = microsam_architecture(checkpoint)
 
     last_exc = None
     for attempt in range(1, 4):
         try:
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
-                model_type="vit_b" if cfg.get("seg_custom_model_path") else model_type,
+                model_type=model_type,
                 device=device,
-                checkpoint=str(cfg.get("seg_custom_model_path") or "").strip() or None)
+                checkpoint=checkpoint)
             return predictor, segmenter, None, None, None
         except Exception as exc:
             last_exc = exc
@@ -150,13 +154,22 @@ def _run(resources):
     parser = argparse.ArgumentParser(description="CellMatchR Parameter Wizard -- compute stage")
     parser.add_argument("--config", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--reuse-manifest", help="Use an existing model preview for its channel.")
     args = parser.parse_args()
 
     cfg = _load_cfg(args.config)
+    seg.SKIP_SUBDIRS = bool(cfg.get("seg_skip_subdirs"))
     channels = [int(x.strip()) for x in str(cfg.get("seg_channels", "")).split(",") if x.strip()]
     if not channels:
         print("[ERROR] No channels configured. Set 'Channels to predict' in Step 3 first.")
         sys.exit(1)
+
+    reused = {}
+    if args.reuse_manifest:
+        with open(args.reuse_manifest, encoding="utf-8") as source:
+            for entry in json.load(source)["channels"]:
+                if all(entry.get(key) and os.path.isfile(entry[key]) for key in ("raw", "labels")):
+                    reused[entry["channel"]] = entry
 
     image_path, lif_scene, base_name = _find_first_sample(cfg)
     if image_path is None:
@@ -209,6 +222,10 @@ def _run(resources):
     manifest = {"base_name": base_name, "channels": [],
                 "slide_signal_type": seg.SLIDE_SIGNAL_TYPE}
     for ch in channels:
+        if ch in reused:
+            print(f"[parameter_wizard_compute] Channel {ch}: using the model comparison patch.")
+            manifest["channels"].append(reused[ch])
+            continue
         tiff_path = split_paths.get(ch)
         if tiff_path is None:
             print(f"[parameter_wizard_compute] Channel {ch} not present in this file -- skipping.")

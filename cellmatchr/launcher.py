@@ -5,10 +5,13 @@ CellMatchr Launcher — step-by-step wizard UI.
 import json
 import os
 import re
+import shutil
 import sys
 import subprocess
 import threading
 from datetime import datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from uuid import uuid4
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
@@ -49,6 +52,13 @@ FONT_BOLD  = ("Segoe UI", 10, "bold")
 FONT_TITLE = ("Segoe UI", 15, "bold")
 FONT_STEP  = ("Segoe UI", 11)
 FONT_MONO  = ("Courier New", 9)
+
+SEGMENTATION_BACKENDS = {"microsam": "Micro-SAM", "microsam2": MICROSAM2_DISPLAY,
+                         "cellpose": "Cellpose", "stardist": "StarDist 2D"}
+MICROSAM_MODELS = ("vit_b_lm", "vit_l_lm", "vit_h_lm", "vit_b", "vit_l", "vit_h")
+SEGMENTATION_CHECKPOINT_KEYS = {"microsam": "seg_custom_model_path",
+                                "cellpose": "seg_cellpose_model_path",
+                                "stardist": "seg_stardist_model_path"}
 
 STEPS = [
     ("1", "Create Project"),
@@ -97,6 +107,71 @@ def _registered_cellpose_inference(model_path: str, project: str) -> dict:
             settings = record.get("suggested_inference")
             return settings if isinstance(settings, dict) else {}
     return {}
+
+
+def _model_wizard_options(config):
+    """Starting options and additional models available in Step 3."""
+    from .retraining import PREPROCESS_MODES, list_trained_models
+
+    is_brightfield = config.get("input_type") == "vsi" and config.get("slide_signal_type") == "brightfield"
+    project = config.get("project_output_folder", "")
+    models = {}
+
+    def add(label, backend, model=None, path="", record=None):
+        settings = {"seg_backend": backend}
+        if backend in SEGMENTATION_CHECKPOINT_KEYS:
+            settings[SEGMENTATION_CHECKPOINT_KEYS[backend]] = path
+            preprocess = config.get("seg_preprocess_mode") or DEFAULT_CONFIG["seg_preprocess_mode"]
+            if is_brightfield:
+                recorded = (record or {}).get("preprocess")
+                preprocess = (recorded if recorded in PREPROCESS_MODES else
+                              _brightfield_preprocess_for_model(backend, model or "cpsam", "", project))
+            settings["seg_preprocess_mode"] = preprocess
+        if backend == "microsam":
+            settings["seg_model_type"] = model or DEFAULT_CONFIG["seg_model_type"]
+        elif backend == "microsam2":
+            settings["seg_microsam2_model"] = model
+        elif backend == "cellpose":
+            settings["seg_cellpose_variant"] = model or DEFAULT_CONFIG["seg_cellpose_variant"]
+            suggested = (record or {}).get("suggested_inference")
+            if not isinstance(suggested, dict):
+                suggested = {}
+            for name in ("diameter", "flow_threshold", "cellprob_threshold"):
+                key = f"seg_cellpose_{name}"
+                settings[key] = (suggested.get(name, DEFAULT_CONFIG[key]) if name != "diameter"
+                                 else DEFAULT_CONFIG[key])
+        unique = label
+        number = 2
+        while unique in models:
+            unique = f"{label} ({number})"
+            number += 1
+        models[unique] = settings
+
+    sam1 = DEFAULT_CONFIG["seg_model_type"]
+    add(f"Micro-SAM · {sam1}", "microsam", sam1)
+    add(f"{MICROSAM2_DISPLAY} · {MICROSAM2_DEFAULT_MODEL}", "microsam2", MICROSAM2_DEFAULT_MODEL)
+    add("Cellpose-SAM", "cellpose", "cpsam")
+    add("StarDist · 2D versatile fluorescence", "stardist")
+    defaults = tuple(models)
+    for model in MICROSAM_MODELS:
+        if model != sam1:
+            add(f"Micro-SAM · {model}", "microsam", model)
+    for model in MICROSAM2_MODELS:
+        if model != MICROSAM2_DEFAULT_MODEL:
+            add(f"{MICROSAM2_DISPLAY} · {model}", "microsam2", model)
+    add("Cellpose 2 · cyto2", "cellpose", "cyto2")
+    add("Cellpose · Rat Nissl v2", "cellpose", "rat_nissl_v2")
+    registered_paths = set()
+    for record in list_trained_models(project):
+        backend = record["backend"]
+        path = record["model_path"]
+        registered_paths.add(os.path.normcase(os.path.abspath(path)))
+        add(f"{record['name']} · {SEGMENTATION_BACKENDS[backend]}", backend, path=path, record=record)
+    for backend, key in SEGMENTATION_CHECKPOINT_KEYS.items():
+        path = str(config.get(key) or "").strip()
+        if path and os.path.exists(path) and os.path.normcase(os.path.abspath(path)) not in registered_paths:
+            add(f"{os.path.basename(path)} · {SEGMENTATION_BACKENDS[backend]}", backend, path=path)
+    return models, defaults
 
 
 def _scanned_input_files(folder: str, extensions: tuple[str, ...],
@@ -812,6 +887,10 @@ class CellMatchrLauncher:
 
     def _on_close(self) -> None:
         """Window-close (X) handler — single warning if a process is running."""
+        wizard = getattr(self, "_model_wizard", None)
+        if wizard is not None and wizard.window.winfo_exists():
+            wizard.close()
+            return
         running = self._running_procs()
         if running:
             labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
@@ -826,6 +905,9 @@ class CellMatchrLauncher:
             ):
                 return
             self._terminate_running()
+        cached = getattr(self, "_model_preview_cache", None)
+        if cached:
+            cached["directory"].cleanup()
         self.root.quit()
 
     def _show_step(self, idx: int) -> None:
@@ -2382,9 +2464,7 @@ class CellMatchrLauncher:
         model_card = self._card(parent, "Segmentation Settings")
 
         # ── Backend selector ─────────────────────────────────────────
-        _BK_DISPLAY = {"microsam": "Micro-SAM", "microsam2": MICROSAM2_DISPLAY,
-                       "cellpose": "Cellpose",
-                       "stardist": "StarDist 2D"}
+        _BK_DISPLAY = SEGMENTATION_BACKENDS
         _BK_REVERSE = {v: k for k, v in _BK_DISPLAY.items()}
         _bk_frame = tk.Frame(model_card, bg=CARD)
         _bk_frame.pack(fill="x", pady=(0, 8))
@@ -2421,7 +2501,7 @@ class CellMatchrLauncher:
 
         tk.Label(g, text="Model type:", bg=CARD, fg=FG, font=FONT).grid(
             row=2, column=0, sticky="w", pady=3)
-        sam1_models = ("vit_b_lm", "vit_l_lm", "vit_h_lm", "vit_b", "vit_l", "vit_h")
+        sam1_models = MICROSAM_MODELS
         _cb_model = ttk.Combobox(
             g, textvariable=self._vars["seg_model_type"],
             values=sam1_models,
@@ -2463,9 +2543,7 @@ class CellMatchrLauncher:
         tk.Button(model_path_row, text="Browse…", command=_browse_model,
                   bg=ACTIVE, fg=FG, relief="flat", font=FONT).pack(side="left", padx=6)
         custom_card.pack(fill="x", pady=(4, 8))
-        model_keys = {"microsam": "seg_custom_model_path",
-                      "cellpose": "seg_cellpose_model_path",
-                      "stardist": "seg_stardist_model_path"}
+        model_keys = SEGMENTATION_CHECKPOINT_KEYS
         selected_key = [model_keys.get(self.config.get("seg_backend"), "seg_custom_model_path")]
         custom_path.set(self._vars[selected_key[0]].get())
         def _model_path_changed(*_):
@@ -2624,6 +2702,34 @@ class CellMatchrLauncher:
         self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
         _on_seg_backend_changed()   # apply initial state
 
+        def apply_model_preview(settings, result, channel, preview):
+            backend = settings["seg_backend"]
+            self._seg_backend_disp.set(SEGMENTATION_BACKENDS[backend])
+            if backend in model_keys:
+                custom_path.set(settings[model_keys[backend]])
+            for key, value in settings.items():
+                self._vars[key].set(value)
+            if backend in model_keys:
+                refresh_model_choices(backend)
+            if not self._vars["seg_channels"].get().strip():
+                self._vars["seg_channels"].set(str(channel))
+            self._sync_vars_to_config()
+            save_config(self.config)
+            save_project_config(self.config)
+            self._cache_selected_model_preview(settings, result, channel, preview)
+            return str(channel) in {part.strip() for part in self.config["seg_channels"].split(",")}
+
+        wizard_row = tk.Frame(model_card, bg=CARD)
+        wizard_row.pack(fill="x", pady=(7, 0))
+        tk.Button(
+            wizard_row, text="🪄  Model Selection Wizard",
+            command=lambda: self._launch_model_wizard(apply_model_preview),
+            bg=ACTIVE, fg=FG, relief="flat", font=FONT_BOLD, padx=12, pady=6,
+            state="normal" if input_ok and _PIL else "disabled",
+        ).pack(side="left")
+        tk.Label(wizard_row, text="Compare models on the same small patch before a full run.",
+                 bg=CARD, fg=FG, font=FONT, wraplength=410, justify="left").pack(side="left", padx=10)
+
         filt_card = self._card(parent, "Object Filtering")
         tk.Label(
             filt_card,
@@ -2636,8 +2742,7 @@ class CellMatchrLauncher:
         wizard_row.pack(anchor="w", fill="x", pady=(0, 10))
         tk.Label(
             wizard_row,
-            text="Not sure what numbers to use? Segments the first sample unfiltered, "
-                 "then lets you pick example objects by eye instead:",
+            text="Pick example objects to set size, shape and intensity limits.",
             bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=650,
         ).pack(anchor="w")
         _wiz_btn_row = tk.Frame(wizard_row, bg=CARD)
@@ -3726,6 +3831,79 @@ class CellMatchrLauncher:
 
         threading.Thread(target=_thread, daemon=True).start()
 
+    def _launch_model_wizard(self, apply_model) -> None:
+        if self._running_procs():
+            messagebox.showinfo("A process is running",
+                                "Finish the current task before comparing models.", parent=self.root)
+            return
+        self._sync_vars_to_config()
+        input_folder = self.config.get("input_root_folder", "").strip()
+        if not os.path.isdir(input_folder):
+            messagebox.showwarning("Choose an input folder", "Select your images in Step 2.",
+                                   parent=self.root)
+            return
+        from .model_wizard import ModelWizard
+
+        snapshot = self.config.copy()
+        try:
+            models, defaults = _model_wizard_options(snapshot)
+            self._model_wizard = ModelWizard(self.root, snapshot, models, defaults, apply_model,
+                                              self._launch_parameter_wizard, self._track_proc)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Could not open the Model Selection Wizard", str(error),
+                                 parent=self.root)
+
+    def _cache_selected_model_preview(self, settings, result, channel, preview) -> None:
+        from .model_wizard_compute import file_identity, write_json
+
+        inputs = ("project_output_folder", "input_root_folder", "input_type",
+                  "slide_signal_type", "seg_skip_subdirs", "seg_tile_h", "seg_tile_w",
+                  "seg_halo_h", "seg_halo_w")
+        signature = {key: self.config.get(key) for key in (*inputs, *settings)}
+        model_key = SEGMENTATION_CHECKPOINT_KEYS.get(settings["seg_backend"])
+        model = signature.get(model_key) if model_key else None
+        model_identity = file_identity(model) if model else None
+        directory = TemporaryDirectory(prefix="cellmatchr-filter-preview-")
+        dest = Path(directory.name)
+        entry = {"channel": channel, "n_objects": result["count"], "model_preview": True}
+        for item in ("raw", "labels", "source_rgb"):
+            if result.get(item):
+                target = dest / f"{item}.tif"
+                shutil.copyfile(result[item], target)
+                entry[item] = str(target)
+        manifest = dest / "parameter_wizard_manifest.json"
+        write_json(manifest, {
+            "base_name": preview["sample"], "channels": [entry],
+            "slide_signal_type": "brightfield" if preview["brightfield"] else "fluorescence",
+        })
+        old = getattr(self, "_model_preview_cache", None)
+        self._model_preview_cache = {
+            "directory": directory, "manifest": str(manifest), "channel": channel,
+            "signature": signature, "source": tuple(preview["source_path"]), "scene": preview["scene"],
+            "model": model_identity,
+        }
+        if old:
+            old["directory"].cleanup()
+
+    def _matching_model_preview(self, config, channels):
+        cached = getattr(self, "_model_preview_cache", None)
+        if (not cached or cached["channel"] not in channels or
+                any(config.get(key) != value for key, value in cached["signature"].items())):
+            return None
+        from .model_wizard_compute import file_identity
+
+        try:
+            source = _first_confocal_preview_input(
+                config["input_root_folder"], self._INPUT_EXTS, bool(config["seg_skip_subdirs"]))
+            if (not source or source[1] != cached["scene"] or file_identity(source[0]) != cached["source"]
+                    or (cached["model"] and file_identity(cached["model"][0]) != cached["model"])
+                    or not all((Path(cached["directory"].name) / filename).is_file()
+                               for filename in ("raw.tif", "labels.tif", "parameter_wizard_manifest.json"))):
+                return None
+        except OSError:
+            return None
+        return cached
+
     def _launch_parameter_wizard(self) -> None:
         """Launch the Parameter Wizard: runs unfiltered segmentation on the
         first sample only (parameter_wizard_compute.py, headless), then
@@ -3753,18 +3931,24 @@ class CellMatchrLauncher:
         if not channels:
             self._wizard_status.config(text="⚠  Channels to predict is required (red ✱).", fg=RED)
             return
+        try:
+            requested_channels = {int(part.strip()) for part in channels.split(",") if part.strip()}
+        except ValueError:
+            self._wizard_status.config(text="Use comma-separated channel numbers in Step 3.", fg=RED)
+            return
 
         save_config(self.config)
         save_project_config(self.config)
+        config = self.config.copy()
+        cached = self._matching_model_preview(config, requested_channels)
 
         out_dir = os.path.join(proj, "ParameterWizard_preview")
         manifest_path = os.path.join(out_dir, "parameter_wizard_manifest.json")
 
         self._wizard_btn.config(state="disabled", text="Running…")
         self._wizard_status.config(
-            text="Initial prediction in progress — this can take a while "
-                 "(first use of a model also downloads it, one time only)…",
-            fg=ACCENT)
+            text=(f"Reusing the model comparison patch for channel {cached['channel']}…"
+                  if cached else "Preparing unfiltered predictions…"), fg=ACCENT)
         self._wizard_progress.start(12)
 
         def _log_line(line: str) -> None:
@@ -3801,15 +3985,23 @@ class CellMatchrLauncher:
         def _thread():
             try:
                 self.root.after(0, _log_line, f"\n{'─'*60}")
-                self.root.after(0, _log_line, "▶  Parameter Wizard — Stage 1: unfiltered segmentation")
-                self.root.after(0, _log_line, f"{'─'*60}")
-                command, environment = segmentation_command(
-                    self._script("parameter_wizard_compute.py"), CONFIG_PATH, self.config)
-                rc = _run_and_stream(command + ["--out-dir", out_dir], environment)
-                if rc != 0:
-                    self.root.after(0, _log_line, f"\n✗  Stage 1 failed (exit {rc}).")
-                    self.root.after(0, _restore, f"✗  Segmentation failed (exit {rc}).", RED)
-                    return
+                display_manifest = manifest_path
+                reuse_args = []
+                if cached:
+                    self.root.after(0, _log_line,
+                                    f"Using the model comparison patch for channel {cached['channel']}.")
+                    reuse_args = ["--reuse-manifest", cached["manifest"]]
+                if cached and requested_channels == {cached["channel"]}:
+                    display_manifest = cached["manifest"]
+                else:
+                    self.root.after(0, _log_line, "▶  Parameter Wizard — unfiltered segmentation")
+                    command, environment = segmentation_command(
+                        self._script("parameter_wizard_compute.py"), CONFIG_PATH, config)
+                    rc = _run_and_stream(command + ["--out-dir", out_dir] + reuse_args, environment)
+                    if rc != 0:
+                        self.root.after(0, _log_line, f"\n✗  Segmentation failed (exit {rc}).")
+                        self.root.after(0, _restore, f"✗  Segmentation failed (exit {rc}).", RED)
+                        return
 
                 self.root.after(0, _log_line, f"\n{'─'*60}")
                 self.root.after(0, _log_line, "▶  Parameter Wizard — Stage 2: pick objects (napari)")
@@ -3818,7 +4010,7 @@ class CellMatchrLauncher:
                     text="Opening napari — pick your objects there…", fg=ACCENT))
                 rc = _run_and_stream([
                     sys.executable, self._script("parameter_wizard.py"),
-                    "--config", CONFIG_PATH, "--manifest", manifest_path,
+                    "--config", CONFIG_PATH, "--manifest", display_manifest,
                 ])
 
                 def _done():
@@ -3835,8 +4027,8 @@ class CellMatchrLauncher:
                         else:
                             self._per_ch_filt_enabled.set(True)
                             self._toggle_per_ch_filters()
-                        _restore("✔  Filter values updated below.", GREEN)
                         _log_line("\n✔  Parameter Wizard finished — filter values updated.")
+                        _restore("✔  Filter values updated below.", GREEN)
                     else:
                         _restore(f"✗  Failed (exit {rc}).", RED)
                         _log_line(f"\n✗  Parameter Wizard failed (exit code {rc}).")

@@ -116,6 +116,11 @@ for this Windows workflow.
 3. Double-click **Launch CellMatchR (Windows)**. `run-windows.cmd` in the
    app folder is another way to start it.
 
+Setup records the runtime, environment, and package cache paths in
+`setup-paths.txt` inside the runtime folder. For a custom runtime in a
+deeply nested folder, setup tries a shorter private cache to prevent
+package extraction errors. The runtime itself stays at the path you chose.
+
 ### macOS setup
 
 1. In **Terminal**, type `conda --version`. A version number means Conda is

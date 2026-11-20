@@ -47,6 +47,20 @@ class SlideTiffTests(unittest.TestCase):
         np.testing.assert_array_equal(scene.read_block(size=(64, 48)), preview)
         np.testing.assert_array_equal(scene.read_block((20, 17, 25, 29)), base[17:46, 20:45])
 
+    def test_old_zarr_error_explains_how_to_open_tiled_tiff(self):
+        path = self.folder / "tiled.tif"
+        tifffile.imwrite(path, np.zeros((32, 32), dtype=np.uint16), tile=(16, 16))
+        slide = TiffSlide(path)
+        self.addCleanup(slide.close)
+
+        def open_with_old_zarr(*args, **kwargs):
+            raise ValueError("zarr 2.18.7 < 3 is not supported") from ModuleNotFoundError(
+                "No module named 'zarr.abc'", name="zarr.abc")
+
+        with patch.object(tifffile.TiffPageSeries, "aszarr", side_effect=open_with_old_zarr):
+            with self.assertRaisesRegex(RuntimeError, "requires Zarr 3. Update the CellMatchR environment"):
+                slide.get_scene(0).read_block((0, 0, 16, 16))
+
     def test_rgb_preserves_contiguous_and_planar_samples(self):
         image = np.arange(33 * 32 * 3, dtype=np.uint16).reshape(33, 32, 3)
         for layout, source in (("contig", image), ("separate", np.moveaxis(image, -1, 0))):

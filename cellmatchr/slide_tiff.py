@@ -126,7 +126,11 @@ class _TiffScene:
             try:
                 import zarr
                 store = self._series.aszarr(level=level_index)
-            except ImportError as exc:
+            except (ImportError, ValueError) as exc:
+                # tifffile wraps the missing Zarr 3 store module in a ValueError.
+                missing_module = getattr(exc.__cause__, "name", None)
+                if isinstance(exc, ValueError) and missing_module not in ("zarr.abc", "zarr.abc.store"):
+                    raise
                 raise RuntimeError("Reading tiled or compressed TIFF slides requires Zarr 3. "
                                    "Update the CellMatchR environment from its environment file.") from exc
             try:

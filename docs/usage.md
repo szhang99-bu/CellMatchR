@@ -958,6 +958,7 @@ examples alone cannot establish generalization.
 | Windows shortcut is missing after moving the checkout | Run `.\setup-windows.cmd -ShortcutOnly` from PowerShell in the checkout. |
 | Windows GPU setup is unsuitable or unavailable | Run `.\setup-windows.cmd -Device CPU` for a CPU runtime; expect slower training and prediction. |
 | Linux menu entry opens an old checkout | Rerun `bash scripts/install_linux_launcher.sh` from the current checkout; use `bash run-linux.sh` to inspect startup messages. |
+| A tiled or compressed TIFF reports that it needs Zarr 3 | [Update the CellMatchR environment](#update-an-existing-git-installation), then reopen the slide. A Git pull alone leaves the installed Zarr version as it was. |
 | Channel preview is empty | Confirm the Step 2 input folder, inspect the file list, and check whether a LIF belongs to the other mode. |
 | A converted slide run is not the one being segmented | In Step 3 expand **Use a different converted output** and select the intended folder. |
 | Masks look sparse or contain many false detections | Test a representative image. Adjust model/Cellpose sensitivity, then inspect object filtering and preprocessing. Compare against human annotations. |
@@ -980,7 +981,9 @@ custom environment prefix.
 
 When reporting a reproducible issue, include your platform, file format,
 chosen backend/model, the relevant step's log, and a small example image if
-it can be shared. Remove identifying or sensitive data before sharing a
+it can be shared. For a Windows setup failure, include the error text from
+the setup window and `setup-paths.txt` from the runtime folder (usually
+`C:\CellMatchR`). Remove identifying or sensitive data before sharing a
 project configuration or raw image.
 
 ## Command-line reference

@@ -20,6 +20,9 @@ if __package__:
     from .file_paths import filesystem_path, read_tiff
 else:
     from file_paths import filesystem_path, read_tiff
+    # The launcher starts this file directly, so make its sibling package
+    # available for the training-model registry used during prediction.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _save_png(path, image):
@@ -1984,7 +1987,7 @@ def main():
             # checkpoints pre-date this rename, so we fix the keys on first run).
             _patch_decoder_checkpoints(MODEL_TYPE)
 
-            from .retraining import microsam_architecture
+            from cellmatchr.retraining import microsam_architecture
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
                 model_type=(microsam_architecture(CUSTOM_MODEL_PATH)
                             if CUSTOM_MODEL_PATH else MODEL_TYPE),
@@ -1996,7 +1999,7 @@ def main():
         "min_size": MIN_OBJECT_SIZE,
     }
     if SEG_BACKEND == "microsam" and CUSTOM_MODEL_PATH:
-        from .retraining import registered_microsam_foreground_threshold
+        from cellmatchr.retraining import registered_microsam_foreground_threshold
         tested_threshold = registered_microsam_foreground_threshold(
             CUSTOM_MODEL_PATH, PROJECT_OUTPUT_FOLDER)
         if tested_threshold is not None:

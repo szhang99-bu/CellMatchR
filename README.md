@@ -144,8 +144,11 @@ git pull --ff-only
 
   ```bash
   PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
-    conda env update --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml --prune
+    conda env update --prefix "${CELLMATCHR_LINUX_ENV:-$PWD/../CellMatchR-linux-env}" --file environment.yml --prune
   ```
+
+  If your launcher uses a custom environment path, set `CELLMATCHR_LINUX_ENV`
+  to that path before running the update.
 
 Wait for the environment command to finish, then reopen CellMatchR. If it
 fails, copy the full error from the run log; the last line alone may not show

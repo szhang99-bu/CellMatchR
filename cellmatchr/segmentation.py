@@ -1702,45 +1702,36 @@ def make_final_qc_mask_png(label_image, output_png_path, downsample=4):
 
 
 # =============================================================================
-# CHECKPOINT COMPATIBILITY PATCH
+# MODEL CACHE RECOVERY
 # =============================================================================
 
-def _patch_decoder_checkpoints(model_type: str) -> None:
-    """Rename old torch_em sampler key names in cached decoder checkpoints.
+def _restore_cached_microsam_decoder(model_type: str) -> None:
+    """Restore an older CellMatchR backup only if it matches Micro-SAM's registry."""
+    from pathlib import Path
+    import shutil
+    from tempfile import TemporaryDirectory
 
-    torch_em 0.8.0 renamed the Upsampler internal attribute from
-    ``self.block`` to ``self.conv``, which changed the state-dict key from
-    ``decoder.samplers.N.block.{weight,bias}`` to
-    ``decoder.samplers.N.conv.{weight,bias}``.  The published bioimage.io
-    checkpoints pre-date that rename.  This function detects and fixes the
-    mismatch in-place the first time segmentation is run.
-    """
-    import re, shutil
-    try:
-        from micro_sam.util import get_cache_directory
-        cache_dir = os.path.join(get_cache_directory(), "models")
-    except Exception:
-        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "micro_sam", "models")
+    from micro_sam import util
+    from pooch.hashes import hash_matches
 
-    decoder_path = os.path.join(cache_dir, f"{model_type}_decoder")
-    if not os.path.isfile(decoder_path):
-        return  # not yet downloaded — nothing to patch
+    registry = util.models()
+    name = f"{model_type}_decoder"
+    expected = registry.registry.get(name)
+    if expected is None:
+        return
+    decoder = Path(filesystem_path(registry.abspath / name))
+    backup = decoder.with_name(f"{name}.bak")
+    if not backup.is_file() or (decoder.is_file() and hash_matches(decoder, expected)):
+        return
 
-    import torch
-    state = torch.load(decoder_path, map_location="cpu", weights_only=True)
-    old_keys = [k for k in state if re.match(r"decoder\.samplers\.\d+\.block\.(weight|bias)$", k)]
-    if not old_keys:
-        return  # already up-to-date
-
-    print(f"[INFO] Patching decoder checkpoint for '{model_type}' "
-          f"(renaming {len(old_keys)} sampler keys: block → conv) …")
-    shutil.copy2(decoder_path, decoder_path + ".bak")
-    new_state = {
-        re.sub(r"(decoder\.samplers\.\d+\.)block\.", r"\1conv.", k): v
-        for k, v in state.items()
-    }
-    torch.save(new_state, decoder_path)
-    print(f"[INFO] Checkpoint patched successfully.")
+    # The old key-renaming step changed the bytes in the download cache.
+    # Micro-SAM selects the appropriate decoder architecture during loading.
+    with TemporaryDirectory(dir=decoder.parent, prefix=f".{name}-") as staging:
+        pending = Path(staging) / name
+        shutil.copyfile(backup, pending)
+        if hash_matches(pending, expected):
+            pending.replace(decoder)
+            print(f"[INFO] Restored the original cached decoder for '{model_type}'.")
 
 
 # =============================================================================
@@ -2029,15 +2020,14 @@ def _run(resources):
             print("Segmentation backend: StarDist 2D")
         else:
             print(f"Segmentation backend: Micro-SAM (model {MODEL_TYPE})")
-            # Patch cached decoder checkpoints if they were saved with old torch_em naming
-            # (torch_em 0.8+ renamed Upsampler.block → Upsampler.conv; published bioimage.io
-            # checkpoints pre-date this rename, so we fix the keys on first run).
-            _patch_decoder_checkpoints(MODEL_TYPE)
-
-            from cellmatchr.retraining import microsam_architecture
+            model_type = MODEL_TYPE
+            if CUSTOM_MODEL_PATH:
+                from cellmatchr.retraining import microsam_architecture
+                model_type = microsam_architecture(CUSTOM_MODEL_PATH)
+            else:
+                _restore_cached_microsam_decoder(model_type)
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
-                model_type=(microsam_architecture(CUSTOM_MODEL_PATH)
-                            if CUSTOM_MODEL_PATH else MODEL_TYPE),
+                model_type=model_type,
                 device=device,
                 checkpoint=CUSTOM_MODEL_PATH or None,
             )

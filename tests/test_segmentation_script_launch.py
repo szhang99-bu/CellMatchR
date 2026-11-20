@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 @unittest.skipUnless(importlib.util.find_spec("micro_sam"),
@@ -30,7 +31,7 @@ namespace = runpy.run_path(str(script), run_name='segmentation')
 state = namespace['main'].__globals__
 state.update(ROOT_INPUT_FOLDER=str(inputs), MAIN_OUTPUT_FOLDER=str(root / 'output'),
              PROJECT_OUTPUT_FOLDER=str(root), INPUT_TYPE='tif', SEG_BACKEND='microsam',
-             CUSTOM_MODEL_PATH='', _patch_decoder_checkpoints=lambda model: None)
+             CUSTOM_MODEL_PATH='', _restore_cached_microsam_decoder=lambda model: None)
 
 class ReachedModelLoad(Exception):
     pass
@@ -58,6 +59,35 @@ else:
                 env=environment, capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Reached Micro-SAM model load", result.stdout)
+
+    def test_restore_decoder_only_from_registry_verified_backup(self):
+        import pooch
+        from micro_sam import util
+        from cellmatchr.segmentation import _restore_cached_microsam_decoder
+
+        with tempfile.TemporaryDirectory() as work:
+            name = "vit_b_lm_decoder"
+            decoder = Path(work) / name
+            backup = decoder.with_suffix(".bak")
+            original = b"official decoder bytes"
+            backup.write_bytes(original)
+            registry = pooch.create(
+                path=work, base_url="", registry={name: f"xxh128:{pooch.file_hash(backup, alg='xxh128')}"}
+            )
+            with patch.object(util, "models", return_value=registry):
+                decoder.write_bytes(b"previously rewritten decoder")
+                _restore_cached_microsam_decoder("vit_b_lm")
+                self.assertEqual(decoder.read_bytes(), original)
+                self.assertEqual(backup.read_bytes(), original)
+
+                backup.write_bytes(b"unverified backup")
+                _restore_cached_microsam_decoder("vit_b_lm")
+                self.assertEqual(decoder.read_bytes(), original)
+
+                decoder.write_bytes(b"unverified active file")
+                _restore_cached_microsam_decoder("vit_b_lm")
+                self.assertEqual(decoder.read_bytes(), b"unverified active file")
+                self.assertEqual(set(Path(work).iterdir()), {decoder, backup})
 
 
 if __name__ == "__main__":

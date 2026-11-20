@@ -122,11 +122,12 @@ def _setup_backend(cfg: dict, resources):
           "time this model has been used on this machine, it downloads once (can be a few "
           "hundred MB) and is cached at ~/Library/Caches/micro_sam/models for every future "
           "run, including normal Run Segmentation.")
-    seg._patch_decoder_checkpoints(model_type)
     checkpoint = str(cfg.get("seg_custom_model_path") or "").strip() or None
     if checkpoint:
         from cellmatchr.retraining import microsam_architecture
         model_type = microsam_architecture(checkpoint)
+    else:
+        seg._restore_cached_microsam_decoder(model_type)
 
     last_exc = None
     for attempt in range(1, 4):

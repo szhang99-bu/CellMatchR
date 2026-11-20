@@ -181,8 +181,21 @@ update Python packages. Rerun `setup-windows.cmd` on Windows. On macOS run
 
 ```bash
 PIP_CONSTRAINT="$PWD/scripts/linux-pip-constraints.txt" \
-  conda env update --prefix "$PWD/../CellMatchR-linux-env" --file environment.yml --prune
+  conda env update --prefix "${CELLMATCHR_LINUX_ENV:-$PWD/../CellMatchR-linux-env}" --file environment.yml --prune
 ```
+
+If you installed the Linux environment in a custom location, set
+`CELLMATCHR_LINUX_ENV` to the same path your launcher uses before updating.
+To check the dependencies in that environment, run:
+
+```bash
+linux_env="${CELLMATCHR_LINUX_ENV:-$PWD/../CellMatchR-linux-env}"
+"$linux_env/bin/python" -c 'from importlib.metadata import version; print({p: version(p) for p in ("micro-sam", "torch-em", "zarr", "tifffile")})'
+```
+
+This version of CellMatchR expects Micro-SAM 1.7.0 and torch_em 0.8.1.
+Tiled or compressed TIFF slides require Zarr 3. Compare the printed versions
+with the pins in `environment.yml` if model checksums or TIFF reads fail.
 
 If you moved the checkout, recreate the Windows shortcut with
 `.\setup-windows.cmd -ShortcutOnly` from PowerShell, or rerun

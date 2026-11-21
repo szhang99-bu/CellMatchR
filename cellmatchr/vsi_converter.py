@@ -5,7 +5,10 @@
 import os
 import io
 import json
+import hashlib
+import re
 import traceback
+import unicodedata
 import numpy as np
 import tifffile as tiff
 import sys
@@ -551,11 +554,57 @@ def wait_for_viewer_close(viewer: napari.Viewer):
 # ----------------------------
 # MAIN APP
 # ----------------------------
+def _reserve_slide_base(source_path, output_dir, artifact_dirs):
+    """Reserve one export name across scenes, masks, metadata, and TIFFs."""
+    base = os.path.splitext(os.path.basename(source_path))[0]
+
+    def name_key(name):
+        return unicodedata.normalize("NFC", name).casefold()
+
+    used = set()
+    suffix = re.compile(r"_slice\d+_(?=roi\d+_|overview_meta\.json$)", re.IGNORECASE)
+    for folder in artifact_dirs:
+        with os.scandir(filesystem_path(folder)) as files:
+            for item in files:
+                for match in suffix.finditer(item.name):
+                    prefix = name_key(item.name[:match.start()])
+                    used.add(prefix)
+                    if prefix.startswith("debug_"):
+                        used.add(prefix.removeprefix("debug_"))
+
+    # Atomic reservations also protect between two simultaneously open
+    # converters, before their first ROI files are on disk.
+    reservations = os.path.join(output_dir, ".slide_names")
+    ensure_dir(reservations)
+    source = os.path.normcase(os.path.realpath(source_path))
+    tag = hashlib.sha256(os.fsencode(source)).hexdigest()[:8]
+    attempt = 0
+    while True:
+        if attempt == 0:
+            candidate = base
+        elif attempt == 1:
+            candidate = f"{base}__{tag}"
+        else:
+            candidate = f"{base}__{tag}_{attempt}"
+        key = name_key(candidate)
+        if key not in used:
+            digest = hashlib.sha256(os.fsencode(key)).hexdigest()
+            try:
+                os.mkdir(filesystem_path(os.path.join(reservations, digest)))
+            except FileExistsError:
+                pass
+            else:
+                return candidate
+        attempt += 1
+
+
 class VSINapariROIApp:
     def __init__(self, vsi_path: str, output_dir: str):
         self.vsi_path = vsi_path
         self.vsi_base = os.path.splitext(os.path.basename(vsi_path))[0]
         self.output_dir = output_dir
+        self._export_base = None
+        self._metadata_saved = set()
 
         self.intermediate_dir = os.path.join(self.output_dir, "intermediate_files")
         self.mask_dir = os.path.join(self.output_dir, "DONOTDELETE-MASK_FOR_VSI")
@@ -677,7 +726,7 @@ class VSINapariROIApp:
             overview_width = min(W_full, max(1, round(OVERVIEW_WIDTH * W_full / max(W_full, H_full))))
         self.overview, self.scale_overview_per_full = compute_overview(self.scene, overview_width)
 
-        meta = {
+        self._overview_metadata = {
             "vsi_path": self.vsi_path,
             "vsi_base": self.vsi_base,
             "scene_id_zero_indexed": int(scene_id),
@@ -688,12 +737,23 @@ class VSINapariROIApp:
             "scale_overview_per_full": float(self.scale_overview_per_full),
             "scale_full_per_overview": float(1.0 / self.scale_overview_per_full),
         }
-        meta_path = os.path.join(self.intermediate_dir, f"{self.vsi_base}_slice{scene_id+1:02d}_overview_meta.json")
-        with open(filesystem_path(meta_path), "w") as f:
-            json.dump(meta, f, indent=2)
-        debug(f"Wrote overview metadata: {meta_path}")
-
         self._update_header_ui()
+
+    def _prepare_scene_export(self):
+        if self._export_base is None:
+            self._export_base = _reserve_slide_base(
+                self.vsi_path, self.output_dir,
+                (self.intermediate_dir, self.mask_dir, self.export_dir))
+            if self._export_base != self.vsi_base:
+                debug(f"Existing exports kept. This slide will be saved as {self._export_base}.")
+        if self.scene_id not in self._metadata_saved:
+            meta_path = os.path.join(
+                self.intermediate_dir,
+                f"{self._export_base}_slice{self.scene_id+1:02d}_overview_meta.json")
+            with open(filesystem_path(meta_path), "w", encoding="utf-8") as f:
+                json.dump(dict(self._overview_metadata, vsi_base=self._export_base), f, indent=2)
+            self._metadata_saved.add(self.scene_id)
+            debug(f"Wrote overview metadata: {meta_path}")
 
     # ---------- Napari ----------
     def setup_viewer(self):
@@ -1319,6 +1379,7 @@ class VSINapariROIApp:
         if n == 0:
             debug("No ROIs to save.")
             return []
+        self._prepare_scene_export()
 
         H_ov, W_ov = self.overview.shape[0], self.overview.shape[1]
         slice_idx = self.scene_id + 1
@@ -1336,7 +1397,7 @@ class VSINapariROIApp:
 
             verts_path = os.path.join(
                 self.mask_dir,
-                f"{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}_vertices_overview_yx.npy"
+                f"{self._export_base}_slice{slice_idx:02d}_roi{i+1:02d}_vertices_overview_yx.npy"
             )
             np.save(filesystem_path(verts_path), poly)
 
@@ -1348,7 +1409,7 @@ class VSINapariROIApp:
                 "features": [{
                     "type": "Feature",
                     "properties": {
-                        "vsi_base": self.vsi_base,
+                        "vsi_base": self._export_base,
                         "slice_one_indexed": int(slice_idx),
                         "roi_one_indexed": int(i + 1),
                         "suffix": suffix,
@@ -1359,7 +1420,7 @@ class VSINapariROIApp:
             }
             geo_path = os.path.join(
                 self.mask_dir,
-                f"{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}{suffix_part}_overview.geojson"
+                f"{self._export_base}_slice{slice_idx:02d}_roi{i+1:02d}{suffix_part}_overview.geojson"
             )
             with open(filesystem_path(geo_path), "w") as f:
                 json.dump(geojson, f, indent=2)
@@ -1368,7 +1429,7 @@ class VSINapariROIApp:
             mask_vis = (mask * 255).astype(np.uint8)
             mask_path = os.path.join(
                 self.mask_dir,
-                f"{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}{suffix_part}_mask_overview.tif"
+                f"{self._export_base}_slice{slice_idx:02d}_roi{i+1:02d}{suffix_part}_mask_overview.tif"
             )
             tiff.imwrite(filesystem_path(mask_path), mask_vis, photometric="minisblack", compression=None)
 
@@ -1382,6 +1443,7 @@ class VSINapariROIApp:
         if n == 0:
             debug("No ROIs to export.")
             return []
+        self._prepare_scene_export()
 
         slice_idx = self.scene_id + 1
         tag = f"{debug_tag}_" if debug_tag else ""
@@ -1400,7 +1462,7 @@ class VSINapariROIApp:
 
             out_path = os.path.join(
                 self.export_dir,
-                f"{tag}{self.vsi_base}_slice{slice_idx:02d}_roi{i+1:02d}_FULLRES{suffix_part}.tif"
+                f"{tag}{self._export_base}_slice{slice_idx:02d}_roi{i+1:02d}_FULLRES{suffix_part}.tif"
             )
 
             debug(f"Export ROI {i+1}: full XYWH=({fx0},{fy0},{fw},{fh}) -> {out_path}")

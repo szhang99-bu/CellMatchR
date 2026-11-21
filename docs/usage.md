@@ -504,8 +504,13 @@ and segmentation outputs are not changed by retraining.
 Select the segmentation run to analyze. The selection is shared with Step 4,
 so check it again after switching between model runs. The **ROI mask folder**
 is optional: leave it blank for whole-image analysis. For directly read
-images, use matching full-size `.tif` masks or Fiji `.roi` files. For converted
-slide scans, select the masks from the same converter run as the image crops.
+images, use matching full-size `.tif` or `.tiff` masks or Fiji `.roi` files with
+the same base name as the image. For converted slide scans, select masks
+from the same converter run as the image crops. If an older mask name needs
+confirmation, select it in **Choose an ROI mask**. **Whole image only** keeps
+the whole-image measurements and leaves the ROI columns blank. The same
+happens when a matching mask is missing. To revisit a choice, click
+**Review ROI mask matches**.
 
 The **Validation Status** panel shows review progress. When validation is
 complete across the selected channel, analysis excludes objects marked
@@ -638,7 +643,7 @@ You must choose one of these before **Start Retraining** becomes available:
 
 | Choice | What stays out of training | When to use it |
 |---|---|---|
-| **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two corrected or fully verified images are available. This gives an independent before/after check. |
+| **Reserve one whole image** (recommended) | Click **Choose held-out image from library**, then click that image's preview. | At least two distinct corrected or fully verified image fields are available. This gives an independent before/after check. |
 | **Reserve a small patch** | A randomly chosen patch around an ARTIFACT or erased prediction; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has a known incorrect prediction. Erased predictions can anchor the patch when the original prediction mask was saved by the editor. The default target is 8 incorrect predictions; the report records the random seed, exact patch location, and actual count. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
 
@@ -652,6 +657,10 @@ default is 8.*
 Choose a holdout that resembles the images you intend to process later.
 An independent holdout stays untouched by training; reserve more projects or
 images for a stronger future comparison when possible.
+Identical image pixels from saved runs are treated as one field for validation
+splits. Holding out a whole image also keeps its copies out of training. Patch
+validation excludes copies of the selected field and uses eligible crops
+outside the patch.
 
 The **Target incorrect predictions per patch (approx.)** field applies only
 to the small-patch option. Its default is **8**, and it accepts **1–50**.
@@ -992,7 +1001,7 @@ examples alone cannot establish generalization.
 | Masks look sparse or contain many false detections | Test a representative image. Adjust model/Cellpose sensitivity, then inspect object filtering and preprocessing. Compare against human annotations. |
 | Run stopped partway through a batch | Reopen Step 3 and use **Continue a previous run** if shown. Inspect the run log for the sample that stopped it. |
 | Analysis has blank or missing-channel rows | Verify both selected channels exist for each sample; see `analysis_errors.log`. |
-| Training cannot start | Finish validation, resolve MAYBE decisions, choose one of the three validation approaches, and check that the starting model and backend dependencies are installed. A whole-image holdout needs two included images; the patch or in-sample choice can use one. |
+| Training cannot start | Include eligible corrected or verified masks, resolve outstanding decisions for any selected cell labels, choose a validation approach, and check that the starting model and backend dependencies are installed. A whole-image holdout needs two distinct image fields. The patch or in-sample choice can use one. |
 | Training runs out of memory | Reduce batch or patch size where supported, select a smaller model, or move training to a machine with more GPU/unified memory. |
 
 For the macOS ZIP permission issue, run:

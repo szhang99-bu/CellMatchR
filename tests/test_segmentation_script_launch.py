@@ -1,18 +1,71 @@
 """The launcher executes segmentation.py as a file, outside package mode."""
 
 import importlib.util
+import contextlib
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import numpy as np
+import tifffile
 
 
 @unittest.skipUnless(importlib.util.find_spec("micro_sam"),
                      "Micro-SAM is required for the segmentation launch check")
 class SegmentationScriptLaunchTests(unittest.TestCase):
+    def test_tiff_time_channel_and_depth_axes_produce_legacy_split_files(self):
+        from cellmatchr.segmentation import save_raw_split_tiffs
+
+        data = np.arange(2 * 3 * 2 * 8 * 9, dtype=np.uint16).reshape(2, 3, 2, 8, 9)
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            folder = Path(directory)
+            for axes, pixels, expected in (
+                ("TZCYX", data, data[0].max(axis=0)),
+                ("TZYX", data[:, :, 0], data[0, :, 0].max(axis=0)[None]),
+                ("QYX", data[0, 0], data[0, 0]),
+            ):
+                with self.subTest(axes=axes):
+                    source = folder / f"{axes}.tif"
+                    tifffile.imwrite(source, pixels, photometric="minisblack", metadata={"axes": axes})
+                    result = save_raw_split_tiffs(str(source), directory, axes)
+                    self.assertEqual(list(result), list(range(len(expected))))
+                    for index, channel in enumerate(expected):
+                        self.assertEqual(Path(result[index]).name, f"{axes}_split_ch{index}.tif")
+                        np.testing.assert_array_equal(tifffile.imread(result[index]), channel)
+
+    def test_tile_stitch_keeps_cell_ids_across_anchored_seams(self):
+        from cellmatchr import segmentation
+
+        image = np.zeros((8, 13), dtype=np.uint8)
+        image[1:3, 8:12] = 1    # Crosses the actual join with the last anchored tile.
+        image[5:7, 4:6] = 2    # Adjacent cells touching at the first seam.
+        image[5:7, 6:8] = 3
+        model = SimpleNamespace(predict_instances=lambda pixels:
+                                (np.rint(pixels * 255).astype(np.uint32), None))
+        settings = dict(SKIP_EMPTY_TILES=False, MIN_OBJECT_SIZE=0, MAX_OBJECT_SIZE=0,
+                        RAW_MEAN_MIN=0, RAW_MEAN_MAX=0, MAX_MAJOR_MINOR_RATIO=0)
+        with patch.multiple(segmentation, **settings), \
+                patch.object(segmentation, "preprocess_tile_for_sam",
+                             side_effect=lambda tile, **kwargs: (tile, None)), \
+                patch.object(segmentation, "should_save_debug_images", return_value=False), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for pixels in (image, image.T):
+                mask = segmentation.segment_by_tiling(
+                    None, None, pixels, (8, 8), (2, 2), 2, stardist_model=model)
+                self.assertEqual(mask.dtype, np.uint32)
+                np.testing.assert_array_equal(mask > 0, pixels > 0)
+                ids = []
+                for value in (1, 2, 3):
+                    ids.append(set(mask[pixels == value]))
+                    self.assertEqual(len(ids[-1]), 1)
+                self.assertEqual(len(set.union(*ids)), 3)
+
     def test_direct_script_reaches_microsam_model_loader(self):
         script = Path(__file__).resolve().parents[1] / "cellmatchr" / "segmentation.py"
         code = """

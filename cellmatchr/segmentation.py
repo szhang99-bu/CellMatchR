@@ -556,6 +556,35 @@ def make_tile_coordinates(image_shape, tile_shape, halo):
     return coords
 
 
+def _tile_overlap_matches(previous, current, axis, start, end):
+    """Match objects only when both predictions agree across a core seam."""
+    first = max(1, min(start, end))
+    last = min(previous.shape[axis] - 1, max(start, end))
+    if first > last:
+        return []
+    foreground = (previous > 0) & (current > 0)
+    if not foreground.any():
+        return []
+    pairs = (previous[foreground].astype(np.uint64) << 32) | current[foreground]
+    ids, counts = np.unique(pairs, return_counts=True)
+    previous_ids, previous_counts = np.unique(previous, return_counts=True)
+    current_ids, current_counts = np.unique(current, return_counts=True)
+    left_areas = dict(zip(previous_ids, previous_counts))
+    right_areas = dict(zip(current_ids, current_counts))
+    previous, current = np.moveaxis(previous, axis, 0), np.moveaxis(current, axis, 0)
+    before = (previous[first - 1:last], current[first - 1:last])
+    after = (previous[first:last + 1], current[first:last + 1])
+    crossing = (before[0] == after[0]) & (before[1] == after[1]) & (before[0] > 0) & (before[1] > 0)
+    crossing_pairs = set(zip(before[0][crossing], before[1][crossing]))
+    matches = []
+    for pair, count in zip(ids.tolist(), counts):
+        left, right = pair >> 32, pair & 0xFFFFFFFF
+        if ((left, right) in crossing_pairs
+                and 2 * count > max(left_areas[left], right_areas[right])):
+            matches.append((left, right))
+    return matches
+
+
 # =============================================================================
 # MICRO-SAM TILED SEGMENTATION
 # =============================================================================
@@ -790,6 +819,20 @@ def segment_by_tiling(
         tile_shape=tile_shape,
         halo=halo
     )
+    ys, xs = (sorted(set(values)) for values in zip(*coords))
+    next_y = dict(zip(ys, ys[1:]))
+    next_x = dict(zip(xs, xs[1:]))
+    bottom_edges = {}
+    right_edge = None
+    parents = {}
+    group_tiles = {}
+
+    def representative(label):
+        while label in parents:
+            if parents[label] in parents:
+                parents[label] = parents[parents[label]]
+            label = parents[label]
+        return label
 
     # Empty-tile skipping is an optimisation for large, mostly-blank slide
     # scans. For a single-tile image (e.g. a 1024×1024 63× confocal field)
@@ -837,6 +880,9 @@ def segment_by_tiling(
         tqdm(coords, desc="    Tiling Progress", leave=False)
     ):
         y0, x0 = corner_coord
+        above = bottom_edges.pop((y0, x0), None)
+        left = right_edge if x0 != xs[0] else None
+        right_edge = None
 
         y1 = min(y0 + tile_shape[0], image_shape[0])
         x1 = min(x0 + tile_shape[1], image_shape[1])
@@ -1058,9 +1104,47 @@ def segment_by_tiling(
             & (tile_core_data_renumbered > 0)
         )
 
-        final_segmentation[core_slices_global][mask_to_write] = tile_core_data_renumbered[mask_to_write]
+        written = tile_core_data_renumbered[mask_to_write]
+        current_core_data[mask_to_write] = written
+        if len(coords) > 1:
+            # Keep only the strips needed by the next tile in each direction.
+            # Halo-only labels have no owned pixels and cannot link objects.
+            owned_labels = np.unique(tile_core_data[mask_to_write])
 
-        max_id = int(final_segmentation.max())
+            def numbered_overlap(strip):
+                return np.where(np.isin(strip, owned_labels), strip + max_id, 0)
+
+            for neighbor, axis, seam in (
+                (above, 0, local_y_start), (left, 1, local_x_start)
+            ):
+                if neighbor is None:
+                    continue
+                strip, neighbor_tile = neighbor
+                height, width = strip.shape
+                overlap = numbered_overlap(labeled_tile[:height, :width])
+                # The final anchored tile can overlap the previous tile's core.
+                previous_core_end = strip.shape[axis] - halo[axis]
+                for previous_id, current_id in _tile_overlap_matches(
+                        strip, overlap, axis, seam, previous_core_end):
+                    a, b = representative(previous_id), representative(current_id)
+                    a_tiles = group_tiles.get(a, {neighbor_tile})
+                    b_tiles = group_tiles.get(b, {tile_index})
+                    if a == b or a_tiles & b_tiles:
+                        continue
+                    keep, merge = sorted((a, b))
+                    parents[merge] = keep
+                    group_tiles[keep] = a_tiles | b_tiles
+                    group_tiles.pop(merge, None)
+
+            if next_y.get(y0, y1) < y1:
+                bottom_edges[next_y[y0], x0] = (
+                    numbered_overlap(labeled_tile[next_y[y0] - y0:, :]), tile_index)
+            if next_x.get(x0, x1) < x1:
+                right_edge = (
+                    numbered_overlap(labeled_tile[:, next_x[x0] - x0:]), tile_index)
+
+        if written.size:
+            max_id = int(written.max())
 
         written_tiles += 1
         rec["status"] = "written"
@@ -1075,6 +1159,15 @@ def segment_by_tiling(
             f"filtered_labels={rec['n_filtered_labels']}; "
             f"max_label={max_id}"
         )
+
+    if parents:
+        lookup = np.arange(max_id + 1, dtype=np.uint32)
+        for label in parents:
+            lookup[label] = representative(label)
+        for start in range(0, image_shape[0], tile_shape[0]):
+            rows = final_segmentation[start:start + tile_shape[0]]
+            rows[:] = lookup[rows]
+        print(f"    Rejoined {len(parents)} tile-edge label fragments")
 
     print(f"    Processed tiles with signal: {processed_tiles}")
     print(f"    Skipped empty/low-signal tiles: {skipped_empty_tiles}")
@@ -1410,6 +1503,26 @@ def _brightfield_gray(data: np.ndarray, axes_meta: str = "") -> np.ndarray:
     return gray
 
 
+def _labelled_tiff_channels(data, axes):
+    """Return C/S channels in TIFF order, projected along Z."""
+    if len(axes) != data.ndim:
+        return None
+    # Generic TIFF pages (Q/I) still use the historical shape heuristic.
+    index = tuple(0 if (axis not in "ZCSYX" and size == 1)
+                  else slice(None) for axis, size in zip(axes, data.shape))
+    axes = "".join(axis for axis, pos in zip(axes, index) if isinstance(pos, slice))
+    if len(set(axes)) != len(axes) or not {"Y", "X"} <= set(axes) <= set("ZCSYX"):
+        return None
+    data = data[index]
+    if "Z" in axes:
+        data = data.max(axis=axes.index("Z"))
+        axes = axes.replace("Z", "")
+    order = [i for i, axis in enumerate(axes) if axis in "CS"]
+    order.extend((axes.index("Y"), axes.index("X")))
+    data = data.transpose(order)
+    return data.reshape((-1, *data.shape[-2:]))
+
+
 def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None,
                          brightfield=False):
     """
@@ -1515,7 +1628,7 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None,
                 _save_split_tiff(ch.astype(np.uint16), ch_index, output_subfolder, base_name, split_tiff_paths)
 
     elif file_path.lower().endswith((".tif", ".tiff")):
-        with tifffile.TiffFile(file_path) as tif:
+        with tifffile.TiffFile(filesystem_path(file_path)) as tif:
             data = tif.asarray()
             axes_meta = (tif.series[0].axes if tif.series else "").upper()
 
@@ -1529,7 +1642,18 @@ def save_raw_split_tiffs(file_path, output_subfolder, base_name, lif_scene=None,
                              output_subfolder, base_name, split_tiff_paths)
             return split_tiff_paths
 
-        if data.ndim == 2:
+        if "T" in axes_meta and len(axes_meta) == data.ndim:
+            time_axis = axes_meta.index("T")
+            data = np.take(data, 0, axis=time_axis)
+            axes_meta = axes_meta.replace("T", "", 1)
+            print("    Using the first TIFF timepoint")
+        labelled_channels = _labelled_tiff_channels(data, axes_meta)
+        if labelled_channels is not None:
+            for ch_index, channel in enumerate(labelled_channels):
+                _save_split_tiff(channel.astype(np.uint16), ch_index, output_subfolder,
+                                 base_name, split_tiff_paths)
+
+        elif data.ndim == 2:
             # (Y, X) — single channel, no Z
             _save_split_tiff(data.astype(np.uint16), 0, output_subfolder, base_name, split_tiff_paths)
 

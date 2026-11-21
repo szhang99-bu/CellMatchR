@@ -221,7 +221,8 @@ class TrainingWorkflowTests(unittest.TestCase):
     def test_three_validation_choices_are_explicit(self):
         project, run = self.project("current")
         self.sample(run, "a")
-        self.sample(run, "b")
+        distinct = self.sample(run, "b") / "b_split_ch1.tif"
+        tifffile.imwrite(distinct, tifffile.imread(distinct) + 1)
         examples, _ = collect_source_examples([
             {"project": str(project), "seg_run": run.name, "channel": 1}])
         with self.assertRaisesRegex(ValueError, "Choose a validation approach"):
@@ -233,6 +234,35 @@ class TrainingWorkflowTests(unittest.TestCase):
         train, val, plan = plan_examples(examples[:1], "training_image")
         self.assertEqual(train[0]["key"], val[0]["key"])
         self.assertFalse(plan["independent"])
+
+    def test_duplicate_images_across_runs_do_not_leak_into_training(self):
+        project, run = self.project("current")
+        first = self.sample(run, "a")
+        distinct = self.sample(run, "b") / "b_split_ch1.tif"
+        tifffile.imwrite(distinct, tifffile.imread(distinct) + 1)
+        other_run = project / "Segmentation_2"
+        other_run.mkdir()
+        duplicate = self.sample(other_run, "renamed") / "renamed_split_ch1.tif"
+        tifffile.imwrite(duplicate, tifffile.imread(first / "a_split_ch1.tif"),
+                         compression="deflate", metadata={"description": "copied field"})
+        examples, _ = collect_source_examples([
+            {"project": str(project), "seg_run": entry.name, "channel": 1}
+            for entry in (run, other_run)
+        ])
+        target = next(item for item in examples if item["sample"] == "a")
+        for mode in ("whole_image", "patch", "automatic"):
+            with self.subTest(mode=mode):
+                train, val, _ = plan_examples(examples, mode, target["key"])
+                self.assertNotIn("renamed", [item["sample"] for item in val])
+                if mode == "automatic":
+                    self.assertEqual({item["sample"] for item in train}, {"a", "renamed"})
+                else:
+                    self.assertNotIn("renamed", [item["sample"] for item in train])
+                    self.assertEqual(val[0]["sample"], "a")
+                    self.assertTrue(any(item["sample"] == "b" for item in train))
+        duplicates = [item for item in examples if item["sample"] != "b"]
+        with self.assertRaisesRegex(ValueError, "two distinct image fields"):
+            plan_examples(duplicates, "whole_image", target["key"])
 
     def test_patch_holdout_never_reuses_its_pixels_for_training(self):
         project, run = self.project("current")
@@ -335,7 +365,8 @@ class TrainingWorkflowTests(unittest.TestCase):
         self.sample(current_run, "a")
         self.sample(current_run, "b")
         self.sample(imported_run, "exclude_me")
-        self.sample(imported_run, "holdout")
+        raw = self.sample(imported_run, "holdout") / "holdout_split_ch1.tif"
+        tifffile.imwrite(raw, tifffile.imread(raw) + 1)
         sources = [
             {"project": str(current), "seg_run": current_run.name, "channel": 1},
             {"project": str(imported), "seg_run": imported_run.name, "channel": 1},

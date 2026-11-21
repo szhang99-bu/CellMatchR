@@ -536,6 +536,69 @@ def _patch_validation_split(example: dict, target_incorrect: int,
                                "incorrect_objects_in_patch": len(contained)}
 
 
+def _raw_fingerprint(path):
+    """Identify identical pixels even when TIFF tags or compression differ."""
+    try:
+        image = tifffile.memmap(Path(filesystem_path(path)), mode="r")
+    except ValueError:
+        image = read_tiff(path)
+    image = np.ascontiguousarray(image, dtype=image.dtype.newbyteorder("<"))
+    digest = hashlib.sha256(repr((image.shape, image.dtype.str)).encode("ascii"))
+    digest.update(memoryview(image).cast("B"))
+    return digest.hexdigest()
+
+
+def _training_image_groups(examples):
+    """Keep duplicate images and channels from a known shared field together."""
+    parents = list(range(len(examples)))
+    known = {}
+    fingerprints = {}
+    run_sources = {}
+
+    def representative(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    for index, item in enumerate(examples):
+        raw_path = os.path.normcase(os.path.realpath(item["raw"]))
+        if raw_path not in fingerprints:
+            fingerprints[raw_path] = _raw_fingerprint(raw_path)
+        keys = [("pixels", fingerprints[raw_path]),
+                ("sample folder", os.path.dirname(raw_path))]
+        project, run = item.get("project"), item.get("seg_run")
+        if project and run:
+            run_key = (project, run)
+            if run_key not in run_sources:
+                records = {}
+                progress = Path(filesystem_path(Path(project) / run / "_run_progress.json"))
+                try:
+                    inputs = json.loads(progress.read_text(encoding="utf-8"))["input_sources"]
+                    if inputs.get("converter_run"):
+                        records = {
+                            row["sample_name"]: (project, inputs["converter_run"], row["path"],
+                                                 row.get("scene_index"))
+                            for row in inputs["samples"]
+                        }
+                except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                    pass  # Older projects may have no usable source record.
+                run_sources[run_key] = records
+            identity = run_sources[run_key].get(item["sample"])
+            if identity:
+                keys.append(("converter source", identity))
+        for key in keys:
+            first = known.setdefault(key, index)
+            a, b = representative(first), representative(index)
+            if a != b:
+                parents[max(a, b)] = min(a, b)
+
+    groups = {}
+    for index, item in enumerate(examples):
+        groups.setdefault(representative(index), []).append(item)
+    return list(groups.values())
+
+
 def plan_examples(examples: list[dict], validation_mode: str,
                   validation_key: str = "",
                   patch_target_incorrect: int = DEFAULT_PATCH_TARGET_INCORRECT,
@@ -545,18 +608,21 @@ def plan_examples(examples: list[dict], validation_mode: str,
     if not examples:
         raise ValueError("No corrected or verified images are selected for training")
     if validation_mode == "automatic":
-        if len(examples) < 2:
-            raise ValueError("At least two training images are needed")
-        count = max(1, round(len(examples) * validation_percent / 100))
-        return examples[:-count], examples[-count:], {"mode": "automatic"}
+        groups = _training_image_groups(examples)
+        if len(groups) < 2:
+            raise ValueError("Automatic validation needs at least two distinct image fields")
+        count = min(len(groups) - 1, max(1, round(len(groups) * validation_percent / 100)))
+        return ([item for group in groups[:-count] for item in group],
+                [item for group in groups[-count:] for item in group], {"mode": "automatic"})
     if validation_mode == "whole_image":
-        if len(examples) < 2:
-            raise ValueError("Whole-image holdout needs at least two selected images")
         matches = [item for item in examples if item["key"] == validation_key]
         if len(matches) != 1:
             raise ValueError("Click one image in the library to reserve it for validation")
-        return [item for item in examples if item["key"] != validation_key], matches, {
-            "mode": "whole_image", "heldout_key": validation_key}
+        groups = _training_image_groups(examples)
+        if len(groups) < 2:
+            raise ValueError("Whole-image holdout needs at least two distinct image fields")
+        training = [item for group in groups if matches[0] not in group for item in group]
+        return training, matches, {"mode": "whole_image", "heldout_key": validation_key}
     if validation_mode == "training_image":
         # Deliberately reuse a training image. This is not independent validation.
         choice = next((item for item in examples if item["key"] == validation_key), examples[0])
@@ -579,7 +645,8 @@ def plan_examples(examples: list[dict], validation_mode: str,
         choice = candidates[int(rng.integers(len(candidates)))]
         strips, heldout, details = _patch_validation_split(
             choice, patch_target_incorrect, rng)
-        training = [item for item in examples if item["key"] != choice["key"]] + strips
+        groups = _training_image_groups(examples)
+        training = [item for group in groups if choice not in group for item in group] + strips
         if not training:
             raise ValueError("The validation patch leaves no trainable cells outside it; "
                              "choose another image or use the all-data option")

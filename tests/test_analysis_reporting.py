@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -34,6 +35,7 @@ class AnalysisReportingTests(unittest.TestCase):
             "COI_CHANNEL": 1,
             "PM_CHANNEL": 3,
             "ROI_MASK_FOLDER": "",
+            "ROI_MASK_CHOICES": {},
             "SAVE_QC_PNG": False,
             "ANALYSIS_SUBFOLDER_NAME": "analysis_results",
             "APPLY_PARTIAL_VALIDATION": False,
@@ -92,6 +94,37 @@ class AnalysisReportingTests(unittest.TestCase):
         self.assertIn("0 errors", output)
         self.assertTrue((good / "analysis_results" / "good_summary.csv").is_file())
         self.assertFalse((missing / "analysis_results" / "missing_ch3_summary.csv").exists())
+
+    def test_distinct_names_and_ambiguous_legacy_masks_do_not_take_first_match(self):
+        self.make_sample("Mouse1")
+        self.make_sample("Animal2")
+        masks = self.root / "masks"
+        masks.mkdir()
+        values = np.ones((8, 8), np.uint8)
+        for name in ("Mouse10.tif", "Animal2.tif", "Animal2_mask_overview.tiff"):
+            tifffile.imwrite(masks / name, values)
+        analysis.ROI_MASK_FOLDER = str(masks)
+        table, _, log = self.run_analysis()
+        rows = table.set_index("project_name")
+        self.assertTrue(rows["roi_mask_file"].isna().all())
+        self.assertTrue(rows["roi_area_pixels"].isna().all())
+        self.assertTrue((rows["channel_1_total_count"] == 1).all())
+        self.assertIn("ROI mask for Animal2 needs confirmation", log)
+
+        launcher = CellMatchrLauncher.__new__(CellMatchrLauncher)
+        launcher.root = None
+        launcher.config = {"ana_roi_mask_folder": str(masks)}
+        with patch("cellmatchr.launcher._ROIMaskChoiceDialog",
+                   return_value=SimpleNamespace(result="Animal2.tif")) as chooser:
+            self.assertTrue(launcher._confirm_legacy_roi_matches(str(self.seg_root)))
+        chooser.assert_called_once()
+        path = self.root / "config.json"
+        path.write_text(json.dumps({
+            **launcher.config, "ana_microsam_output_root": str(self.seg_root)}))
+        analysis._apply_config(str(path))
+        self.assertEqual(analysis.find_roi_mask_for_project("Animal2", str(masks)),
+                         str(masks / "Animal2.tif"))
+        self.assertIsNone(analysis.find_roi_mask_for_project("Mouse1", str(masks)))
 
     def test_all_missing_channels_preserves_summary_schema(self):
         self.make_sample("missing_mask", missing={(3, "mask")})

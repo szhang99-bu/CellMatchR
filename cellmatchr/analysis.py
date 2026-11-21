@@ -1,5 +1,4 @@
 import os
-import re
 import json
 import traceback
 import numpy as np
@@ -12,9 +11,13 @@ from skimage.segmentation import find_boundaries
 from skimage.draw import polygon as sk_polygon
 
 if __package__:
+    from .roi_mask_matching import (normalize_name_for_matching, roi_choice_context,
+                                    roi_mask_files, roi_match_candidates)
     from .file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from .validation_state import get_change_state, get_validation_tsv_path
 else:
+    from roi_mask_matching import (normalize_name_for_matching, roi_choice_context,
+                                   roi_mask_files, roi_match_candidates)
     from file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from validation_state import get_change_state, get_validation_tsv_path
 
@@ -29,6 +32,7 @@ ANALYSIS_OUTPUT_ROOT  = ""   # output: where combined CSV/Excel are written
 # ROI mask folder — only used for the VSI pipeline.
 # Leave empty ("") to skip ROI analysis entirely.
 ROI_MASK_FOLDER = ""
+ROI_MASK_CHOICES = {}
 
 # Channel indices (0-based), matching segmentation output
 COI_CHANNEL = 1   # Cell of Interest channel
@@ -181,75 +185,26 @@ def get_project_folders(root):
     return folders
 
 
-def normalize_name_for_matching(name):
-    name = os.path.basename(name)
-    # Strip only KNOWN mask/image extensions. Do NOT use os.path.splitext:
-    # image names can contain dots (e.g. "F3.0.3_mouse1514_…"), and splitext
-    # would chop the name at that dot — collapsing distinct images to the same
-    # prefix and cross-matching their ROI files.
-    name = re.sub(r"\.(roi|tif|tiff|czi|lif|nd2|oib|oif|png)$", "", name,
-                  flags=re.IGNORECASE)
-    name = re.sub(r"_predict_original_ch\d+.*$", "", name)
-    suffixes = [
-        "_mask_overview", "_overview", "_vertices_overview_yx",
-        "_split_ch0", "_split_ch1", "_split_ch2", "_split_ch3",
-    ]
-    for suffix in suffixes:
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-    name = re.sub(r"(^|_)FULLRES(_|$)", "_", name, flags=re.IGNORECASE)
-    name = re.sub(r"_+", "_", name)
-    return name.strip("_")
-
-
 # =============================================================================
 # ROI MASK HANDLING
 # =============================================================================
 
 def find_roi_mask_for_project(project_name, roi_mask_folder):
-    """
-    Find the ROI mask file for a project.
-
-    Searches for any .tif file in roi_mask_folder whose name contains the
-    normalised project name (or vice versa). VSI-pipeline files named
-    *_mask_overview.tif are matched the same way as plain TIF masks.
-
-    The mask file must contain the original image / project name somewhere
-    in its filename so the association is unambiguous.
-
-    Returns None (instead of raising) when the folder is empty or mask is missing.
-    """
-    if not roi_mask_folder or not os.path.isdir(roi_mask_folder):
+    if not roi_mask_folder:
         return None
-
-    candidates = sorted(
-        matching_paths(roi_mask_folder, "*.tif") +
-        matching_paths(roi_mask_folder, "*.roi")
-    )
-    if not candidates:
-        print(f"  [WARNING] No .tif or .roi mask files found in {roi_mask_folder}")
-        return None
-
-    project_norm = normalize_name_for_matching(project_name)
-
-    exact_matches = [p for p in candidates
-                     if normalize_name_for_matching(p) == project_norm]
-    if len(exact_matches) == 1:
-        return exact_matches[0]
-    if len(exact_matches) > 1:
-        print("  [WARNING] Multiple exact ROI mask matches. Using first.")
-        return exact_matches[0]
-
-    fuzzy_matches = [p for p in candidates
-                     if project_norm in normalize_name_for_matching(p)
-                     or normalize_name_for_matching(p) in project_norm]
-    if len(fuzzy_matches) == 1:
-        return fuzzy_matches[0]
-    if len(fuzzy_matches) > 1:
-        print("  [WARNING] Multiple fuzzy ROI mask matches. Using first.")
-        return fuzzy_matches[0]
-
-    print(f"  [WARNING] No ROI mask found for: {project_name} — ROI analysis skipped.")
+    match, candidates = roi_match_candidates(project_name, roi_mask_files(roi_mask_folder))
+    if match:
+        return match
+    choice = ROI_MASK_CHOICES.get(project_name)
+    for candidate in candidates:
+        if os.path.basename(candidate) == choice:
+            return candidate
+    if candidates and choice != "":
+        print(f"  [WARNING] ROI mask for {project_name} needs confirmation "
+              "in Step 5. ROI counts will be blank.")
+    elif not candidates:
+        print(f"  [WARNING] No matching ROI mask for {project_name}. "
+              "ROI counts will be blank.")
     return None
 
 
@@ -1180,7 +1135,7 @@ def main():
 def _apply_config(config_path: str) -> None:
     """Override module-level settings from a CellMatchr config file."""
     import json
-    global MICROSAM_OUTPUT_ROOT, ANALYSIS_OUTPUT_ROOT, ROI_MASK_FOLDER
+    global MICROSAM_OUTPUT_ROOT, ANALYSIS_OUTPUT_ROOT, ROI_MASK_FOLDER, ROI_MASK_CHOICES
     global COI_CHANNEL, PM_CHANNEL, IOU_THRESHOLD
     global ROI_CELL_RULE, ANALYSIS_SUBFOLDER_NAME, SAVE_QC_PNG
 
@@ -1204,6 +1159,13 @@ def _apply_config(config_path: str) -> None:
 
     roi_folder = cfg.get("ana_roi_mask_folder", "").strip()
     ROI_MASK_FOLDER = roi_folder  # may be empty — that's OK, ROI analysis will be skipped
+
+    ROI_MASK_CHOICES = {}
+    saved = cfg.get("ana_roi_mask_choices")
+    if (roi_folder and isinstance(saved, dict)
+            and saved.get("context") == roi_choice_context(MICROSAM_OUTPUT_ROOT, roi_folder)
+            and isinstance(saved.get("samples"), dict)):
+        ROI_MASK_CHOICES = saved["samples"]
 
     try:
         COI_CHANNEL = int(cfg.get("ana_red_channel", COI_CHANNEL))

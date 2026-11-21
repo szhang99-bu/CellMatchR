@@ -25,6 +25,7 @@ from .microsam2 import (
 )
 from .file_paths import filesystem_path, matching_paths, prediction_channel
 from .model_wizard_archive import FOLDER as MODEL_PREVIEW_FOLDER
+from .roi_mask_matching import roi_choice_context, roi_mask_files, roi_match_candidates
 
 # Optional PIL for logo
 try:
@@ -225,11 +226,9 @@ def _has_converter_roi_masks(folder: str) -> bool:
 
 
 def _has_analysis_roi_masks(folder: str) -> bool:
-    """Accept the .tif and .roi files that analysis can read from a custom folder."""
+    """Accept the TIFF and ImageJ masks supported by analysis."""
     try:
-        with os.scandir(folder) as files:
-            return any(item.is_file() and item.name.endswith(
-                (".tif", ".roi")) for item in files)
+        return bool(roi_mask_files(folder))
     except OSError:
         return False
 
@@ -465,6 +464,38 @@ class _ExistingSegmentationChoiceDialog(tk.Toplevel):
     def _choose(self, choice: str) -> None:
         self.result = choice
         self.destroy()
+
+
+class _ROIMaskChoiceDialog(tk.Toplevel):
+    def __init__(self, parent, sample, filenames, previous=None):
+        super().__init__(parent)
+        self.result = None
+        self.title("Choose an ROI mask")
+        self.transient(parent)
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        tk.Label(self, text=f"Image: {sample}", wraplength=570, justify="left",
+                 bg=BG, fg=FG, font=FONT_BOLD).pack(anchor="w", padx=20, pady=(18, 6))
+        tk.Label(self, text="Confirm the matching mask, or leave ROI counts blank.",
+                 bg=BG, fg=FG, font=FONT).pack(anchor="w", padx=20)
+        whole_image = "Whole image only"
+        selection = ttk.Combobox(self, values=(whole_image, *filenames),
+                                 width=75, state="readonly")
+        selection.current(filenames.index(previous) + 1 if previous in filenames else 0)
+        selection.pack(padx=20, pady=12)
+
+        def accept():
+            self.result = "" if selection.current() == 0 else selection.get()
+            self.destroy()
+
+        buttons = tk.Frame(self, bg=BG)
+        buttons.pack(padx=20, pady=(0, 16))
+        ttk.Button(buttons, text="Use selection", command=accept).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Cancel analysis", command=self.destroy).pack(side="left", padx=4)
+        self.bind("<Escape>", lambda _event: self.destroy())
+        self.grab_set()
+        selection.focus_set()
+        self.wait_window(self)
 
 
 # ---------------------------------------------------------------------------
@@ -1353,6 +1384,53 @@ class CellMatchrLauncher:
         self.config["ana_roi_mask_folder"] = folder
         if "ana_roi_mask_folder" in self._vars:
             self._vars["ana_roi_mask_folder"].set(folder)
+
+    def _confirm_legacy_roi_matches(self, run_folder: str, *, review=False) -> bool:
+        folder = str(self.config.get("ana_roi_mask_folder") or "").strip()
+        if not folder:
+            if review:
+                messagebox.showinfo("ROI mask folder", "Choose an ROI mask folder first.",
+                                    parent=self.root)
+            return True
+        try:
+            masks = roi_mask_files(folder)
+            if not masks:
+                if review:
+                    messagebox.showinfo("ROI mask folder", "No TIFF or Fiji ROI masks were found.",
+                                        parent=self.root)
+                return True
+            with os.scandir(filesystem_path(run_folder)) as entries:
+                samples = sorted(entry.name for entry in entries if entry.is_dir()
+                                 and not entry.name.startswith((".", "DEBUG")))
+        except OSError as exc:
+            messagebox.showerror("Could not check ROI masks", str(exc), parent=self.root)
+            return False
+        context = roi_choice_context(run_folder, folder)
+        saved = self.config.get("ana_roi_mask_choices")
+        previous = (saved.get("samples", {}) if isinstance(saved, dict)
+                    and saved.get("context") == context else {})
+        if not isinstance(previous, dict):
+            previous = {}
+        choices = {}
+        for sample in samples:
+            _, candidates = roi_match_candidates(sample, masks)
+            if not candidates:
+                continue
+            names = [os.path.basename(path) for path in candidates]
+            saved_choice = previous.get(sample)
+            if not review and (saved_choice == "" or saved_choice in names):
+                choices[sample] = saved_choice
+                continue
+            dialog = _ROIMaskChoiceDialog(self.root, sample, names, saved_choice)
+            if dialog.result is None:
+                return False
+            choices[sample] = dialog.result
+        self.config["ana_roi_mask_choices"] = {"context": context, "samples": choices}
+        if review and not choices:
+            messagebox.showinfo("ROI mask matches", "There are no mask choices to confirm. "
+                                "Samples with matching names are paired automatically.",
+                                parent=self.root)
+        return True
 
     def _pair_roi_masks_with_run(self, segmentation_run: str,
                                  confirm_unknown: bool = False) -> bool:
@@ -4616,11 +4694,24 @@ class CellMatchrLauncher:
                        "ana_roi_mask_folder")
         tk.Label(
             roi_card,
-            text="For direct-read images, use matching full-size .tif or Fiji .roi "
+            text="For direct-read images, use matching full-size TIFF or Fiji .roi "
                  "files. For converted slide scans, use the masks saved by "
                  "that converter run. Leave blank for whole-image analysis.",
             bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",
         ).pack(anchor="w", pady=(4, 0))
+
+        def review_roi_matches():
+            self._sync_vars_to_config()
+            run = self._choose_analysis_run()
+            if run is None:
+                messagebox.showinfo("ROI mask matches", "Choose a segmentation run first.",
+                                    parent=self.root)
+                return
+            project = self.config.get("project_output_folder", "").strip()
+            self._confirm_legacy_roi_matches(os.path.join(project, run), review=True)
+
+        ttk.Button(roi_card, text="Review ROI mask matches",
+                   command=review_roi_matches).pack(anchor="w", pady=(8, 0))
 
         # ── Validation status panel ──────────────────────────────────
         val_status_card = self._card(parent, "Validation Status")
@@ -5060,6 +5151,8 @@ class CellMatchrLauncher:
             if hasattr(self, "_ana_status"):
                 self._ana_status.config(
                     text=f"⚠  Segmentation output not found: {seg_sub}", fg=RED)
+            return
+        if not self._confirm_legacy_roi_matches(ana_input):
             return
 
         prepared = self._prepare_analysis_output(seg_sub)
@@ -6739,6 +6832,8 @@ class CellMatchrLauncher:
         if not os.path.isdir(ana_input):
             self._log(f"Segmentation output not found: {seg_sub}")
             return
+        if not self._confirm_legacy_roi_matches(ana_input):
+            return
 
         prepared = self._prepare_analysis_output(seg_sub)
         if prepared is None:
@@ -6874,6 +6969,9 @@ class CellMatchrLauncher:
         ana_out = None
         backup_dir = None
         if run_ana:
+            ana_input = os.path.join(proj, seg_sub_for_ana)
+            if not run_seg and not self._confirm_legacy_roi_matches(ana_input):
+                return
             prepared = self._prepare_analysis_output(seg_sub_for_ana)
             if prepared is None:
                 return
@@ -6955,8 +7053,26 @@ class CellMatchrLauncher:
                                     "\n✔  Segmentation already complete — skipping.")
 
                 if run_ana and ana_out:
-                    self.config["ana_microsam_output_root"] = os.path.join(
-                        proj, seg_sub_for_ana)
+                    if run_seg:
+                        # The new sample names are known only once segmentation completes.
+                        decision = threading.Event()
+                        accepted = False
+
+                        def confirm_masks():
+                            nonlocal accepted
+                            try:
+                                accepted = self._confirm_legacy_roi_matches(ana_input)
+                            finally:
+                                decision.set()
+
+                        self.root.after(0, confirm_masks)
+                        decision.wait()
+                        if not accepted:
+                            _restore_previous()
+                            self.root.after(0, self._set_run_status,
+                                            "Segmentation complete. Analysis canceled.", YELLOW)
+                            return
+                    self.config["ana_microsam_output_root"] = ana_input
                     self.config["output_root_folder"] = ana_out
                     save_config(self.config)
                     save_project_config(self.config)

@@ -349,7 +349,8 @@ class ReviewedTrainingDataTests(unittest.TestCase):
 
     def test_training_creates_new_model_folder_and_removes_staged_images(self):
         self.sample("a")
-        self.sample("b")
+        raw = self.sample("b") / "b_split_ch1.tif"
+        tifffile.imwrite(raw, tifffile.imread(raw) + 1)
         def prepare(example, stage, index, mode):
             image = stage / f"image_{index}.tif"
             label = stage / f"label_{index}.tif"

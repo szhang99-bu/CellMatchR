@@ -361,7 +361,7 @@ def get_label_props(label_img, raw_img=None, roi_mask=None, channel_name=""):
 # VALIDATION TSV
 # =============================================================================
 
-def read_validation_tsv(project_folder, channel):
+def read_validation_tsv(project_folder, channel, *, tsv_path=None):
     """
     Read per-cell validation decisions for a specific channel.
 
@@ -372,7 +372,8 @@ def read_validation_tsv(project_folder, channel):
     Returns a dict with artifact_labels/yes_labels/no_labels/maybe_labels
     (all sets of int label IDs), or None if no TSV is found.
     """
-    tsv_path = get_validation_tsv_path(project_folder, channel)
+    if tsv_path is None:
+        tsv_path = get_validation_tsv_path(project_folder, channel)
     if tsv_path is None:
         return None
     try:
@@ -638,7 +639,7 @@ def make_roi_mask_preview(raw_img, roi_mask, output_path):
 # PROJECT ANALYSIS
 # =============================================================================
 
-def analyze_project_folder(project_folder):
+def analyze_project_folder(project_folder, *, use_saved_reviews=False):
     project_name = os.path.basename(project_folder)
     print(f"\n--- Analyzing: {project_name} ---")
 
@@ -671,10 +672,8 @@ def analyze_project_folder(project_folder):
     pm_ch  = f"channel_{PM_CHANNEL}"
 
     # ── Validation — per-channel artifact filtering ───────────────────────────
-    # Auto-filtering requires the WHOLE channel to be validated (every image in
-    # the run).  When only some images are validated, filtering is skipped by
-    # default so the dataset does not mix validated and unvalidated images;
-    # set APPLY_PARTIAL_VALIDATION to opt in to per-image partial filtering.
+    # The app uses saved decisions per image. Existing CLI calls keep the
+    # run-wide completion policy unless they opt in to partial filtering.
     def _apply_val(label_img, channel, ch_token, mask_path):
         change_state = get_change_state(project_folder, channel, mask_path)
         if change_state["status"] == "unknown":
@@ -682,7 +681,8 @@ def analyze_project_folder(project_folder):
             print(f"  {ch_token}: {reason} — validation filtering skipped")
             return label_img, None, "validation_review_required"
 
-        val_data = read_validation_tsv(project_folder, channel)
+        tsv_path = get_validation_tsv_path(project_folder, channel)
+        val_data = read_validation_tsv(project_folder, channel, tsv_path=tsv_path) if tsv_path else None
         if val_data is None:
             print(f"  {ch_token}: no validation TSV — all detected cells included")
             return label_img, None, "none"
@@ -698,9 +698,18 @@ def analyze_project_folder(project_folder):
             print(f"  {ch_token}: {len(pending)} changed cell(s) need review")
 
         complete = is_validation_complete(project_folder, channel)
+        if use_saved_reviews:
+            if not val_data["label_decisions"] and not complete:
+                status = "validation_review_required" if change_state["status"] == "pending" else "none"
+                return label_img, None, status
+            if not complete and os.path.basename(tsv_path) == "roi_verification_results.tsv":
+                predictions = _matching_files(project_folder, PRED_TIFF_PATTERN.format(ch="*"))
+                if len({prediction_channel(path) for path in predictions}) > 1:
+                    print(f"  {ch_token}: legacy decisions have no channel assignment — review required")
+                    return label_img, None, "validation_review_required"
         channel_done = CHANNEL_FULLY_VALIDATED.get(channel, False)
         if (not channel_done or change_state["status"] == "pending") \
-                and not APPLY_PARTIAL_VALIDATION:
+                and not (use_saved_reviews or APPLY_PARTIAL_VALIDATION):
             n_reviewed = len(val_data["label_decisions"])
             print(f"  {ch_token}: [PARTIAL — channel not fully validated across all "
                   f"images; {n_reviewed} reviewed here] filter NOT applied — "
@@ -1035,7 +1044,7 @@ def _write_run_report(out_dir, total, analyzed, skipped, failures,
     return report_path
 
 
-def main():
+def main(*, use_saved_reviews=False):
     project_folders = get_project_folders(MICROSAM_OUTPUT_ROOT)
     if not project_folders:
         message = f"No project folders found in: {MICROSAM_OUTPUT_ROOT}"
@@ -1070,6 +1079,8 @@ def main():
         if CHANNEL_FULLY_VALIDATED[ch]:
             print(f"  Channel {ch}: fully validated across all images "
                   "— validation filter will be applied.")
+        elif use_saved_reviews:
+            print(f"  Channel {ch}: using any saved decisions per image.")
         elif APPLY_PARTIAL_VALIDATION:
             print(f"  Channel {ch}: not fully validated — partial filtering "
                   "ENABLED (per-image).")
@@ -1100,7 +1111,7 @@ def main():
             )]))
             continue
         try:
-            summary_df = analyze_project_folder(project_folder)
+            summary_df = analyze_project_folder(project_folder, use_saved_reviews=use_saved_reviews)
             summary_df["analysis_status"] = "analyzed"
             summary_df["missing_channels"] = ""
             summary_df["error"] = ""
@@ -1248,7 +1259,11 @@ if __name__ == "__main__":
         default=os.path.expanduser("~/.cellmatchr/config.json"),
         help="Path to CellMatchr config JSON",
     )
+    _parser.add_argument(
+        "--use-saved-reviews", action="store_true",
+        help="Use saved individual decisions per image, including incomplete reviews",
+    )
     _args, _ = _parser.parse_known_args()
     if os.path.exists(_args.config):
         _apply_config(_args.config)
-    main()
+    main(use_saved_reviews=_args.use_saved_reviews)

@@ -62,10 +62,10 @@ class AnalysisReportingTests(unittest.TestCase):
                 tifffile.imwrite(sample / mask_name, labels)
         return sample
 
-    def run_analysis(self):
+    def run_analysis(self, **options):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            analysis.main()
+            analysis.main(**options)
         workbook = self.out_root / "combined_analysis_summary.xlsx"
         report = self.out_root / "analysis_run_summary.json"
         self.assertTrue(workbook.is_file())
@@ -272,6 +272,10 @@ class AnalysisReportingTests(unittest.TestCase):
         with patch.object(analysis, "APPLY_PARTIAL_VALIDATION", True):
             partial, _, _ = self.run_analysis()
         self.assertEqual(partial.loc[0, "channel_1_total_count"], 2)
+        automatic, _, _ = self.run_analysis(use_saved_reviews=True)
+        self.assertEqual(automatic.loc[0, "channel_1_total_count"], 2)
+        self.assertEqual(automatic.loc[0, "channel_1_validation_status"],
+                         "validation_review_required")
 
         save_review_decision(str(sample), 1, str(mask), 1, "ARTIFACT", "rechecked")
         save_review_decision(str(sample), 1, str(mask), 2, "YES", "new cell")
@@ -279,6 +283,50 @@ class AnalysisReportingTests(unittest.TestCase):
         self.assertEqual(after_review.loc[0, "channel_1_total_count"], 1)
         self.assertEqual(after_review.loc[0, "channel_1_validation_status"],
                          "complete")
+
+    def test_app_uses_saved_bulk_edits_and_partial_object_reviews_per_image(self):
+        self.make_sample("unreviewed")
+        for name in ("bulk_only", "both"):
+            sample = self.make_sample(name)
+            mask = next(sample.glob("*_predict_original_ch1_*.tif"))
+            old = tifffile.imread(mask)
+            edited = old.copy()
+            edited[6:8, 6:8] = 2
+            save_edited_mask(str(mask), 1, old, edited)
+
+        for name, channel in (("both", 1), ("objects_only", 3)):
+            sample = self.seg_root / name if name == "both" else self.make_sample(name)
+            val_dir = sample / "ROI Validation Results"
+            val_dir.mkdir(exist_ok=True)
+            (val_dir / f"roi_verification_results_ch{channel}.tsv").write_text(
+                "ROI_ID\tDecision\tNote\n1\tARTIFACT\t\n"
+            )
+
+        legacy, _, _ = self.run_analysis()
+        self.assertEqual(legacy.set_index("project_name").loc["both", "channel_1_total_count"], 2)
+        automatic, _, _ = self.run_analysis(use_saved_reviews=True)
+        rows = automatic.set_index("project_name")
+        self.assertEqual(rows.loc["unreviewed", "channel_1_total_count"], 1)
+        self.assertEqual(rows.loc["unreviewed", "channel_1_validation_status"], "none")
+        self.assertEqual(rows.loc["bulk_only", "channel_1_total_count"], 2)
+        self.assertEqual(rows.loc["bulk_only", "channel_1_validation_status"], "none")
+        self.assertEqual(rows.loc["objects_only", "channel_3_total_count"], 0)
+        self.assertEqual(rows.loc["objects_only", "channel_1_total_count"], 1)
+        self.assertEqual(rows.loc["both", "channel_1_total_count"], 1)
+        self.assertEqual(rows.loc["both", "channel_1_validation_status"], "partial_applied")
+
+    def test_app_does_not_guess_channel_of_incomplete_legacy_decisions(self):
+        sample = self.make_sample("legacy")
+        val_dir = sample / "ROI Validation Results"
+        val_dir.mkdir()
+        (val_dir / "roi_verification_results.tsv").write_text(
+            "ROI_ID\tDecision\tNote\n1\tARTIFACT\t\n"
+        )
+        automatic, _, _ = self.run_analysis(use_saved_reviews=True)
+        for channel in (1, 3):
+            self.assertEqual(automatic.loc[0, f"channel_{channel}_total_count"], 1)
+            self.assertEqual(automatic.loc[0, f"channel_{channel}_validation_status"],
+                             "validation_review_required")
 
     def test_workbook_write_failure_is_reported_separately(self):
         self.make_sample("good")

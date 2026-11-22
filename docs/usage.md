@@ -472,15 +472,18 @@ models. Each run's settings are shown beside its selector.
 
 ## Step 4: Correct and validate predictions
 
-Step 4 is optional for basic analysis but required for reviewed training data.
-Select the **segmentation run** and **channel to validate**. Set channel display
-names and colors if helpful; the validator can display channels that were not
-segmented. Work on one selected channel at a time.
+Step 4 is optional for basic analysis. Choose the **Channel to Validate** at
+the top, and use **Load Preview** to look at the selected channel in the first
+input image. If you have multiple segmentation runs, choose the run you want
+to review in the same panel. You can do Bulk Review, Individual Object Review,
+or both. Analysis automatically uses saved corrections and review decisions
+from the run you analyze.
 
-### Correct masks in Napari
+### Bulk Review
 
-Open **Review Segmented Images** before making validation decisions. This
-window shows raw images, predicted objects, and drawing layers.
+Click **Review Segmented Images** to open whole images in Napari. This is a
+quick way to paint in missed cells and remove obvious false detections. Small
+errors can remain after a whole-image pass.
 
 | Task | Action |
 |---|---|
@@ -509,9 +512,14 @@ edit preserves the mask as it exists then. Editing a mask after validation
 may flag only affected objects for revalidation; check the validation status
 before analysis or retraining.
 
-### Validate objects
+### Individual Object Review
 
-Click **Open Validation Window**. For each object, select a decision and save.
+Complete **Bulk Review** and save your corrections first. Then click **Review
+Individual Objects** to check each detection in the corrected masks and save a
+decision. This takes longer and gives you finer control over which objects to
+keep and how to label them. Open **Channel names and colors…** to customize the
+display, including reference channels you did not segment. Use **Refresh** to
+update the progress list after closing the review window.
 The default keys are **Left = YES**, **Right = NO**, **Up = MAYBE**,
 **Shift = ARTIFACT**, and **Down = Save & Next**. Use **Edit decision buttons**
 on the right to customize up to six options. Enter the decision word, click
@@ -532,41 +540,51 @@ and segmentation outputs are not changed by retraining.
 
 ## Step 5: Analyze results
 
-Select the segmentation run to analyze. The selection is shared with Step 4,
-so check it again after switching between model runs. The **ROI mask folder**
-is optional: leave it blank for whole-image analysis. For directly read
-images, use matching full-size `.tif` or `.tiff` masks or Fiji `.roi` files with
-the same base name as the image. For converted slide scans, select masks
-from the same converter run as the image crops. If an older mask name needs
-confirmation, select it in **Choose an ROI mask**. **Whole image only** keeps
-the whole-image measurements and leaves the ROI columns blank. The same
-happens when a matching mask is missing. To revisit a choice, click
-**Review ROI mask matches**.
+### Input
 
-The **Validation Status** panel shows review progress. When validation is
-complete across the selected channel, analysis excludes objects marked
-**ARTIFACT**. It does not automatically remove objects marked **NO**; use
-**REMOVE PREDICTED OBJECTS** in Step 4 if a false prediction must disappear from
-the measured mask. **Apply validation filter on partially-validated files**
-is an explicit choice when only some objects have been reviewed; inspect
-results carefully if using partial decisions.
+Choose the **Segmentation run**. Step 4 shares this selection, so check it
+after switching between models. For whole-image measurements on directly read
+images, leave the **ROI mask folder** blank. For measurements inside regions,
+use full-size `.tif` or `.tiff` masks or Fiji `.roi` files with matching image
+names. For converted slide scans, CellMatchR selects masks from the converter
+run that produced the crops by default.
 
-For colocalization, turn on **Run colocalization analysis between two
-channels**, choose the **cell of interest** and **protein marker** channels,
-and set the IoU threshold from `0.0` to `1.0`. This requires two segmented
-channels. The ROI inclusion rule is **centroid** or **any_pixel**. If you need
-only object measurements from one channel, leave colocalization off.
-Brightfield is measured on **Channel 0** and automatically uses single-channel
-analysis. The report still includes ROI counts, per-cell measurements, and
-validation summaries.
+Open **ROI options** to set the **Cell inclusion rule**. `centroid` counts a
+cell whose center is inside the ROI. `any_pixel` counts a cell that touches
+the ROI. Select **Review ROI mask matches** to check or revisit the matches.
+If an older mask name needs confirmation, use **Choose an ROI mask**.
+**Whole image only** and missing masks leave the ROI columns blank and keep
+the whole-image measurements.
 
-Analysis writes per-image object CSV tables and
-`combined_analysis_summary.xlsx`. The workbook includes counts, object size,
+### Measurements
+
+Choose the **Channel to measure**. For colocalization, turn on **Compare with
+another channel (colocalization)**, choose a **Protein marker channel**, and
+set **Minimum overlap (IoU)** from `0` to `1`. The comparison uses two distinct
+segmented channels. Brightfield uses **Channel 0** and automatically runs as
+single-channel analysis.
+
+Open **Review status** to check progress for the channels you selected.
+Analysis reads the masks with any saved Bulk Review edits. It applies saved
+individual decisions from both complete and partial reviews, and skips
+decisions that need re-review. **ARTIFACT** removes a
+detection from the analysis. **YES** and **NO** are cell labels. An image with
+no individual decisions is measured from its active mask alone. Check the
+validation status in the output when comparing fully and partially reviewed
+images. An incomplete review from an older project may need confirmation if
+its decisions have no channel assignment and the image has multiple predicted
+channels.
+
+### Run Analysis
+
+Open **Output options** to change the per-image analysis subfolder name or
+turn QC overlay images on or off. Click **Run Analysis** to write per-image
+object CSV tables and `combined_analysis_summary.xlsx`. The workbook includes counts, object size,
 intensity, and configured colocalization summaries. An image missing a selected
-channel is skipped and recorded rather than ending the whole run; its summary
-row identifies the missing channel. The completion line reports how many
-images were analyzed, skipped for missing channels, and failed. See
-`analysis_errors.log` in the analysis output folder for file-specific details.
+channel is skipped and its summary row identifies the missing channel. The
+completion line reports how many images were analyzed, skipped for missing
+channels, and failed. Open **Analysis log** to see progress and messages.
+`analysis_errors.log` in the analysis output folder has file-specific details.
 
 If results already exist for that run, CellMatchR asks **Replace analysis
 results?**. **No** cancels and preserves them. **Yes** backs up that run's
@@ -577,12 +595,12 @@ and attempts recovery.
 
 ## Step 6: Run the pipeline
 
-Step 6 summarizes the current configuration and offers buttons for each
-stage. **Run All** segments if needed and then analyzes the selected run.
-Validation is interactive and opens separately from its own button; **Run
-All** does not silently approve objects. If an analysis output exists, the
-same replace-or-cancel question appears. Check the selected backend, channels,
-and input folder in the summary before starting a long run.
+Step 6 summarizes the current configuration and offers buttons for segmentation
+and analysis, plus a shortcut to Step 4. **Run All** segments if needed. With
+**Include analysis in Run All** selected, it also analyzes the chosen run
+using any reviews saved there. If an analysis output exists, the same
+replace-or-cancel question appears. Check the selected backend, channels, and
+input folder in the summary before starting a long run.
 
 ## Step 7: Retrain a model
 
@@ -1121,7 +1139,7 @@ inspect these fields before running:
 | Module | Settings to check in the copied config |
 |---|---|
 | Segmentation | `input_type`, `input_root_folder`, `output_root_folder` (the chosen segmentation run folder), `seg_channels` (such as `"0,1"`), `seg_backend`, `seg_model_type` for Micro-SAM or `seg_microsam2_model` for micro-SAM2, `seg_preprocess_mode`, `seg_resume`, `seg_dry_run`, and `seg_test_run`. For a custom checkpoint use `seg_custom_model_path`, `seg_cellpose_model_path`, or `seg_stardist_model_path` for its corresponding backend. |
-| Analysis | `ana_microsam_output_root` (the segmentation run to read), `output_root_folder` (the analysis folder to write), `ana_red_channel`, `ana_pv_channel`, and `apply_partial_validation`. |
+| Analysis | `ana_microsam_output_root` (the segmentation run to read), `output_root_folder` (the analysis folder to write), `ana_red_channel`, and `ana_pv_channel`. Pass `--use-saved-reviews` to match app analysis and use saved individual decisions per image, including partial reviews. Existing commands keep their previous `apply_partial_validation` behavior. |
 
 On macOS/Linux, one way to prepare a config is:
 

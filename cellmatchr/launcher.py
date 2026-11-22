@@ -531,7 +531,6 @@ class CellMatchrLauncher:
         self._val_ch_color_vars: list = []
         self._val_ch_names_frame: tk.Frame | None = None
         self._val_ch_images: list = []
-        self._val_ch_photo_refs: list = []
         self._val_ch_index: int = 0
         self._val_lbl: tk.Label | None = None
         self._val_preview_img: tk.Label | None = None
@@ -582,8 +581,7 @@ class CellMatchrLauncher:
         ]
         bool_fields = [
             "seg_test_run", "seg_dry_run", "seg_skip_subdirs", "seg_resume",
-            "val_enabled", "ana_enabled", "ana_coloc_enabled", "ana_save_qc",
-            "apply_partial_validation",
+            "ana_enabled", "ana_coloc_enabled", "ana_save_qc",
         ]
         for k in str_fields:
             self._vars[k] = tk.StringVar(value=str(self.config.get(k, "")))
@@ -1032,12 +1030,12 @@ class CellMatchrLauncher:
             )
         ttk.Separator(parent).pack(fill="x", padx=32, pady=(0, 20))
 
-    def _card(self, parent, title: str = "") -> tk.Frame:
+    def _card(self, parent, title: str = "", *, title_font=FONT_BOLD) -> tk.Frame:
         outer = tk.Frame(parent, bg=CARD, padx=20, pady=14)
         outer.pack(fill="x", padx=32, pady=6)
         if title:
             tk.Label(outer, text=title, bg=CARD, fg=ACCENT,
-                     font=FONT_BOLD).pack(anchor="w", pady=(0, 8))
+                     font=title_font).pack(anchor="w", pady=(0, 8))
         return outer
 
     def _form_grid(self, card: tk.Frame, rows: list,
@@ -1557,16 +1555,13 @@ class CellMatchrLauncher:
 
     def _roi_help_for_run(self, segmentation_run: str) -> str:
         if not segmentation_run:
-            return "Choose a segmentation run first; ROI masks are optional."
+            return "Add ROI masks if you want measurements within regions."
         kind, converter_run = self._segmentation_source(segmentation_run)
         if kind == "converted":
-            return (f"This run came from {converter_run}. Its ROI masks are "
-                    "selected automatically. Check the folder below before analysis.")
+            return f"CellMatchR selects matching ROI masks from {converter_run} by default."
         if kind == "direct":
-            return ("Direct-read run: ROI masks are optional. Leave this blank "
-                    "for whole-image analysis, or choose matching .tif/.roi files.")
-        return ("Earlier run: its source was not recorded. Check that the ROI "
-                "mask folder below matches this run before analysis.")
+            return "Leave blank for whole-image measurements, or choose matching TIFF or Fiji .roi masks."
+        return "For this earlier run, check that your ROI masks match the selected images."
 
     def _analysis_generated_files(self, segmentation_run: str,
                                   output_dir: str) -> list[str]:
@@ -1873,7 +1868,7 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
 
     def _run_subprocess_in_log(self, script: str, label: str,
-                                on_done=None, success_check=None) -> None:
+                                on_done=None, success_check=None, extra_args=()) -> None:
         self._log(f"\n{'─'*60}")
         self._log(f"▶  {label}")
         self._log(f"{'─'*60}")
@@ -1889,7 +1884,7 @@ class CellMatchrLauncher:
                                     "downloads its weights and separate runtime…")
                 command, environment = segmentation_command(script, CONFIG_PATH, self.config)
                 proc = subprocess.Popen(
-                    command, env=environment,
+                    [*command, *extra_args], env=environment,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
@@ -3714,7 +3709,7 @@ class CellMatchrLauncher:
                 self.config.get("seg_channels", "").split(",")
                 if x.strip().isdigit()]
 
-    def _detect_predicted_channels(self) -> list:
+    def _detect_predicted_channels(self, *, fallback_to_config: bool = True) -> list:
         """Return sorted channel-index strings that actually have a predicted
         mask (``*_predict_original_ch*.tif``) on disk, scanning the selected
         segmentation output folder.
@@ -3723,7 +3718,6 @@ class CellMatchrLauncher:
         another computer even when the project file no longer records that a
         segmentation was run.  Falls back to the configured seg_channels.
         """
-        import re as _re
         proj = self.config.get("project_output_folder", "").strip()
         if proj and os.path.isdir(proj):
             # The segmentation-folder selection is kept in config and shared
@@ -3732,7 +3726,8 @@ class CellMatchrLauncher:
                        or (self._find_variants(SUBFOLDER["seg"])
                            or [SUBFOLDER["seg"]])[-1])
             seg_root = os.path.join(proj, seg_sub)
-            if run_is_brightfield(seg_root, self.config):
+            brightfield = run_is_brightfield(seg_root, self.config)
+            if brightfield and fallback_to_config:
                 return ["0"]
             chs = set()
             if os.path.isdir(seg_root):
@@ -3740,13 +3735,18 @@ class CellMatchrLauncher:
                     sub = os.path.join(seg_root, d)
                     if not os.path.isdir(sub) or d.startswith((".", "DEBUG")):
                         continue
-                    for f in os.listdir(sub):
-                        m = _re.search(r"_predict_original_ch(\d+)", f,
-                                       _re.IGNORECASE)
-                        if m:
-                            chs.add(int(m.group(1)))
+                    for name in os.listdir(sub):
+                        if name.startswith((".", "DEBUG")) or not name.lower().endswith(".tif"):
+                            continue
+                        channel = prediction_channel(name)
+                        if channel is not None and os.path.isfile(os.path.join(sub, name)):
+                            chs.add(channel)
+            if brightfield:
+                chs.intersection_update({0})
             if chs:
                 return [str(c) for c in sorted(chs)]
+        if not fallback_to_config:
+            return []
         # Fallback: use seg_channels from config
         return [x.strip() for x in
                 self.config.get("seg_channels", "").split(",")
@@ -3811,71 +3811,57 @@ class CellMatchrLauncher:
             _cb.grid(row=i + 1, column=3, sticky="w", pady=3)
             self._bind_combobox_scroll(_cb)
 
-        self._update_val_channel_names_str()
-
     # ------------------------------------------------------------------
     # Validation channel preview helpers
     # ------------------------------------------------------------------
 
     def _trigger_val_preview_load(self) -> None:
         """Button handler — disable the button, show spinner, load in background."""
-        if hasattr(self, "_val_load_btn") and self._val_load_btn:
-            self._val_load_btn.config(state="disabled", text="  Loading…")
-        if self._val_lbl:
-            self._val_lbl.config(text="Loading…", fg=ACCENT)
+        button = self._val_load_btn
+        button.config(state="disabled", text="Loading…")
+        self._val_lbl.config(text="Loading…", fg=ACCENT)
+
+        def receive(photos, message):
+            if button.winfo_exists():
+                self._set_val_channel_previews(photos, message)
+
         threading.Thread(
-            target=lambda: self._load_channel_previews(
-                callback=self._set_val_channel_previews),
+            target=self._load_channel_previews, args=(receive,),
             daemon=True,
         ).start()
 
     def _set_val_channel_previews(self, photos: list, fname: str = "") -> None:
         """Called on the main thread after background channel loading."""
         self._val_ch_images = photos
-        self._val_ch_photo_refs = photos
-        self._val_ch_index = 0
+        self._val_load_btn.config(state="normal", text="Reload Preview" if photos else "Load Preview")
+        if photos:
+            self._show_val_channel(self._selected_validation_channel())
+        else:
+            self._val_lbl.config(text=fname or "No preview available.", fg=MUTED)
+            self._val_preview_img.config(image="")
+            self._val_prev_btn.config(state="disabled")
+            self._val_next_btn.config(state="disabled")
 
-        # Rebuild name/color rows using the actual detected channel count
-        if self._val_ch_names_frame:
-            n = len(photos) if photos else 0
-            if n > 0:
-                self._build_val_ch_name_rows([str(i) for i in range(n)])
-            elif fname:
-                for w in self._val_ch_names_frame.winfo_children():
-                    w.destroy()
-                tk.Label(self._val_ch_names_frame,
-                         text=fname or "Could not detect channels.",
-                         bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
+    def _selected_validation_channel(self) -> int | None:
+        value = self._val_channel_var.get().removeprefix("Channel ")
+        return int(value) if value.isdecimal() else None
 
-        # Re-enable the load button
-        if hasattr(self, "_val_load_btn") and self._val_load_btn:
-            try:
-                self._val_load_btn.config(state="normal", text="⟳  Load Preview")
-            except tk.TclError:
-                pass
-
-        if not photos:
-            if self._val_lbl:
-                self._val_lbl.config(text=fname or "No preview available", fg=MUTED)
-            return
-
-        self._show_val_channel(0)
-
-    def _show_val_channel(self, idx: int) -> None:
+    def _show_val_channel(self, idx: int | None) -> None:
         if not self._val_ch_images:
             return
-        idx = max(0, min(idx, len(self._val_ch_images) - 1))
-        self._val_ch_index = idx
         n = len(self._val_ch_images)
-        if self._val_lbl:
-            self._val_lbl.config(text=f"Channel {idx} of {n - 1}", fg=FG)
-        if self._val_preview_img:
-            self._val_preview_img.config(image=self._val_ch_images[idx])
-        if self._val_prev_btn:
-            self._val_prev_btn.config(state="normal" if idx > 0 else "disabled")
-        if self._val_next_btn:
-            self._val_next_btn.config(
-                state="normal" if idx < n - 1 else "disabled")
+        if idx is not None and not 0 <= idx < n:
+            self._val_lbl.config(text=f"Channel {idx} is absent from the preview image.", fg=MUTED)
+            self._val_preview_img.config(image="")
+            self._val_ch_index = n
+            self._val_prev_btn.config(state="normal")
+            self._val_next_btn.config(state="disabled")
+            return
+        self._val_ch_index = idx = 0 if idx is None else idx
+        self._val_lbl.config(text=f"Previewing Channel {idx}", fg=FG)
+        self._val_preview_img.config(image=self._val_ch_images[idx])
+        self._val_prev_btn.config(state="normal" if idx > 0 else "disabled")
+        self._val_next_btn.config(state="normal" if idx < n - 1 else "disabled")
 
     def _val_ch_navigate(self, delta: int) -> None:
         self._show_val_channel(self._val_ch_index + delta)
@@ -4355,7 +4341,7 @@ class CellMatchrLauncher:
         threading.Thread(target=_thread, daemon=True).start()
 
     def _launch_roi_editor(self) -> None:
-        """Launch the napari ROI editor so the user can add missed cells before validation."""
+        """Open the whole-image editor for the selected channel."""
         if self._is_running("Review Segmented Images window"):
             if hasattr(self, "_review_status"):
                 self._review_status.config(
@@ -4382,13 +4368,9 @@ class CellMatchrLauncher:
                     text=f"⚠  Segmentation output not found: {seg_sub}", fg=RED)
             return
 
-        # Derive channel from the channel dropdown
-        channel = 2   # fallback
-        if self._val_channel_var and self._val_channel_var.get():
-            try:
-                channel = int(self._val_channel_var.get().replace("Channel", "").strip())
-            except ValueError:
-                pass
+        channel = self._selected_validation_channel()
+        if channel is None:
+            return
 
         if hasattr(self, "_review_btn"):
             self._review_btn.config(state="disabled", text="  Opening…")
@@ -4399,7 +4381,7 @@ class CellMatchrLauncher:
             if hasattr(self, "_review_btn"):
                 try:
                     self._review_btn.config(state="normal",
-                                            text="🔍  Review Segmented Images")
+                                            text="▶  Review Segmented Images")
                 except tk.TclError:
                     pass
             if hasattr(self, "_review_status"):
@@ -4438,13 +4420,8 @@ class CellMatchrLauncher:
                 self._val_status.config(text="⚠  No project folder set. Go to Step 1.", fg=RED)
             return
 
-        # Derive val_mask_pattern from selected channel
-        if self._val_channel_var:
-            ch_label = self._val_channel_var.get()
-            ch = ch_label.replace("Channel ", "").strip()
-            pattern = f"*_predict_original_ch{ch}*.tif"
-            self.config["val_mask_pattern"] = pattern
-            self._vars["val_mask_pattern"].set(pattern)
+        if self._selected_validation_channel() is None:
+            return
 
         # Use the selected segmentation input (set in Step 4 input selector)
         if self._val_input_var and self._val_input_var.get():
@@ -4489,7 +4466,7 @@ class CellMatchrLauncher:
             if self._val_run_btn:
                 try:
                     self._val_run_btn.config(state="normal",
-                                             text="▶  Open Validation Window")
+                                             text="▶  Review Individual Objects")
                 except tk.TclError:
                     pass
             if hasattr(self, "_val_status"):
@@ -4524,260 +4501,181 @@ class CellMatchrLauncher:
     def _build_validation_step(self, parent) -> None:
         self._section_header(
             parent,
-            "Step 4 — Manual Validation  (optional)",
-            "Review predicted ROIs one by one and mark them YES / NO / MAYBE / ARTIFACT.",
+            "Step 4 — Review Segmentation (optional)",
+            "Choose a channel, then review whole images, individual objects, or both. "
+            "Analysis uses your saved corrections and review decisions automatically.",
         )
 
-        # ── Input source selector (which segmentation folder to validate) ──
-        _seg_variants = self._find_variants(SUBFOLDER["seg"])
-        _default_seg  = _seg_variants[-1] if _seg_variants else SUBFOLDER["seg"]
-        # Honour a segmentation-input choice previously made on the Analysis step
-        # (the selection is shared between Validation and Analysis).
-        _saved_seg = self.config.get("seg_input_subfolder", "").strip()
-        if _saved_seg and _saved_seg in _seg_variants:
-            _default_seg = _saved_seg
-        self._val_input_var = tk.StringVar(value=_default_seg)
-        # Persist the (possibly default) choice so Analysis picks up the same one.
-        self.config["seg_input_subfolder"] = _default_seg
-
-        toggle_card = self._card(parent, "Enable")
-        tk.Checkbutton(
-            toggle_card,
-            text="Include manual validation step",
-            variable=self._vars["val_enabled"],
-            bg=CARD, fg=FG, selectcolor=CARD,
-            activebackground=CARD, font=FONT_BOLD,
-        ).pack(anchor="w")
-        tk.Label(
-            toggle_card,
-            text="Opens its own window. Results are saved as TSV next to the predictions.",
-            bg=CARD, fg=MUTED, font=FONT, wraplength=640,
-        ).pack(anchor="w", pady=(4, 0))
-
-        ttk.Separator(toggle_card, orient="horizontal").pack(fill="x", pady=(8, 6))
-        tk.Label(toggle_card, text="Segmentation run to analyze:",
-                 bg=CARD, fg=FG, font=FONT_BOLD).pack(anchor="w", pady=(0, 2))
-        _val_input_cur_lbl = tk.Label(
-            toggle_card, text=f"Using:  {_default_seg}",
-            bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
+        channels_card = self._card(parent, "Channel to Validate")
+        source_row = tk.Frame(channels_card, bg=CARD)
+        source_row.pack(anchor="w")
+        self._val_channel_var = tk.StringVar()
+        channel_picker = ttk.Combobox(
+            source_row, textvariable=self._val_channel_var, width=16,
         )
-        _val_input_cur_lbl.pack(anchor="w", pady=(0, 4))
+        channel_picker.pack(side="left")
+        self._bind_combobox_scroll(channel_picker)
 
-        if len(_seg_variants) > 1:
-            _val_input_ovr_frame = tk.Frame(toggle_card, bg=CARD)
-            _val_ovr_lbl = tk.Label(
-                toggle_card,
-                text="▶  Use a different segmentation output",
-                bg=CARD, fg=MUTED,
-                font=(FONT[0], FONT[1], "underline"), cursor="hand2",
+        runs = self._find_variants(SUBFOLDER["seg"])
+        saved_run = self.config.get("seg_input_subfolder", "").strip()
+        selected_run = saved_run if saved_run in runs else (runs or [SUBFOLDER["seg"]])[-1]
+        self.config["seg_input_subfolder"] = selected_run
+        self._val_input_var = tk.StringVar(value=selected_run)
+        if len(runs) > 1:
+            tk.Label(source_row, text="Segmentation run", bg=CARD, fg=FG,
+                     font=FONT).pack(side="left", padx=(16, 6))
+            run_picker = ttk.Combobox(
+                source_row, textvariable=self._val_input_var,
+                values=runs, state="readonly", width=28,
             )
-            _val_ovr_lbl.pack(anchor="w")
+            run_picker.pack(side="left")
+            self._bind_combobox_scroll(run_picker)
 
-            _cb_val_src = ttk.Combobox(
-                _val_input_ovr_frame, textvariable=self._val_input_var,
-                values=_seg_variants, state="readonly", width=44,
-            )
-            _cb_val_src.pack(side="left", pady=(4, 0))
-            self._bind_combobox_scroll(_cb_val_src)
+        channel_help = tk.Label(channels_card, bg=CARD, fg=YELLOW, font=FONT,
+                                wraplength=660, justify="left")
 
-            def _val_src_changed(*_):
-                _val_input_cur_lbl.config(text=f"Using:  {self._val_input_var.get()}")
-                # Share the choice with the Analysis step.
-                self.config["seg_input_subfolder"] = self._val_input_var.get()
-                self._build_val_ch_name_rows(self._detect_all_channel_labels())
-            self._val_input_var.trace_add("write", _val_src_changed)
+        self._val_ch_images = []
+        self._val_ch_index = 0
+        has_input = bool(self.config.get("input_root_folder", "").strip())
+        preview_row = tk.Frame(channels_card, bg=CARD)
+        preview_row.pack(anchor="w", pady=(12, 4))
+        self._val_load_btn = ttk.Button(
+            preview_row, text="Load Preview", command=self._trigger_val_preview_load,
+            state="normal" if has_input and _PIL else "disabled",
+        )
+        self._val_load_btn.pack(side="left")
+        self._val_prev_btn = ttk.Button(
+            preview_row, text="◀", command=lambda: self._val_ch_navigate(-1),
+            width=3, state="disabled",
+        )
+        self._val_prev_btn.pack(side="left", padx=(10, 2))
+        self._val_next_btn = ttk.Button(
+            preview_row, text="▶", command=lambda: self._val_ch_navigate(1),
+            width=3, state="disabled",
+        )
+        self._val_next_btn.pack(side="left")
+        preview_hint = ("Preview the first input image." if has_input
+                        else "Set an input folder in Step 2 to preview channels.")
+        if not _PIL:
+            preview_hint = "Install Pillow to enable channel previews."
+        self._val_lbl = tk.Label(preview_row, text=preview_hint, bg=CARD, fg=MUTED,
+                                 font=FONT, justify="left", wraplength=420)
+        self._val_lbl.pack(side="left", padx=8)
+        self._val_preview_img = tk.Label(channels_card, bg=CARD)
+        self._val_preview_img.pack(anchor="w")
 
-            def _toggle_val_ovr(lbl=_val_ovr_lbl):
-                if _val_input_ovr_frame.winfo_ismapped():
-                    _val_input_ovr_frame.pack_forget()
-                    lbl.config(text="▶  Use a different segmentation output")
-                else:
-                    _val_input_ovr_frame.pack(fill="x", pady=(0, 4))
-                    lbl.config(text="▼  Use a different segmentation output")
-            _val_ovr_lbl.bind("<Button-1>", lambda _: _toggle_val_ovr())
-        elif not _seg_variants:
-            tk.Label(toggle_card,
-                     text="⚠  No segmentation output found yet — run Step 3 first.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
-
-        # ── Channel dropdown (predicted channels) ────────────────────
-        # Prefer channels that actually have a predicted mask on disk so an
-        # imported project works even when seg_channels is not recorded;
-        # fall back to configured channels.
-        cfg_card = self._card(parent, "Channel to Validate")
-        channel_options = self._detect_predicted_channels()
-
-        if channel_options:
-            tk.Label(cfg_card,
-                     text="Select which segmented channel to validate:",
-                     bg=CARD, fg=FG, font=FONT).pack(anchor="w", pady=(0, 6))
-            saved_channel = str(prediction_channel(self.config.get("val_mask_pattern", "")))
-            channel = saved_channel if saved_channel in channel_options else channel_options[0]
-            self._val_channel_var = tk.StringVar(value=f"Channel {channel}")
-
-            def remember_channel(*_):
-                selected = self._val_channel_var.get().removeprefix("Channel ")
-                if selected in channel_options:
-                    pattern = f"*_predict_original_ch{selected}*.tif"
-                    self.config["val_mask_pattern"] = pattern
-                    self._vars["val_mask_pattern"].set(pattern)
-
-            self._val_channel_var.trace_add("write", remember_channel)
-            remember_channel()
-            _cb_val_ch = ttk.Combobox(
-                cfg_card, textvariable=self._val_channel_var,
-                values=[f"Channel {c}" for c in channel_options],
-                state="readonly", width=20,
-            )
-            _cb_val_ch.pack(anchor="w")
-            self._bind_combobox_scroll(_cb_val_ch)
-            tk.Label(
-                cfg_card,
-                text="The mask glob pattern is derived automatically from the channel you select.",
-                bg=CARD, fg=MUTED, font=FONT,
-            ).pack(anchor="w", pady=(6, 0))
-        else:
-            tk.Label(
-                cfg_card,
-                text="⚠  No predicted channels found — run Step 3 — Segmentation, "
-                     "or select a segmentation output folder above that contains predictions.",
-                bg=CARD, fg=YELLOW, font=FONT, wraplength=660,
-            ).pack(anchor="w")
-            self._val_channel_var = None
-
-        # ── Pre-validation ROI review ─────────────────────────────────
-        review_card = self._card(parent, "Review Segmented Images")
+        bulk_card = self._card(parent)
+        tk.Label(bulk_card, text="Bulk Review", bg=CARD, fg=ACCENT,
+                 font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
         tk.Label(
-            review_card,
-            text="Before validating, you can open a napari window to manually add "
-                 "any cells the model missed. Each disconnected brush stroke is "
-                 "automatically treated as a separate ROI — no need to change colour "
-                 "between cells. Changes are saved back to the mask TIFFs and will "
-                 "appear in the validator.",
-            bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
-        ).pack(anchor="w", pady=(0, 8))
+            bulk_card,
+            text="Scan whole images quickly. Paint in missed cells and remove obvious false "
+                 "detections, then save the corrected masks. Small errors may remain.",
+            bg=CARD, fg=FG, font=FONT, wraplength=660, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
 
-        _review_btn_row = tk.Frame(review_card, bg=CARD)
-        _review_btn_row.pack(anchor="w")
+        bulk_row = tk.Frame(bulk_card, bg=CARD)
+        bulk_row.pack(anchor="w")
         self._review_btn = tk.Button(
-            _review_btn_row,
-            text="🔍  Review Segmented Images",
-            command=self._launch_roi_editor,
-            bg=ACCENT, fg="#1e1e2e", relief="flat",
-            font=FONT_BOLD, padx=10, pady=6, cursor="hand2",
-            activebackground="#a6c8f0", activeforeground="#1e1e2e",
+            bulk_row, text="▶  Review Segmented Images", command=self._launch_roi_editor,
+            bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat", padx=12, pady=8,
         )
         self._review_btn.pack(side="left")
-        self._review_status = tk.Label(
-            _review_btn_row, text="", bg=CARD, fg=MUTED, font=FONT,
-        )
-        self._review_status.pack(side="left", padx=(10, 0))
+        self._review_status = tk.Label(bulk_row, text="", bg=CARD, fg=MUTED, font=FONT)
+        self._review_status.pack(side="left", padx=10)
 
         self._review_test_mode = tk.BooleanVar(value=False)
         tk.Checkbutton(
-            review_card,
-            text="Test mode  (saves to DEBUG_ file only, processes one image, prints ROI comparison)",
+            bulk_card, text="Test mode (one image, saves a separate debug mask)",
             variable=self._review_test_mode,
-            bg=CARD, fg=MUTED, selectcolor=CARD,
-            activebackground=CARD, font=FONT,
+            bg=CARD, fg=MUTED, selectcolor=CARD, activebackground=CARD, font=FONT,
         ).pack(anchor="w", pady=(6, 0))
 
-        # ── Channel display names (all channels) ─────────────────────
-        names_card = self._card(parent, "Channel Display Names")
+        individual_card = self._card(parent)
+        tk.Label(individual_card, text="Individual Object Review", bg=CARD, fg=ACCENT,
+                 font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
         tk.Label(
-            names_card,
-            text="Set a display name and color for every channel in your images — "
-                 "the validator shows ALL channels, not just the predicted ones.\n"
-                 "Detected automatically from split_ch TIFFs in the segmentation output. "
-                 "Falls back to configured channels if no output exists yet.",
-            bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
-        ).pack(anchor="w", pady=(0, 8))
-        self._val_ch_names_frame = tk.Frame(names_card, bg=CARD)
-        self._val_ch_names_frame.pack(fill="x")
-        self._val_ch_name_vars  = []
-        self._val_ch_color_vars = []
-        # Detect ALL channels from split_ch TIFFs in segmentation output
-        _ch_labels = self._detect_all_channel_labels()
-        self._build_val_ch_name_rows(_ch_labels)
+            individual_card,
+            text="Complete Bulk Review and save your corrections before starting Individual Object Review.",
+            bg=CARD, fg=FG, font=FONT_BOLD, wraplength=660, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        tk.Label(
+            individual_card,
+            text="Inspect each detected object and save a decision. This takes longer and "
+                 "gives you finer control over which detections to keep and how to label them.",
+            bg=CARD, fg=FG, font=FONT, wraplength=660, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
 
-        # ── Channel preview (read-only, for reference) ────────────────
-        has_input = bool(self.config.get("input_root_folder", "").strip())
-        prev_card = self._card(parent, "Channel Preview  (for reference)")
-
-        val_nav_row = tk.Frame(prev_card, bg=CARD)
-        val_nav_row.pack(anchor="w", pady=(0, 6))
-
-        self._val_prev_btn = tk.Button(
-            val_nav_row, text="◀", command=lambda: self._val_ch_navigate(-1),
-            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat", padx=8, pady=4,
-            state="disabled",
-        )
-        self._val_prev_btn.pack(side="left")
-
-        self._val_lbl = tk.Label(
-            val_nav_row,
-            text="Press 'Load Preview' to load channels." if has_input else "No input folder set.",
-            bg=CARD, fg=MUTED, font=FONT, width=36,
-        )
-        self._val_lbl.pack(side="left", padx=10)
-
-        self._val_next_btn = tk.Button(
-            val_nav_row, text="▶", command=lambda: self._val_ch_navigate(1),
-            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat", padx=8, pady=4,
-            state="disabled",
-        )
-        self._val_next_btn.pack(side="left")
-
-        self._val_load_btn = tk.Button(
-            val_nav_row, text="⟳  Load Preview",
-            command=self._trigger_val_preview_load,
-            bg=ACTIVE, fg=ACCENT, font=FONT_BOLD, relief="flat", padx=10, pady=4,
-            activeforeground=FG,
-            state="normal" if (has_input and _PIL) else "disabled",
-        )
-        self._val_load_btn.pack(side="left", padx=(12, 0))
-
-        self._val_preview_img = tk.Label(prev_card, bg=CARD)
-        self._val_preview_img.pack(anchor="w", pady=(0, 4))
-
-        if not _PIL:
-            tk.Label(prev_card, text="Install Pillow (pip install Pillow) to enable preview.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
-
-        # ── Run button + progress (combined card) ────────────────────
-        run_card = self._card(parent, "Open Validation Window")
-        run_row = tk.Frame(run_card, bg=CARD)
-        run_row.pack(anchor="w")
+        individual_row = tk.Frame(individual_card, bg=CARD)
+        individual_row.pack(anchor="w")
         self._val_run_btn = tk.Button(
-            run_row, text="▶  Open Validation Window",
+            individual_row, text="▶  Review Individual Objects",
             command=self._run_validation_step,
-            bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat",
-            padx=18, pady=10,
-            state="normal" if channel_options else "disabled",
+            bg=ACCENT, fg="#1e1e2e", font=FONT_BOLD, relief="flat", padx=12, pady=8,
         )
         self._val_run_btn.pack(side="left")
-        self._val_status = tk.Label(run_row, text="", bg=CARD, fg=MUTED, font=FONT)
-        self._val_status.pack(side="left", padx=12)
-        tk.Label(
-            run_card,
-            text="ℹ  The validation window is interactive — results save automatically as TSV "
-                 "alongside the prediction files.",
-            bg=CARD, fg=MUTED, font=FONT, wraplength=660,
-        ).pack(anchor="w", pady=(8, 0))
+        self._val_status = tk.Label(individual_row, text="", bg=CARD, fg=MUTED, font=FONT)
+        self._val_status.pack(side="left", padx=10)
 
-        # ── Validation progress (inside same card, below the button) ─
-        ttk.Separator(run_card, orient="horizontal").pack(fill="x", pady=(14, 6))
-        prog_hdr = tk.Frame(run_card, bg=CARD)
+        self._val_ch_names_frame = tk.Frame(individual_card, bg=CARD)
+        self._val_ch_name_vars = []
+        self._val_ch_color_vars = []
+
+        def toggle_channel_display():
+            if self._val_ch_names_frame.winfo_manager():
+                self._val_ch_names_frame.pack_forget()
+                display_button.config(text="Channel names and colors…")
+            else:
+                self._build_val_ch_name_rows(self._detect_all_channel_labels())
+                self._val_ch_names_frame.pack(fill="x", pady=(6, 0), after=display_button)
+                display_button.config(text="Hide channel names and colors")
+
+        display_button = ttk.Button(individual_card, text="Channel names and colors…",
+                                    command=toggle_channel_display)
+        display_button.pack(anchor="w", pady=(8, 0))
+
+        ttk.Separator(individual_card, orient="horizontal").pack(fill="x", pady=(12, 6))
+        prog_hdr = tk.Frame(individual_card, bg=CARD)
         prog_hdr.pack(fill="x")
-        tk.Label(prog_hdr, text="Validation Progress",
-                 bg=CARD, fg=ACCENT, font=FONT_BOLD).pack(side="left")
-        tk.Button(prog_hdr, text="↻  Refresh",
-                  command=self._refresh_val_status,
-                  bg=BG, fg=MUTED, font=FONT, relief="flat", padx=6, pady=2).pack(
+        tk.Label(prog_hdr, text="Individual review progress",
+                 bg=CARD, fg=FG, font=FONT_BOLD).pack(side="left")
+        ttk.Button(prog_hdr, text="Refresh", command=self._refresh_val_status).pack(
             side="left", padx=8)
-        self._val_prog_frame = tk.Frame(run_card, bg=CARD)
+        self._val_prog_frame = tk.Frame(individual_card, bg=CARD)
         self._val_prog_frame.pack(anchor="w", fill="x", pady=(4, 0))
-        self.root.after(120, self._refresh_val_status)
+
+        def select_channel(*_):
+            selected = self._selected_validation_channel()
+            if selected is None:
+                return
+            pattern = f"*_predict_original_ch{selected}*.tif"
+            self.config["val_mask_pattern"] = pattern
+            self._vars["val_mask_pattern"].set(pattern)
+            self._show_val_channel(selected)
+
+        def refresh_run(*_):
+            self.config["seg_input_subfolder"] = self._val_input_var.get()
+            options = self._detect_predicted_channels(fallback_to_config=False)
+            saved = str(prediction_channel(self.config.get("val_mask_pattern", "")))
+            selected = saved if saved in options else (options or [""])[0]
+            channel_picker.config(values=[f"Channel {ch}" for ch in options],
+                                  state="readonly" if options else "disabled")
+            self._val_channel_var.set(f"Channel {selected}" if selected else "")
+            state = "normal" if options else "disabled"
+            for button in (self._review_btn, self._val_run_btn, display_button):
+                button.config(state=state)
+            if options:
+                channel_help.pack_forget()
+            else:
+                channel_help.config(text="No predictions in this run. Run segmentation in Step 3 first.")
+                channel_help.pack(anchor="w", pady=(5, 0), before=preview_row)
+            if self._val_ch_names_frame.winfo_manager():
+                self._build_val_ch_name_rows(self._detect_all_channel_labels())
+            self._refresh_val_status()
+
+        self._val_channel_var.trace_add("write", select_channel)
+        self._val_input_var.trace_add("write", refresh_run)
+        refresh_run()
 
     # ==================================================================
     # STEP 5 — Analysis
@@ -4786,94 +4684,68 @@ class CellMatchrLauncher:
     def _build_analysis_step(self, parent) -> None:
         self._section_header(
             parent,
-            "Step 5 — Analysis  (optional)",
-            "Colocalization statistics between two channels using IoU-based matching.",
+            "Step 5 — Analysis (optional)",
+            "Measure cells in one channel or compare detections across two channels.",
         )
 
-        # ── Enable toggle ────────────────────────────────────────────
-        _a_seg_variants = self._find_variants(SUBFOLDER["seg"])
-        _a_default_seg = (_a_seg_variants[0] if len(_a_seg_variants) == 1 else "")
-        # Honour the segmentation-input choice made on the Validation step so the
-        # same folder (and its validation results) is used for analysis.
-        _a_saved_seg = self.config.get("seg_input_subfolder", "").strip()
-        if _a_saved_seg and _a_saved_seg in _a_seg_variants:
-            _a_default_seg = _a_saved_seg
-        self._ana_input_var = tk.StringVar(value=_a_default_seg)
-        if _a_default_seg:
-            self.config["seg_input_subfolder"] = _a_default_seg
-            self._pair_roi_masks_with_run(_a_default_seg)
-        else:
+        def details(card, title, on_open=None):
+            body = tk.Frame(card, bg=CARD)
+
+            def toggle():
+                if body.winfo_manager():
+                    body.pack_forget()
+                    button.config(text=f"▸  {title}")
+                else:
+                    body.pack(fill="x", after=button, pady=(4, 0))
+                    button.config(text=f"▾  {title}")
+                    if on_open is not None:
+                        on_open()
+
+            button = ttk.Button(card, text=f"▸  {title}", command=toggle)
+            button.pack(anchor="w", pady=(8, 0))
+            return body
+
+        runs = self._find_variants(SUBFOLDER["seg"])
+        saved_run = self.config.get("seg_input_subfolder", "").strip()
+        selected_run = saved_run if saved_run in runs else runs[0] if len(runs) == 1 else ""
+        self._ana_input_var = tk.StringVar(value=selected_run)
+        if not selected_run:
             self._sync_roi_mask_to_input()
 
-        toggle_card = self._card(parent, "Enable")
-        tk.Checkbutton(
-            toggle_card, text="Include analysis step",
-            variable=self._vars["ana_enabled"],
-            bg=CARD, fg=FG, selectcolor=CARD,
-            activebackground=CARD, font=FONT_BOLD,
-        ).pack(anchor="w")
+        input_card = self._card(parent, "Input", title_font=FONT_TITLE)
+        source_row = tk.Frame(input_card, bg=CARD)
+        source_row.pack(fill="x")
+        tk.Label(source_row, text="Segmentation run", bg=CARD, fg=FG,
+                 font=FONT_BOLD).pack(side="left", padx=(0, 10))
+        if len(runs) > 1:
+            run_picker = ttk.Combobox(source_row, textvariable=self._ana_input_var,
+                                      values=runs, state="readonly", width=35)
+            run_picker.pack(side="left")
+            self._bind_combobox_scroll(run_picker)
+        else:
+            tk.Label(source_row, text=selected_run or "Run segmentation in Step 3 first.",
+                     bg=CARD, fg=FG if selected_run else YELLOW, font=FONT).pack(side="left")
+        run_details = tk.Label(input_card, bg=CARD, fg=FG, font=FONT,
+                               wraplength=600, justify="left")
+        if runs:
+            run_details.pack(anchor="w", pady=(4, 2))
 
-        ttk.Separator(toggle_card, orient="horizontal").pack(fill="x", pady=(8, 6))
-        tk.Label(toggle_card, text="Segmentation Input:", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w", pady=(0, 2))
-        _ana_input_cur_lbl = tk.Label(
-            toggle_card, text=(f"Using:  {_a_default_seg}" if _a_default_seg
-                               else "Choose a run below before starting analysis."),
-            bg=CARD, fg=FG, font=FONT_MONO, wraplength=660,
+        self._path_row(input_card, "ROI mask folder (optional)", "ana_roi_mask_folder")
+        roi_help = tk.Label(input_card, bg=CARD, fg=FG, font=FONT,
+                            wraplength=600, justify="left")
+        roi_help.pack(anchor="w", pady=(4, 0))
+
+        roi_options = details(input_card, "ROI options")
+        roi_rule_row = tk.Frame(roi_options, bg=CARD)
+        roi_rule_row.pack(anchor="w")
+        tk.Label(roi_rule_row, text="Cell inclusion rule", bg=CARD, fg=FG,
+                 font=FONT).pack(side="left", padx=(0, 10))
+        rule_picker = ttk.Combobox(
+            roi_rule_row, textvariable=self._vars["ana_roi_cell_rule"],
+            values=("centroid", "any_pixel"), state="readonly", width=14,
         )
-        _ana_input_cur_lbl.pack(anchor="w", pady=(0, 2))
-        _ana_details_lbl = tk.Label(
-            toggle_card,
-            text=(_segmentation_run_details(
-                self.config.get("project_output_folder", "").strip(),
-                _a_default_seg) if _a_default_seg else
-                "Choose a run to see its method and settings."),
-            bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left",
-        )
-        _ana_details_lbl.pack(anchor="w", pady=(0, 4))
-
-        if len(_a_seg_variants) > 1:
-            _cb_ana_src = ttk.Combobox(
-                toggle_card, textvariable=self._ana_input_var,
-                values=_a_seg_variants, state="readonly", width=44,
-            )
-            _cb_ana_src.pack(anchor="w", pady=(4, 6))
-            self._bind_combobox_scroll(_cb_ana_src)
-
-            def _ana_src_changed(*_):
-                if not _ana_input_cur_lbl.winfo_exists():
-                    return
-                _ana_input_cur_lbl.config(text=f"Using:  {self._ana_input_var.get()}")
-                _ana_details_lbl.config(text=_segmentation_run_details(
-                    self.config.get("project_output_folder", "").strip(),
-                    self._ana_input_var.get()))
-                # Share the choice with the Validation step.
-                self.config["seg_input_subfolder"] = self._ana_input_var.get()
-                self._pair_roi_masks_with_run(self._ana_input_var.get())
-                self._ana_roi_help_lbl.config(
-                    text=self._roi_help_for_run(self._ana_input_var.get()))
-                refresh_channels()
-            self._ana_input_var.trace_add("write", _ana_src_changed)
-        elif not _a_seg_variants:
-            tk.Label(toggle_card,
-                     text="⚠  No segmentation output found yet — run Step 3 first.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
-
-        # ── ROI mask folder ───────────────────────────────────────────
-        roi_card = self._card(parent, "ROI Mask Folder")
-        self._ana_roi_help_lbl = tk.Label(
-            roi_card, text=self._roi_help_for_run(_a_default_seg),
-            bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",
-        )
-        self._ana_roi_help_lbl.pack(anchor="w", pady=(0, 6))
-        self._path_row(roi_card, "ROI mask folder (optional):",
-                       "ana_roi_mask_folder")
-        tk.Label(
-            roi_card,
-            text="For direct-read images, use matching full-size TIFF or Fiji .roi "
-                 "files. For converted slide scans, use the masks saved by "
-                 "that converter run. Leave blank for whole-image analysis.",
-            bg=CARD, fg=MUTED, font=FONT, wraplength=700, justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+        rule_picker.pack(side="left")
+        self._bind_combobox_scroll(rule_picker)
 
         def review_roi_matches():
             self._sync_vars_to_config()
@@ -4885,204 +4757,153 @@ class CellMatchrLauncher:
             project = self.config.get("project_output_folder", "").strip()
             self._confirm_legacy_roi_matches(os.path.join(project, run), review=True)
 
-        ttk.Button(roi_card, text="Review ROI mask matches",
-                   command=review_roi_matches).pack(anchor="w", pady=(8, 0))
+        ttk.Button(roi_options, text="Review ROI mask matches",
+                   command=review_roi_matches).pack(anchor="w", pady=(6, 0))
 
-        # ── Validation status panel ──────────────────────────────────
-        val_status_card = self._card(parent, "Validation Status")
-        self._ana_val_status_frame = tk.Frame(val_status_card, bg=CARD)
-        self._ana_val_status_frame.pack(anchor="w", fill="x")
-        self._ana_partial_var = self._vars["apply_partial_validation"]
-        self._ana_partial_check = tk.Checkbutton(
-            val_status_card,
-            text="Apply validation filter on partially-validated files",
-            variable=self._ana_partial_var,
+        measurement_card = self._card(parent, "Measurements", title_font=FONT_TITLE)
+        primary_row = tk.Frame(measurement_card, bg=CARD)
+        primary_row.pack(fill="x")
+        primary_row.columnconfigure(0, minsize=190)
+        self._ana_coi_chan_var = tk.StringVar(value=f"Channel {self._vars['ana_red_channel'].get()}")
+        self._ana_pm_chan_var = tk.StringVar(value=f"Channel {self._vars['ana_pv_channel'].get()}")
+        tk.Label(primary_row, text="Channel to measure", bg=CARD, fg=FG,
+                 font=FONT).grid(row=0, column=0, sticky="w")
+        primary_picker = ttk.Combobox(primary_row, textvariable=self._ana_coi_chan_var, width=16)
+        primary_picker.grid(row=0, column=1, sticky="w")
+        self._bind_combobox_scroll(primary_picker)
+
+        coloc_fields = tk.Frame(measurement_card, bg=CARD)
+        coloc_fields.columnconfigure(0, minsize=190)
+
+        def show_colocalization():
+            if coloc_toggle.winfo_manager() and self._vars["ana_coloc_enabled"].get():
+                coloc_fields.pack(fill="x", after=coloc_toggle, pady=(2, 0))
+            else:
+                coloc_fields.pack_forget()
+            refresh_visible_review_status()
+
+        coloc_toggle = tk.Checkbutton(
+            measurement_card, text="Compare with another channel (colocalization)",
+            variable=self._vars["ana_coloc_enabled"], command=show_colocalization,
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
         )
-        tk.Button(
-            val_status_card, text="↻  Refresh",
-            command=self._refresh_ana_val_status,
-            bg=BG, fg=MUTED, font=FONT, relief="flat", padx=6, pady=2,
-        ).pack(anchor="w", pady=(6, 0))
-        self.root.after(100, self._refresh_ana_val_status)
+        coloc_toggle.pack(anchor="w", pady=(6, 0))
 
-        # ── Colocalization toggle ────────────────────────────────────
-        # Detect channels with a predicted mask on disk so analysis works on an
-        # imported project even when seg_channels is not recorded in the file.
-        channel_options = self._detect_predicted_channels()
-        n_channels = len(channel_options)
+        tk.Label(coloc_fields, text="Protein marker channel", bg=CARD, fg=FG,
+                 font=FONT).grid(row=0, column=0, sticky="w", pady=3)
+        marker_picker = ttk.Combobox(coloc_fields, textvariable=self._ana_pm_chan_var, width=16)
+        marker_picker.grid(row=0, column=1, sticky="w", pady=3)
+        self._bind_combobox_scroll(marker_picker)
+        tk.Label(coloc_fields, text="Minimum overlap (IoU)", bg=CARD, fg=FG,
+                 font=FONT).grid(row=1, column=0, sticky="w", pady=3)
+        tk.Entry(coloc_fields, textvariable=self._vars["ana_iou_threshold"],
+                 bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=8).grid(
+            row=1, column=1, sticky="w", pady=3)
+        tk.Label(coloc_fields, text="0 to 1", bg=CARD, fg=FG,
+                 font=FONT).grid(row=1, column=2, sticky="w", padx=(8, 0))
 
-        coloc_card = self._card(parent, "Colocalization")
-        coloc_toggle = tk.Checkbutton(
-            coloc_card, text="Run colocalization analysis between two channels",
-            variable=self._vars["ana_coloc_enabled"],
-            bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT_BOLD,
-            command=self._toggle_ana_coloc,
-        )
-        coloc_toggle.pack(anchor="w")
-        single_note = tk.Label(coloc_card, bg=CARD, fg=MUTED, font=FONT, wraplength=660)
-        single_note.pack(anchor="w", pady=(4, 0))
+        review_details = details(measurement_card, "Review status", self._refresh_ana_val_status)
+        tk.Label(
+            review_details, text="Analysis uses saved mask corrections and object decisions.",
+            bg=CARD, fg=FG, font=FONT, wraplength=600, justify="left",
+        ).pack(anchor="w")
+        self._ana_val_status_frame = tk.Frame(review_details, bg=CARD)
+        self._ana_val_status_frame.pack(fill="x", pady=(4, 0))
+        ttk.Button(review_details, text="Refresh",
+                   command=self._refresh_ana_val_status).pack(anchor="w", pady=(4, 0))
 
-        # ── Colocalization parameters (shown/hidden by toggle) ───────
-        # Container is always packed at this position in parent; content
-        # inside it is shown/hidden without losing its place in the layout.
-        _coloc_container = tk.Frame(parent, bg=BG)
-        _coloc_container.pack(fill="x")
-        self._ana_coloc_frame = tk.Frame(_coloc_container, bg=BG)
+        def refresh_visible_review_status():
+            if review_details.winfo_manager():
+                self._refresh_ana_val_status()
 
-        params_card = self._card(parent, "Measurement Channel")
-        g = tk.Frame(params_card, bg=CARD)
-        g.pack(fill="x")
-        g.grid_columnconfigure(0, minsize=240)
-        g.grid_columnconfigure(1, weight=1)
-
-        # Build channel vars from seg_channels
-        current_coi = str(self.config.get("ana_red_channel", "1"))
-        current_pm  = str(self.config.get("ana_pv_channel",  "3"))
-
-        if channel_options:
-            coi_default = f"Channel {current_coi}" if current_coi in channel_options \
-                else f"Channel {channel_options[0]}"
-            pm_default  = f"Channel {current_pm}"  if current_pm  in channel_options \
-                else f"Channel {channel_options[-1] if n_channels > 1 else channel_options[0]}"
-            chan_values  = [f"Channel {c}" for c in channel_options]
-            state = "readonly"
-        else:
-            coi_default = f"Channel {current_coi}"
-            pm_default  = f"Channel {current_pm}"
-            chan_values  = [coi_default, pm_default]
-            state = "normal"
-
-        self._ana_coi_chan_var = tk.StringVar(value=coi_default)
-        self._ana_pm_chan_var  = tk.StringVar(value=pm_default)
-
-        tk.Label(g, text="Channel to measure:", bg=CARD, fg=FG, font=FONT).grid(
-            row=0, column=0, sticky="w", pady=3)
-        _cb_coi = ttk.Combobox(g, textvariable=self._ana_coi_chan_var,
-                               values=chan_values, state=state, width=18)
-        _cb_coi.grid(row=0, column=1, sticky="w", pady=3, padx=8)
-        self._bind_combobox_scroll(_cb_coi)
-
-        iou_card = self._card(self._ana_coloc_frame, "Colocalization Settings")
-        g2 = tk.Frame(iou_card, bg=CARD)
-        g2.pack(fill="x")
-        g2.grid_columnconfigure(0, minsize=240)
-        g2.grid_columnconfigure(1, weight=1)
-        tk.Label(g2, text="Protein marker channel:", bg=CARD, fg=FG, font=FONT).grid(
-            row=0, column=0, sticky="w", pady=3)
-        _cb_pm = ttk.Combobox(g2, textvariable=self._ana_pm_chan_var,
-                              values=chan_values, state=state, width=18)
-        _cb_pm.grid(row=0, column=1, sticky="w", pady=3, padx=8)
-        self._bind_combobox_scroll(_cb_pm)
-        tk.Label(g2, text="IoU threshold (0.0 – 1.0):", bg=CARD, fg=FG, font=FONT).grid(
-            row=1, column=0, sticky="w", pady=3)
-        tk.Entry(g2, textvariable=self._vars["ana_iou_threshold"],
-                 bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=10).grid(
-            row=1, column=1, sticky="w", pady=3, padx=8)
-
-        def save_channel(_event=None):
-            options = tuple(_cb_coi.cget("values"))
-            if len(options) > 1:
-                marker_options = tuple(name for name in options if name != self._ana_coi_chan_var.get())
-                _cb_pm.configure(values=marker_options)
+        def save_channels(event=None):
+            channels = primary_picker.cget("values")
+            if len(channels) > 1:
+                primary = self._ana_coi_chan_var.get()
+                marker_options = tuple(ch for ch in channels if ch != primary)
+                marker_picker.config(values=marker_options)
                 if self._ana_pm_chan_var.get() not in marker_options:
                     self._ana_pm_chan_var.set(marker_options[0])
-            for key, channel in (("ana_red_channel", self._ana_coi_chan_var),
-                                 ("ana_pv_channel", self._ana_pm_chan_var)):
-                value = channel.get().removeprefix("Channel ").strip()
-                if value.isdigit():
-                    self._vars[key].set(value)
+            for key, selection in (("ana_red_channel", self._ana_coi_chan_var),
+                                   ("ana_pv_channel", self._ana_pm_chan_var)):
+                channel = selection.get().removeprefix("Channel ").strip()
+                if channel.isdigit():
+                    self._vars[key].set(channel)
+            if event is not None:
+                refresh_visible_review_status()
 
-        _cb_coi.bind("<<ComboboxSelected>>", save_channel)
-        _cb_pm.bind("<<ComboboxSelected>>", save_channel)
+        primary_picker.bind("<<ComboboxSelected>>", save_channels)
+        marker_picker.bind("<<ComboboxSelected>>", save_channels)
 
-        def refresh_channels():
-            options = [f"Channel {ch}" for ch in self._detect_predicted_channels()]
-            if options:
-                for box in (_cb_coi, _cb_pm):
-                    box.configure(values=options, state="readonly")
-                if self._ana_coi_chan_var.get() not in options:
-                    self._ana_coi_chan_var.set(options[0])
-                if (self._ana_pm_chan_var.get() not in options
-                        or self._ana_pm_chan_var.get() == self._ana_coi_chan_var.get()):
-                    self._ana_pm_chan_var.set(next(
-                        (name for name in options if name != self._ana_coi_chan_var.get()),
-                        options[0]))
-                save_channel()
-            single = len(options) == 1
-            if single:
+        def refresh_input(*_):
+            if not input_card.winfo_exists():
+                return
+            run = self._ana_input_var.get()
+            if run:
+                self.config["seg_input_subfolder"] = run
+                self._pair_roi_masks_with_run(run)
+                project = self.config.get("project_output_folder", "").strip()
+                run_details.config(text=_segmentation_run_details(project, run))
+            else:
+                run_details.config(text="Choose the segmentation run you want to measure.")
+            roi_help.config(text=self._roi_help_for_run(run))
+            channels = tuple(f"Channel {ch}" for ch in self._detect_predicted_channels()) if run else ()
+            for picker in (primary_picker, marker_picker):
+                picker.config(values=channels, state="readonly" if channels else "disabled")
+            if channels:
+                if self._ana_coi_chan_var.get() not in channels:
+                    self._ana_coi_chan_var.set(channels[0])
+                if self._ana_pm_chan_var.get() not in channels:
+                    self._ana_pm_chan_var.set(channels[-1])
+                save_channels()
+            if len(channels) == 1:
                 self._vars["ana_coloc_enabled"].set(False)
-            coloc_toggle.configure(state="disabled" if single else "normal")
-            single_note.configure(text=f"{options[0]} will be measured on its own." if single else "")
-            self._toggle_ana_coloc()
+            if len(channels) > 1:
+                coloc_toggle.pack(anchor="w", pady=(6, 0), after=primary_row)
+            else:
+                coloc_toggle.pack_forget()
+            show_colocalization()
+            run_button.config(state="normal" if run else "disabled")
 
-        refresh_channels()
-
-        # ── Other settings ───────────────────────────────────────────
-        misc_card = self._card(parent, "Settings")
-        g3 = tk.Frame(misc_card, bg=CARD)
-        g3.pack(fill="x")
-        g3.grid_columnconfigure(0, minsize=240)
-        g3.grid_columnconfigure(1, weight=1)
-        tk.Label(g3, text="ROI cell inclusion rule:", bg=CARD, fg=FG, font=FONT).grid(
-            row=1, column=0, sticky="w", pady=3)
-        _cb_rule = ttk.Combobox(g3, textvariable=self._vars["ana_roi_cell_rule"],
-                                values=["centroid", "any_pixel"], state="readonly", width=14)
-        _cb_rule.grid(row=1, column=1, sticky="w", pady=3, padx=8)
-        self._bind_combobox_scroll(_cb_rule)
-        tk.Label(g3, text="Analysis subfolder name:", bg=CARD, fg=FG, font=FONT).grid(
-            row=0, column=0, sticky="w", pady=3)
-        tk.Entry(g3, textvariable=self._vars["ana_subfolder_name"],
-                 bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=30).grid(
-            row=0, column=1, sticky="w", pady=3, padx=8)
-
-        out_card = self._card(parent, "Output")
+        run_card = self._card(parent, "Run Analysis", title_font=FONT_TITLE)
         tk.Label(
-            out_card,
-            text="Analysis always produces two outputs:\n"
-                 "  1.  Per-image object tables (CSV)\n"
-                 "  2.  Combined summary Excel — counts, avg intensity & size, "
-                 "ROI stats, validation breakdown",
-            bg=CARD, fg=MUTED, font=FONT, justify="left",
+            run_card, text="Saves an Excel summary and a CSV table for each image.",
+            bg=CARD, fg=FG, font=FONT, wraplength=600, justify="left",
         ).pack(anchor="w", pady=(0, 8))
+        run_button = tk.Button(
+            run_card, text="▶  Run Analysis", command=self._run_analysis_step,
+            bg=GREEN, fg="#1e1e2e", font=FONT_BOLD, relief="flat", padx=18, pady=8,
+        )
+        run_button.pack(anchor="w")
+        self._ana_status = tk.Label(run_card, bg=CARD, fg=FG, font=FONT,
+                                    wraplength=600, justify="left")
+        self._ana_status.pack(anchor="w")
+        self._ana_progress = ttk.Progressbar(run_card, mode="indeterminate")
+
+        output_options = details(run_card, "Output options")
+        output_row = tk.Frame(output_options, bg=CARD)
+        output_row.pack(anchor="w")
+        tk.Label(output_row, text="Analysis subfolder name", bg=CARD, fg=FG,
+                 font=FONT).pack(side="left", padx=(0, 10))
+        tk.Entry(output_row, textvariable=self._vars["ana_subfolder_name"],
+                 bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=24).pack(
+            side="left")
         tk.Checkbutton(
-            out_card, text="Save QC overlay images",
+            output_options, text="Save QC overlay images",
             variable=self._vars["ana_save_qc"],
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
-        ).pack(anchor="w")
+        ).pack(anchor="w", pady=(4, 0))
 
-        # ── Run button ───────────────────────────────────────────────
-        run_card = self._card(parent, "Run Analysis")
-        run_row = tk.Frame(run_card, bg=CARD)
-        run_row.pack(anchor="w")
-        tk.Button(
-            run_row, text="▶  Run Analysis",
-            command=self._run_analysis_step,
-            bg=GREEN, fg="#1e1e2e", font=FONT_BOLD, relief="flat",
-            padx=18, pady=10,
-        ).pack(side="left")
-        self._ana_status = tk.Label(run_row, text="", bg=CARD, fg=MUTED, font=FONT)
-        self._ana_status.pack(side="left", padx=12)
-
-        self._ana_progress = ttk.Progressbar(run_card, mode="indeterminate", length=500)
-        self._ana_progress.pack(anchor="w", pady=(8, 4))
-
+        log_details = details(run_card, "Analysis log")
         self._ana_log = scrolledtext.ScrolledText(
-            run_card, bg="#0d0d15", fg="#a6e3a1",
+            log_details, bg="#0d0d15", fg="#a6e3a1",
             font=FONT_MONO, height=10, relief="flat", wrap="word",
             state="disabled",
         )
-        self._ana_log.pack(fill="x", pady=(4, 0))
+        self._ana_log.pack(fill="x")
 
-    def _toggle_ana_coloc(self) -> None:
-        """Show/hide the colocalization parameters cards."""
-        try:
-            if self._vars["ana_coloc_enabled"].get():
-                self._ana_coloc_frame.pack(fill="x")
-            else:
-                self._ana_coloc_frame.pack_forget()
-        except (tk.TclError, AttributeError):
-            pass
+        self._ana_input_var.trace_add("write", refresh_input)
+        refresh_input()
 
     def _get_val_status_for_channel(self, project_root: str, channel: int) -> str:
         """Include focused mask-change review in the displayed status."""
@@ -5119,33 +4940,28 @@ class CellMatchrLauncher:
         proj = self.config.get("project_output_folder", "").strip()
         if not proj or not os.path.isdir(proj):
             tk.Label(frame, text="No project folder set.", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
-            if hasattr(self, "_ana_partial_check"):
-                self._ana_partial_check.pack_forget()
             return
 
         # Sample folders (with their "ROI Validation Results") live inside the
         # segmentation output subfolder — NOT directly under the project root.
         # Use the same segmentation-input selection the analysis run will use.
-        if getattr(self, "_ana_input_var", None) and self._ana_input_var.get():
-            seg_sub = self._ana_input_var.get()
-        else:
-            seg_variants = self._find_variants(SUBFOLDER["seg"])
-            seg_sub = seg_variants[-1] if seg_variants else SUBFOLDER["seg"]
+        seg_sub = self._ana_input_var.get()
+        if not seg_sub:
+            tk.Label(frame, text="Choose a segmentation run to see review progress.",
+                     bg=CARD, fg=FG, font=FONT).pack(anchor="w")
+            return
         scan_root = os.path.join(proj, seg_sub)
         if not os.path.isdir(scan_root):
             tk.Label(frame, text="No segmentation output found yet.", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
-            if hasattr(self, "_ana_partial_check"):
-                self._ana_partial_check.pack_forget()
             return
 
-        coi_ch = self.config.get("ana_red_channel", "")
-        pm_ch  = self.config.get("ana_pv_channel",  "")
-        channels_to_check = []
-        for ch_val in [coi_ch, pm_ch]:
-            try:
-                channels_to_check.append(int(ch_val))
-            except (ValueError, TypeError):
-                pass
+        channel_keys = ["ana_red_channel"]
+        if self._vars["ana_coloc_enabled"].get():
+            channel_keys.append("ana_pv_channel")
+        channels_to_check = dict.fromkeys(
+            int(value) for key in channel_keys
+            if (value := self._vars[key].get()).isdigit()
+        )
 
         # Collect per-channel aggregate status across all sample sub-folders
         project_dirs = [
@@ -5155,9 +4971,8 @@ class CellMatchrLauncher:
             and not d.startswith("DEBUG")
         ]
 
-        any_partial = False
         if not channels_to_check:
-            tk.Label(frame, text="Set channel numbers above to see validation status.",
+            tk.Label(frame, text="Choose a measurement channel to see review progress.",
                      bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
         else:
             for ch in channels_to_check:
@@ -5178,30 +4993,24 @@ class CellMatchrLauncher:
                     label_text = (
                         f"Channel {ch}: REVIEW NEEDED — {n_pending} changed, "
                         f"{n_unknown} uncertain (of {n_total} {_img}); "
-                        "validation filter not applied automatically"
+                        "decisions needing re-review are excluded"
                     )
                     fg = YELLOW
                 elif n_complete == n_total:
                     label_text = (f"Channel {ch}: validation COMPLETE "
-                                  f"({n_complete}/{n_total} {_img})  ✓  — filter will be applied automatically")
+                                  f"({n_complete}/{n_total} {_img})  ✓")
                     fg = GREEN
                 elif n_complete + n_partial > 0:
                     label_text = (f"Channel {ch}: PARTIAL — "
                                   f"{n_complete} complete  {n_partial} in-progress  {n_none} not started "
-                                  f"(of {n_total} {_img})  ⟳  — filter NOT applied by default")
+                                  f"(of {n_total} {_img})")
                     fg = YELLOW
-                    any_partial = True
                 else:
                     label_text = f"Channel {ch}: not yet validated  –"
                     fg = ORANGE
 
-                tk.Label(frame, text=label_text, bg=CARD, fg=fg, font=FONT_BOLD, justify="left").pack(anchor="w", pady=2)
-
-        if hasattr(self, "_ana_partial_check"):
-            if any_partial:
-                self._ana_partial_check.pack(anchor="w", pady=(6, 0))
-            else:
-                self._ana_partial_check.pack_forget()
+                tk.Label(frame, text=label_text, bg=CARD, fg=fg, font=FONT_BOLD,
+                         wraplength=600, justify="left").pack(anchor="w", pady=2)
 
     def _refresh_val_status(self) -> None:
         """Rebuild per-project validation progress labels in the validation step."""
@@ -5216,16 +5025,12 @@ class CellMatchrLauncher:
             tk.Label(frame, text="No project folder set.", bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
             return
 
-        # Show progress for ALL configured channels (not just the selected dropdown value)
-        channels_to_check = [
-            int(x.strip())
-            for x in self.config.get("seg_channels", "").split(",")
-            if x.strip().isdigit()
-        ]
+        channels_to_check = [int(ch) for ch in
+                             self._detect_predicted_channels(fallback_to_config=False)]
 
         if not channels_to_check:
-            tk.Label(frame, text="No channels configured — set channels in Step 3.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w")
+            tk.Label(frame, text="Review progress appears when predictions are available.",
+                     bg=CARD, fg=MUTED, font=FONT).pack(anchor="w")
             return
 
         # Project sub-folders live inside the segmentation output, not the root folder.
@@ -5379,6 +5184,7 @@ class CellMatchrLauncher:
         if hasattr(self, "_ana_status"):
             self._ana_status.config(text="Starting…", fg=ACCENT)
         if hasattr(self, "_ana_progress"):
+            self._ana_progress.pack(fill="x", after=self._ana_status, pady=(4, 0))
             self._ana_progress.start(12)
 
         # Clear log
@@ -5409,7 +5215,7 @@ class CellMatchrLauncher:
         def _thread():
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, script, "--config", CONFIG_PATH],
+                    [sys.executable, script, "--config", CONFIG_PATH, "--use-saved-reviews"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, bufsize=1,
                 )
@@ -5443,6 +5249,7 @@ class CellMatchrLauncher:
                     try:
                         if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
                             self._ana_progress.stop()
+                            self._ana_progress.pack_forget()
                         if ok:
                             status, color = self._analysis_run_status(out)
                             if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
@@ -5472,6 +5279,7 @@ class CellMatchrLauncher:
                     try:
                         if hasattr(self, "_ana_progress") and self._ana_progress.winfo_exists():
                             self._ana_progress.stop()
+                            self._ana_progress.pack_forget()
                         if hasattr(self, "_ana_status") and self._ana_status.winfo_exists():
                             self._ana_status.config(text=f"✗  {failure}", fg=RED)
                     except tk.TclError:
@@ -5561,6 +5369,10 @@ class CellMatchrLauncher:
         proj  = cfg.get("project_output_folder") or "—"
         sam2_brightfield = (cfg.get("input_type") == "vsi" and
                             cfg.get("slide_signal_type") == "brightfield")
+        analysis_channels = f"Channel {cfg.get('ana_red_channel')}"
+        if cfg.get("ana_coloc_enabled") and not sam2_brightfield:
+            analysis_channels += (f" ↔ Channel {cfg.get('ana_pv_channel')}"
+                                  f"  IoU ≥ {cfg.get('ana_iou_threshold')}")
         lines = [
             f"Project:         {cfg.get('project_name') or '—'}",
             f"Output folder:   {proj}",
@@ -5576,8 +5388,8 @@ class CellMatchrLauncher:
              if str(cfg.get('seg_backend', 'microsam')).lower() == 'cellpose'
              else f"Backend:         Micro-SAM  {cfg.get('seg_model_type', '?')}  /  {cfg.get('seg_preprocess_mode', '?')}"),
             f"Object size:     {cfg.get('seg_min_object_size')} – {cfg.get('seg_max_object_size')} px",
-            f"Validation:      {'enabled' if cfg.get('val_enabled') else 'skipped'}",
-            f"Analysis:        {'enabled  Ch' + str(cfg.get('ana_red_channel')) + ' ↔ Ch' + str(cfg.get('ana_pv_channel')) + '  IoU ≥ ' + str(cfg.get('ana_iou_threshold')) if cfg.get('ana_enabled') else 'skipped'}",
+            "Review data:     Uses saved corrections and object decisions",
+            f"Measurements:    {analysis_channels}",
         ]
         txt = tk.Text(summary_card, bg=BG, fg=FG, font=FONT_MONO,
                       height=len(lines) + 1, relief="flat", state="normal", wrap="none")
@@ -5593,19 +5405,16 @@ class CellMatchrLauncher:
             ("seg", "1. Segmentation",
              "Predict cell masks on all images using micro-sam.",
              ACCENT, self._run_segmentation),
-            ("val", "2. Validation",
-             "Manually review predictions in the interactive validation window.",
-             YELLOW, self._run_validation),
+            ("val", "2. Review Segmentation (optional)",
+             "Review whole images, individual objects, or both.",
+             YELLOW, lambda: self._show_step(3)),
             ("ana", "3. Analysis",
-             "Compute colocalization statistics and generate output tables.",
+             "Measure cells and save output tables.",
              GREEN, self._run_analysis),
         ]
 
         first = True
         for key, label, desc, color, cmd in step_defs:
-            if key == "val" and not cfg.get("val_enabled"):
-                continue
-
             if not first:
                 ttk.Separator(steps_card, orient="horizontal").pack(fill="x", pady=6)
             first = False
@@ -5614,8 +5423,8 @@ class CellMatchrLauncher:
             row_frame.pack(fill="x", pady=2)
 
             done = self._step_is_done(key)
-            sym  = "✔" if done else "✗"
-            sym_color = GREEN if done else RED
+            sym = "✔" if done else "–" if key == "val" else "✗"
+            sym_color = GREEN if done else MUTED if key == "val" else RED
 
             tk.Label(row_frame, text=sym, bg=CARD, fg=sym_color,
                      font=("Segoe UI", 13, "bold"), width=3).pack(side="left", padx=(0, 6))
@@ -5627,7 +5436,7 @@ class CellMatchrLauncher:
             tk.Label(info_frame, text=desc,  bg=CARD, fg=MUTED,
                      font=FONT, anchor="w").pack(anchor="w")
 
-            btn_text = "▶  Open" if key == "val" else "▶  Run"
+            btn_text = "Go to Step 4" if key == "val" else "▶  Run"
             tk.Button(
                 row_frame, text=btn_text,
                 command=cmd, bg=color, fg="#1e1e2e",
@@ -5638,17 +5447,14 @@ class CellMatchrLauncher:
         run_all_card = self._card(parent, "Run All")
         tk.Label(
             run_all_card,
-            text="Runs segmentation if needed, then analyzes the run you choose. "
-                 "If analysis results already exist, you can replace them or cancel. "
-                 "Validation opens separately.",
+            text="Runs segmentation if needed. You can include analysis for the run you choose.",
             bg=CARD, fg=MUTED, font=FONT, wraplength=660,
         ).pack(anchor="w", pady=(0, 8))
-        if cfg.get("val_enabled"):
-            tk.Label(
-                run_all_card,
-                text="ℹ  Validation opens its own window — use the Run button above for that step.",
-                bg=CARD, fg=YELLOW, font=FONT, wraplength=660,
-            ).pack(anchor="w", pady=(0, 8))
+        tk.Checkbutton(
+            run_all_card, text="Include analysis in Run All",
+            variable=self._vars["ana_enabled"], bg=CARD, fg=FG, selectcolor=CARD,
+            activebackground=CARD, font=FONT,
+        ).pack(anchor="w", pady=(0, 8))
         tk.Button(
             run_all_card, text="▶▶  Run All",
             command=self._run_all,
@@ -6998,31 +6804,6 @@ class CellMatchrLauncher:
         self._archive_model_preview(out, self._log)
         self._run_subprocess_in_log(self._script("segmentation.py"), "Segmentation")
 
-    def _run_validation(self) -> None:
-        if self._is_running("Validation window"):
-            self._log("A Validation window is already open.")
-            return
-        proj = self.config.get("project_output_folder", "").strip()
-        if not proj:
-            self._log("ERROR: No project output folder set.")
-            return
-
-        if self._val_input_var:
-            seg_sub = self._val_input_var.get()
-        else:
-            vs = self._find_variants(SUBFOLDER["seg"])
-            seg_sub = vs[-1] if vs else SUBFOLDER["seg"]
-        val_input = os.path.join(proj, seg_sub)
-
-        self._sync_vars_to_config()
-        self.config["val_main_folder"] = val_input
-        save_config(self.config)
-
-        self._log(f"\n▶  Validation — opening window (input: {seg_sub})…")
-        self._track_proc(subprocess.Popen(
-            [sys.executable, self._script("validator.py"), "--config", CONFIG_PATH]
-        ), "Validation window")
-
     def _run_analysis(self) -> None:
         if self._is_running("Analysis"):
             self._log("Analysis is already running…")
@@ -7090,6 +6871,7 @@ class CellMatchrLauncher:
         self._run_subprocess_in_log(
             self._script("analysis.py"), "Analysis", on_done=_done,
             success_check=lambda: self._analysis_workbook_written(out),
+            extra_args=("--use-saved-reviews",),
         )
 
     def _run_all(self) -> None:
@@ -7215,8 +6997,6 @@ class CellMatchrLauncher:
             self._log(f"Previous analysis saved at: {backup_dir}")
         if seg_out:
             self._archive_model_preview(seg_out, self._log)
-        if self.config.get("val_enabled"):
-            self._log("ℹ  Validation is interactive — use the Run button on the Validation row.")
         self._set_run_status("Pipeline running…", ACCENT)
 
         def _thread():
@@ -7296,7 +7076,7 @@ class CellMatchrLauncher:
                                     "Analysis running…", ACCENT)
 
                     proc2 = subprocess.Popen(
-                        [sys.executable, ana_script, "--config", CONFIG_PATH],
+                        [sys.executable, ana_script, "--config", CONFIG_PATH, "--use-saved-reviews"],
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         text=True, bufsize=1,
                     )

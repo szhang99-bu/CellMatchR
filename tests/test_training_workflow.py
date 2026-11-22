@@ -16,7 +16,9 @@ from cellmatchr.retraining import (collect_source_examples, plan_examples,
                                   microsam_architecture, select_training_labels,
                                   train_model)
 from cellmatchr.roi_editor import _preserve_prediction_baseline
-from cellmatchr.training_gallery import composite_preview, project_preview_settings
+from cellmatchr.training_gallery import (composite_preview, project_preview_settings,
+                                       unavailable_gallery_samples)
+from cellmatchr.slide_roi_preview import slide_roi_for_sample
 from cellmatchr.training_report import (build_report, object_scores, save_history)
 from cellmatchr.validation_state import save_edited_mask
 
@@ -284,6 +286,33 @@ class TrainingWorkflowTests(unittest.TestCase):
                                           "raw_percentile")
             self.assertEqual(tifffile.imread(image).shape, (y1-y0, x1-x0))
             self.assertEqual(tifffile.imread(labels).shape, (y1-y0, x1-x0))
+
+    def test_gallery_shows_unreviewed_sample_and_its_slide_roi(self):
+        project, run = self.project("current")
+        self.sample(run, "sample_a")
+        wait = self.sample(run, "sample_b", complete=False)
+        artifacts = self.sample(run, "sample_c")
+        decisions = artifacts / "ROI Validation Results" / "roi_verification_results_ch1.tsv"
+        decisions.write_text("ROI_ID\tDecision\n1\tARTIFACT\n2\tARTIFACT\n3\tARTIFACT\n")
+        folder = project / "VSI_Converted_TIFF" / "DONOTDELETE-MASK_FOR_VSI"
+        folder.mkdir(parents=True)
+        mask = folder / "sample_b_mask_overview.tif"
+        yy, xx = np.ogrid[:32, :32]
+        tifffile.imwrite(mask, (((yy-15)**2 + (xx-16)**2) < 100).astype(np.uint8))
+        sources = [{"project": str(project), "seg_run": run.name, "channel": 1}]
+        examples, skipped, _ = collect_source_examples(sources, with_review_status=True)
+        unavailable = {item["sample"]: item for item in
+                       unavailable_gallery_samples(sources, examples, skipped)}
+        self.assertEqual([item["sample"] for item in examples], ["sample_a"])
+        self.assertEqual(examples[0]["review_level"], "cell_labels")
+        self.assertFalse(unavailable[wait.name]["verified"])
+        self.assertIn("finish channel 1", unavailable[wait.name]["unavailable"])
+        self.assertTrue(unavailable[artifacts.name]["verified"])
+        self.assertIn("no cells to train on", unavailable[artifacts.name]["unavailable"])
+        region = slide_roi_for_sample(wait.name, run=run)
+        self.assertEqual(Path(region), mask)
+        preview = np.asarray(composite_preview(str(wait), roi_path=region))
+        self.assertTrue(np.any(np.all(preview == (56, 228, 237), axis=-1)))
 
     def test_gallery_and_report_are_saved_without_changing_reviewed_data(self):
         project, run = self.project("current")

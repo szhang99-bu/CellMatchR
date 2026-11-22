@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
+from cellmatchr.config import load_project_config
 from cellmatchr.launcher import (
     CellMatchrLauncher,
     _first_confocal_preview_input,
@@ -15,6 +16,93 @@ from cellmatchr.launcher import (
 
 
 class LifLauncherRoutingTests(TestCase):
+    def test_selected_project_file_blocks_navigation_until_loaded(self):
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "cellmatchr_project.json"
+            path.write_text(json.dumps({"input_type": "vsi", "slide_signal_type": "brightfield"}))
+            app = object.__new__(CellMatchrLauncher)
+            app.config = {}
+            app.current_step = 0
+            app._project_mode = "open"
+            app._loaded_project_file = ""
+            app._open_json_var = Mock()
+            app._open_json_var.get.return_value = str(path)
+            app._open_status = Mock()
+            app._vars = {}
+            app.btn_next = Mock()
+            app._step_btns = [Mock(), Mock()]
+            app._recover_all_analysis_backups = Mock(return_value=0)
+            app._update_project_display = Mock()
+
+            app._on_project_file_changed()
+            app.btn_next.config.assert_called_with(state="disabled")
+            app._step_btns[1].config.assert_called_with(state="disabled")
+            app._show_step(1)
+            self.assertEqual(app.current_step, 0)
+            with patch("cellmatchr.launcher.save_config"):
+                self.assertTrue(app._open_project())
+            app.btn_next.config.assert_called_with(state="normal")
+            app._step_btns[1].config.assert_called_with(state="normal")
+            self.assertEqual(app.config["input_type"], "vsi")
+            self.assertEqual(app.config["slide_signal_type"], "brightfield")
+
+            path.write_text("unreadable JSON")
+            self.assertFalse(app._open_project())
+            app.btn_next.config.assert_called_with(state="disabled")
+
+    def test_project_local_converter_paths_follow_copied_project(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            original, project = root / "original", root / "copy"
+            converter = "VSI_Converted_TIFF_selected"
+            for folder in (original, project):
+                (folder / converter / "exports").mkdir(parents=True)
+                (folder / converter / "exports" / "crop.tif").touch()
+                (folder / converter / "DONOTDELETE-MASK_FOR_VSI").mkdir()
+            path = project / "cellmatchr_project.json"
+            settings = {"project_output_folder": str(original), "input_type": "vsi",
+                        "input_root_folder": str(original / converter / "exports"),
+                        "vsi_output_dir": str(original / converter),
+                        "ana_roi_mask_folder": str(original / converter / "DONOTDELETE-MASK_FOR_VSI")}
+            path.write_text(json.dumps(settings))
+
+            cfg = load_project_config(str(project))
+            self.assertEqual(cfg["input_root_folder"], str(project / converter / "exports"))
+            self.assertEqual(cfg["vsi_output_dir"], str(project / converter))
+            self.assertEqual(cfg["ana_roi_mask_folder"],
+                             str(project / converter / "DONOTDELETE-MASK_FOR_VSI"))
+            self.assertEqual(json.loads(path.read_text()), settings)
+
+            settings.update({"project_output_folder": r"D:\\Projects\\Old",
+                             "input_root_folder": rf"d:\\projects\\OLD\\{converter}\\exports",
+                             "ana_roi_mask_folder": str(root / "custom_masks")})
+            path.write_text(json.dumps(settings))
+            cfg = load_project_config(str(project))
+            self.assertEqual(cfg["input_root_folder"], str(project / converter / "exports"))
+            self.assertEqual(cfg["ana_roi_mask_folder"], str(root / "custom_masks"))
+
+    def test_converter_reconnects_saved_exports_without_scanning_mask_tiffs(self):
+        with TemporaryDirectory() as temp:
+            project = Path(temp)
+            selected = project / "VSI_Converted_TIFF_selected"
+            exports = selected / "exports"
+            exports.mkdir(parents=True)
+            (exports / "crop.tif").touch()
+            masks = selected / "DONOTDELETE-MASK_FOR_VSI"
+            masks.mkdir()
+            (masks / "crop_mask_overview.tif").touch()
+            other = project / "VSI_Converted_TIFF_other" / "exports"
+            other.mkdir(parents=True)
+            (other / "other_crop.tif").touch()
+            app = object.__new__(CellMatchrLauncher)
+            app.config = {"project_output_folder": str(project), "input_type": "vsi",
+                          "input_root_folder": str(selected), "vsi_output_dir": str(selected)}
+            self.assertEqual(app._resolve_existing_input_folder(), str(exports))
+            app.config["input_root_folder"] = ""
+            self.assertEqual(app._resolve_existing_input_folder(), str(exports))
+            app.config["vsi_output_dir"] = ""
+            self.assertEqual(app._resolve_existing_input_folder(), "")
+
     def test_listing_matches_root_and_one_subfolder_scan(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

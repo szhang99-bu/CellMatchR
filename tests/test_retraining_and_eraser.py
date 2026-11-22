@@ -26,6 +26,29 @@ from cellmatchr.validation_state import (finalize_if_ready, get_change_state,
 
 
 class WholeObjectEraserTests(unittest.TestCase):
+    def test_roi_editor_finish_only_closes_from_last_normal_image(self):
+        samples = [{"name": "first"}, {"name": "last"}]
+        with patch("cellmatchr.roi_editor._find_samples", return_value=samples):
+            editor = RoiEditorApp("unused", channel=0)
+        editor.viewer = Mock()
+        editor._finish_btn = Mock()
+        editor._auto_save_current = Mock(return_value=True)
+        editor._load_sample = Mock()
+
+        editor._refresh_labels()
+        editor._finish_btn.setEnabled.assert_called_with(False)
+        editor._finish()
+        editor._auto_save_current.assert_not_called()
+        editor.viewer.close.assert_not_called()
+
+        editor._advance()
+        editor._finish_btn.setEnabled.assert_called_with(True)
+        editor._prev()
+        editor._finish_btn.setEnabled.assert_called_with(False)
+        editor._advance()
+        editor._finish()
+        editor.viewer.close.assert_called_once()
+
     def test_touching_one_pixel_removes_the_whole_prediction(self):
         predicted = np.zeros((8, 8), dtype=np.uint32)
         predicted[1:4, 1:4] = 1
@@ -322,6 +345,27 @@ class ReviewedTrainingDataTests(unittest.TestCase):
         model.unlink()
         self.assertEqual(list_trained_models(str(self.project)), [])
         self.assertFalse(list_trained_models(str(self.project), include_missing=True)[0]["available"])
+
+    def test_eraser_stroke_is_invisible_and_undo_restores_whole_cell(self):
+        self.sample("eraser")
+        app = RoiEditorApp(str(self.run), 1)
+        app.viewer = Mock()
+
+        def layer(data, **kwargs):
+            result = Mock()
+            result.data = data
+            result.opacity = kwargs["opacity"]
+            result.undo.side_effect = lambda: result.data.fill(0)
+            return result
+
+        app.viewer.add_labels.side_effect = layer
+        app._load_sample(0)
+        self.assertEqual(app._erase_lyr.opacity, 0)
+        app._erase_lyr.data[5, 5] = 1
+        app._update_erasure_preview()
+        self.assertFalse(np.any(app._mask_lyr.data == 2))
+        app._undo_eraser()
+        self.assertTrue(np.any(app._mask_lyr.data == 2))
 
     def test_erasing_rejected_cell_preserves_completed_legacy_review(self):
         sample = self.sample("a")

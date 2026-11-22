@@ -30,7 +30,7 @@ except ImportError:  # This file can also be launched directly as a script.
 from qtpy.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox, QGroupBox,
     QLineEdit, QHBoxLayout, QScrollArea, QSizePolicy, QProgressBar,
-    QApplication, QFileDialog
+    QApplication, QDialog, QFileDialog, QListWidget, QListWidgetItem,
 )
 from qtpy.QtCore import QTimer, QEventLoop, Qt
 from qtpy.QtGui import QImage, QPixmap
@@ -39,9 +39,9 @@ from qtpy.QtGui import QImage, QPixmap
 # ----------------------------
 # USER SETTINGS
 # ----------------------------
-OUTPUT_DIR_DEFAULT = os.path.expanduser("~/CellMatchR_VSI_Output")  # used only if the
-# launcher's config is missing (e.g. running this script standalone); the
-# launcher itself always supplies vsi_output_dir before spawning this app.
+# The launcher ordinarily supplies the output location before starting conversion.
+OUTPUT_DIR_DEFAULT = os.path.expanduser("~/CellMatchR_VSI_Output")
+SLIDE_SIGNAL_TYPE = "fluorescence"
 
 OVERVIEW_WIDTH = 2500          # overview width (navigation only)
 START_SCENE_ID = 0             # start slice (0-index internally)
@@ -420,14 +420,18 @@ def compute_overview(scene, overview_width: int):
     return img, scale
 
 
-def write_multichannel_tiff(path: str, img_yxc: np.ndarray):
-    """Save grayscale or channel-first TIFF, preserving source pixel values."""
+def write_multichannel_tiff(path: str, img_yxc: np.ndarray, *, brightfield: bool = False):
+    """Save grayscale, natural-color brightfield, or fluorescence channels."""
     path = filesystem_path(path)
     if img_yxc.ndim == 2:
         tiff.imwrite(path, img_yxc, photometric="minisblack", compression=None)
         return
     if img_yxc.ndim != 3:
         raise ValueError(f"Expected 2D or 3D array, got shape {img_yxc.shape}")
+
+    if brightfield and img_yxc.shape[-1] in (3, 4):
+        tiff.imwrite(path, img_yxc, photometric="rgb", metadata={"axes": "YXS"})
+        return
 
     img_cyx = np.moveaxis(img_yxc, -1, 0)  # (C,Y,X)
     imagej = img_cyx.dtype.char in "BHhf" and img_cyx.nbytes < 2**32 - 2**25
@@ -599,10 +603,11 @@ def _reserve_slide_base(source_path, output_dir, artifact_dirs):
 
 
 class VSINapariROIApp:
-    def __init__(self, vsi_path: str, output_dir: str):
+    def __init__(self, vsi_path: str, output_dir: str, *, brightfield: bool = False):
         self.vsi_path = vsi_path
         self.vsi_base = os.path.splitext(os.path.basename(vsi_path))[0]
         self.output_dir = output_dir
+        self.brightfield = brightfield
         self._export_base = None
         self._metadata_saved = set()
 
@@ -629,7 +634,6 @@ class VSINapariROIApp:
         self.viewer = None
         self.shapes = None
         self._sidecar_controls = None
-        self._sidecar_select_mode = False
 
         # Header UI
         self.lbl_file = None
@@ -647,6 +651,8 @@ class VSINapariROIApp:
         self.roi_names = []
         self.roi_colors = []
         self.roi_name_layout = None
+        self.roi_name_box = None
+        self.roi_name_hint = None
         self._roi_rows = []
         self._dock_panel_ref = None
         self._syncing_ui = False
@@ -691,7 +697,9 @@ class VSINapariROIApp:
         debug(f"Number of scenes: {self.total_scenes}")
         for i in range(self.total_scenes):
             s = self.slide.get_scene(i)
-            debug(f"Scene {i}: size=({s.size[0]} x {s.size[1]}), channels={s.num_channels}")
+            signal = ("brightfield Channel 0" if self.brightfield
+                      else f"{s.num_channels} fluorescence channel(s)")
+            debug(f"Scene {i + 1}: size=({s.size[0]} x {s.size[1]}), {signal}")
 
         if self.is_lif or self.is_tiff:
             # These readers do not supply a slide label or a physical scene map.
@@ -717,8 +725,9 @@ class VSINapariROIApp:
         self.is_last_scene = (scene_id == self.total_scenes - 1)
 
         W_full, H_full = self.scene.size
-        C = self.scene.num_channels
-        debug(f"Using SCENE_ID={scene_id}: full={W_full}x{H_full}, channels={C} | last_scene={self.is_last_scene}")
+        signal = ("brightfield Channel 0" if self.brightfield
+                  else f"{self.scene.num_channels} fluorescence channel(s)")
+        debug(f"Using scene {scene_id + 1}: full={W_full}x{H_full}, {signal} | last_scene={self.is_last_scene}")
 
         overview_width = OVERVIEW_WIDTH
         if self.is_tiff:
@@ -763,21 +772,7 @@ class VSINapariROIApp:
 
         self._add_overview_layers()
 
-        self.shapes = self.viewer.add_shapes(
-            name="ROI",
-            shape_type="polygon",
-            edge_width=2,
-        )
-        try:
-            self.shapes.blending = "translucent"
-        except Exception:
-            pass
-
-        self._force_polygon_mode()
-        self._ensure_roi_on_top(force_later=True)
-
-        self.shapes.events.data.connect(self._on_shapes_data_changed)
-        debug("Connected shapes data change event.")
+        self._reset_scene_rois()
 
         # Right dock: slice info (label photo + overview) + processing buttons
         panel = self._build_right_panel()
@@ -799,12 +794,36 @@ class VSINapariROIApp:
         debug("Dock widgets added.")
         debug("Napari launched.")
 
+    def _reset_scene_rois(self):
+        # A new Shapes layer also discards Napari's in-progress polygon and
+        # selection state, which should never carry into a different slice.
+        previous = self.shapes
+        if previous is not None:
+            previous.events.data.disconnect(self._on_shapes_data_changed)
+            self.viewer.layers.remove(previous)
+        self.roi_names = []
+        self.roi_colors = []
+        self.shapes = self.viewer.add_shapes(
+            name="ROI",
+            shape_type="polygon",
+            edge_width=2,
+        )
+        try:
+            self.shapes.blending = "translucent"
+        except Exception:
+            pass
+
+        self._force_polygon_mode()
+        self._ensure_roi_on_top(force_later=True)
+
+        self.shapes.events.data.connect(self._on_shapes_data_changed)
+        self._sync_roi_ui()
+
     def _force_polygon_mode(self):
         try:
             self.viewer.layers.selection.active = self.shapes
             self.shapes.mode = "add_polygon"
             self.shapes.current_shape_type = "polygon"
-            self._sidecar_select_mode = False
             debug("ROI layer set to Add Polygon mode by default.")
         except Exception:
             debug("Failed to force polygon mode (non-fatal).")
@@ -817,7 +836,6 @@ class VSINapariROIApp:
         self.shapes.mode = (
             "select" if self.shapes.mode == "add_polygon" else "add_polygon"
         )
-        self._sidecar_select_mode = self.shapes.mode == "select"
         self.viewer.status = (
             "Pencil: Select/edit ROIs" if self.shapes.mode == "select"
             else "Pencil: Draw ROI polygons"
@@ -863,8 +881,12 @@ class VSINapariROIApp:
             return
         n = len(self.shapes.data) if self.shapes is not None else 0
         self.btn_skip.setEnabled(n == 0)
+        if self.btn_next is not None:
+            self.btn_next.setEnabled(n > 0 and not self.is_last_scene)
+        if self.btn_close is not None:
+            self.btn_close.setEnabled(n > 0 and self.is_last_scene)
         if self.is_last_scene:
-            self.btn_skip.setText("Skip this slide (no ROI) → close window")
+            self.btn_skip.setText("Skip last slice → return to picker")
         else:
             self.btn_skip.setText("Skip this slide (no ROI) → next")
 
@@ -882,10 +904,6 @@ class VSINapariROIApp:
             label = "Scene" if self.is_tiff else "Brain slice"
             self.lbl_slice.setText(f"<b>{label}:</b> {self.scene_id + 1} / {self.total_scenes}")
 
-        if self.btn_next is not None:
-            self.btn_next.setEnabled(not self.is_last_scene)
-        if self.btn_close is not None:
-            self.btn_close.setEnabled(self.is_last_scene)
         self._sync_skip_button()
 
     def _set_busy(self, is_busy: bool, text: str = ""):
@@ -914,6 +932,16 @@ class VSINapariROIApp:
         ov = self.overview
         debug("Adding overview layers with autoscale contrast...")
 
+        if self.brightfield and ov.ndim == 3 and ov.shape[-1] >= 3:
+            rgb = ov[..., :3]
+            if rgb.dtype != np.uint8:
+                lo, hi = np.percentile(rgb, (0.5, 99.8))
+                rgb = np.uint8(np.clip((rgb.astype(np.float32) - lo) / max(hi - lo, 1), 0, 1) * 255)
+            self.viewer.add_image(rgb, rgb=True, name="overview_Brightfield (RGB)")
+            return
+
+        if self.brightfield and ov.ndim == 3:
+            ov = ov[..., 0]
         if ov.ndim == 2:
             lo, hi = np.percentile(ov, (1, 99.8))
             self.viewer.add_image(
@@ -1112,6 +1140,7 @@ class VSINapariROIApp:
         layout.addWidget(self.progress)
 
         name_hint = QLabel("⬅  Name EVERY ROI in the bottom-LEFT panel\n     before exporting / advancing.")
+        self.roi_name_hint = name_hint
         name_hint.setWordWrap(True)
         name_hint.setStyleSheet(
             "color: #ffcc00; font-weight: bold; padding: 4px;"
@@ -1180,6 +1209,7 @@ class VSINapariROIApp:
         layout.addWidget(edit_box)
 
         name_box = QGroupBox("★ ROI Names (REQUIRED — one per polygon) ★")
+        self.roi_name_box = name_box
         name_box.setStyleSheet(
             "QGroupBox { font-weight: bold; color: #ffcc00; "
             "border: 1px solid #ffcc00; border-radius: 4px; margin-top: 6px; }"
@@ -1253,6 +1283,11 @@ class VSINapariROIApp:
             self.roi_colors = self.roi_colors[:n]
 
             self._clear_roi_name_rows()
+            if self.roi_name_box is not None:
+                self.roi_name_box.setVisible(n > 0)
+            if self.roi_name_hint is not None:
+                self.roi_name_hint.setVisible(n > 0)
+            self._sync_skip_button()
             if self.roi_name_layout is None:
                 return
 
@@ -1293,17 +1328,14 @@ class VSINapariROIApp:
             if self.shapes is not None:
                 self._apply_per_roi_colors_to_shapes()
 
-            self._sync_skip_button()
-
         finally:
             self._syncing_ui = False
 
     def _on_shapes_data_changed(self, event=None):
+        if getattr(event, "action", None) in ("adding", "changing", "removing"):
+            return
         debug(f"Shapes changed. ROI count now = {len(self.shapes.data)}")
         self._sync_roi_ui()
-        self._ensure_roi_on_top(force_later=True)
-        if not self._sidecar_select_mode or self.shapes.mode != "select":
-            self._force_polygon_mode()
 
     # ---------- ROI geometry ----------
     def _get_polygon_by_index(self, idx: int):
@@ -1366,12 +1398,7 @@ class VSINapariROIApp:
             if msg.exec_() != QMessageBox.Yes:
                 debug("Delete ALL ROIs cancelled by user.")
                 return
-        self.shapes.data = []
-        self.roi_names = []
-        self.roi_colors = []
-        self._sync_roi_ui()
-        self._force_polygon_mode()
-        self._ensure_roi_on_top(force_later=True)
+        self._reset_scene_rois()
 
     # ---------- Save masks ----------
     def save_all_roi_masks_to_disk(self):
@@ -1469,7 +1496,7 @@ class VSINapariROIApp:
             img = self.scene.read_block((fx0, fy0, fw, fh))
             debug(f"ROI {i+1} read OK: dtype={img.dtype}, shape={img.shape}")
 
-            write_multichannel_tiff(out_path, img)
+            write_multichannel_tiff(out_path, img, brightfield=self.brightfield)
             exported.append({"roi_idx": i, "tiff_path": out_path})
         return exported
 
@@ -1559,14 +1586,7 @@ class VSINapariROIApp:
             self._add_overview_layers()
             self._update_overview_display()
 
-            # reset ROI layer
-            self.shapes.data = []
-            self.roi_names = []
-            self.roi_colors = []
-            self._sync_roi_ui()
-
-            self._force_polygon_mode()
-            self._ensure_roi_on_top(force_later=True)
+            self._reset_scene_rois()
 
         finally:
             self._set_busy(False, "")
@@ -1687,12 +1707,7 @@ class VSINapariROIApp:
             self.load_scene(next_id)
             self._add_overview_layers()
             self._update_overview_display()
-            self.shapes.data = []
-            self.roi_names = []
-            self.roi_colors = []
-            self._sync_roi_ui()
-            self._force_polygon_mode()
-            self._ensure_roi_on_top(force_later=True)
+            self._reset_scene_rois()
         finally:
             self._set_busy(False, "")
 
@@ -1712,47 +1727,64 @@ class VSINapariROIApp:
 # ----------------------------
 # IMPROVED PICKER UX
 # ----------------------------
-def choose_vsi_or_folder_dialog(parent=None):
-    """
-    Ask user: choose a VSI file OR choose a folder.
-    Returns ('file', path) or ('folder', path) or ('', '') if cancelled.
-    """
-    box = QMessageBox(parent)
-    box.setWindowTitle("Select input")
-    box.setText("What would you like to open?")
-    btn_file = box.addButton("Open a slide-scanner image (VSI / LIF / TIFF)", QMessageBox.AcceptRole)
-    btn_folder = box.addButton("Set working directory (folder)", QMessageBox.AcceptRole)
-    btn_cancel = box.addButton("Cancel", QMessageBox.RejectRole)
-    box.setDefaultButton(btn_file)
-    box.exec_()
-
-    clicked = box.clickedButton()
-    if clicked == btn_cancel:
-        return "", ""
-    if clicked == btn_file:
-        return "file", ""
-    if clicked == btn_folder:
-        return "folder", ""
-    return "", ""
+def saved_roi_exports(output_dir):
+    """List completed production crop filenames from the current conversion folder."""
+    folder = os.path.join(output_dir, "exports")
+    pattern = re.compile(
+        r"^(.+?)_slice(\d+)_roi(\d+)_FULLRES(?:_(.+))?\.tiff?$", re.IGNORECASE)
+    saved = []
+    try:
+        with os.scandir(filesystem_path(folder)) as files:
+            for entry in files:
+                match = pattern.fullmatch(entry.name)
+                if (not match or entry.name.upper().startswith("DEBUG_")
+                        or not entry.is_file() or entry.stat().st_size == 0):
+                    continue
+                slide, scene, roi, name = match.groups()
+                saved.append((slide, int(scene), int(roi), name or f"ROI {int(roi)}", entry.name))
+    except FileNotFoundError:
+        return []
+    return sorted(saved, key=lambda item: (item[0].casefold(), item[1], item[2], item[4]))
 
 
-def pick_folder(start_dir: str) -> str:
-    debug(f"Opening folder picker at: {start_dir}")
+class SlidePickerDialog(QDialog):
+    def __init__(self, output_dir, *, returning=False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Slide Scanner Converter")
+        self.resize(680, 345)
+        layout = QVBoxLayout(self)
+        heading = QLabel("Select another image for processing" if returning
+                         else "Select a slide-scanner image for processing")
+        heading.setStyleSheet("font-weight: bold; font-size: 17px;")
+        layout.addWidget(heading)
+        layout.addWidget(QLabel("Choose a VSI, LIF, TIFF, or BigTIFF image."))
 
-    dlg = QFileDialog(None, "Set working directory (folder)", start_dir)
-    dlg.setFileMode(QFileDialog.Directory)
-    dlg.setOption(QFileDialog.ShowDirsOnly, True)
-    dlg.setOption(QFileDialog.DontUseNativeDialog, True)  # <- IMPORTANT on mac
-    dlg.setModal(True)
+        saved = saved_roi_exports(output_dir)
+        count = len(saved)
+        layout.addWidget(QLabel(f"Saved ROIs in this conversion folder ({count})"))
+        self.roi_list = QListWidget()
+        self.roi_list.setAccessibleName("Saved ROIs")
+        self.roi_list.setAlternatingRowColors(True)
+        for slide, scene, _, name, filename in saved:
+            item = QListWidgetItem(f"{name}  ·  {slide}  ·  Slice {scene}")
+            item.setToolTip(filename)
+            self.roi_list.addItem(item)
+        if not saved:
+            item = QListWidgetItem("No ROIs saved yet.")
+            item.setFlags(Qt.NoItemFlags)
+            self.roi_list.addItem(item)
+        layout.addWidget(self.roi_list, 1)
 
-    if dlg.exec_():
-        folders = dlg.selectedFiles()
-        if folders:
-            debug(f"Folder selected: {folders[0]}")
-            return folders[0]
-
-    debug("Folder picker cancelled.")
-    return ""
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        done = QPushButton("Done — return to CellMatchR")
+        done.clicked.connect(self.reject)
+        buttons.addWidget(done)
+        select = QPushButton("Select another image…" if returning else "Select image…")
+        select.setDefault(True)
+        select.clicked.connect(self.accept)
+        buttons.addWidget(select)
+        layout.addLayout(buttons)
 
 
 def pick_vsi_file(start_dir: str) -> str:
@@ -1820,38 +1852,22 @@ def main():
     ensure_dir(output_dir)
 
     last_dir = os.path.dirname(output_dir) if os.path.isdir(os.path.dirname(output_dir)) else os.path.expanduser("~")
+    returning = False
 
     def pick_next():
-        nonlocal last_dir
+        nonlocal last_dir, returning
 
-        mode, _ = choose_vsi_or_folder_dialog()
-        if not mode:
-            debug("Selection dialog cancelled. Exiting app.")
+        chooser = SlidePickerDialog(output_dir, returning=returning)
+        if not chooser.exec_():
+            debug("Finished selecting images. Returning to CellMatchR.")
             QApplication.quit()
             return
 
-        if mode == "folder":
-            folder = pick_folder(start_dir=last_dir)
-            if not folder:
-                debug("Folder picker cancelled. Returning to selection menu.")
-                QTimer.singleShot(0, pick_next)
-                return
-            last_dir = folder
-
-            vsi_path = pick_vsi_file(start_dir=folder)
-            if not vsi_path:
-                debug("VSI picker cancelled. Returning to selection menu.")
-                QTimer.singleShot(0, pick_next)
-                return
-            last_dir = os.path.dirname(vsi_path)
-
-        else:  # mode == "file"
-            vsi_path = pick_vsi_file(start_dir=last_dir)
-            if not vsi_path:
-                debug("VSI picker cancelled. Returning to selection menu.")
-                QTimer.singleShot(0, pick_next)
-                return
-            last_dir = os.path.dirname(vsi_path)
+        vsi_path = pick_vsi_file(start_dir=last_dir)
+        if not vsi_path:
+            QTimer.singleShot(0, pick_next)
+            return
+        last_dir = os.path.dirname(vsi_path)
 
         debug(f"Chosen VSI: {vsi_path}")
 
@@ -1887,8 +1903,10 @@ def main():
                 debug("LIF classification check failed (non-fatal) — opening file as usual.")
 
         try:
-            app = VSINapariROIApp(vsi_path=vsi_path, output_dir=output_dir)
+            app = VSINapariROIApp(vsi_path=vsi_path, output_dir=output_dir,
+                                  brightfield=SLIDE_SIGNAL_TYPE == "brightfield")
             app.run_one_file()
+            returning = True
 
             # When napari closes, come back to picker
             qtwin = app.viewer.window._qt_window
@@ -1909,7 +1927,7 @@ def main():
     # Keep the process alive after a napari window closes so we can return to
     # the file picker for the NEXT VSI file. Without this Qt quits on the last
     # window closing and the scheduled pick_next() never runs. The app is only
-    # explicitly quit when the user cancels the selection dialog (see pick_next).
+    # explicitly quit when the user finishes selecting images.
     app.setQuitOnLastWindowClosed(False)
 
     # Start picker after Qt loop starts
@@ -1922,10 +1940,11 @@ def main():
 def _apply_config(config_path: str) -> None:
     """Override OUTPUT_DIR_DEFAULT from a CellMatchr config file."""
     import json
-    global OUTPUT_DIR_DEFAULT
+    global OUTPUT_DIR_DEFAULT, SLIDE_SIGNAL_TYPE
     try:
         with open(config_path) as f:
             cfg = json.load(f)
+        SLIDE_SIGNAL_TYPE = cfg.get("slide_signal_type", "fluorescence")
         vsi_out = cfg.get("vsi_output_dir", "").strip()
         if vsi_out:
             OUTPUT_DIR_DEFAULT = vsi_out

@@ -127,6 +127,38 @@ class BrightfieldCompatibilityTests(unittest.TestCase):
         self.assertEqual(wizard.cfg["seg_raw_mean_min"], 0)
         self.assertEqual(wizard.cfg["seg_per_channel_filters"], "{}")
 
+    def test_closing_filter_wizard_without_a_pick_preserves_existing_settings(self):
+        for brightfield in (False, True):
+            with self.subTest(brightfield=brightfield):
+                settings = {"seg_min_object_size": 80, "seg_max_ratio": 3.5,
+                            "seg_raw_mean_max": 175, "seg_per_channel_filters_enabled": not brightfield,
+                            "seg_per_channel_filters": '{"0": {"min_size": 65}}'}
+                wizard = ParameterWizardApp(dict(settings), {"channels": [{"channel": 0}],
+                                                             "slide_signal_type": "brightfield" if brightfield
+                                                             else "fluorescence"})
+                wizard._current_picks = {key: None for key in wizard.pick_order}
+                with (patch("cellmatchr.parameter_wizard.save_config") as save,
+                      patch("cellmatchr.parameter_wizard.save_project_config") as save_project):
+                    wizard._on_window_closed()
+                self.assertEqual(wizard.cfg, settings)
+                save.assert_not_called()
+                save_project.assert_not_called()
+
+    def test_wizard_applies_picked_channel_without_clearing_an_empty_channel(self):
+        existing = {"1": {"min_size": 35, "max_ratio": 4}, "2": {"min_size": 90}}
+        wizard = ParameterWizardApp({"seg_per_channel_filters": json.dumps(existing)},
+                                    {"channels": [{"channel": 0}, {"channel": 1}]})
+        wizard.results[0] = {"min_size": 60}
+        wizard._ch_idx = 1
+        wizard._current_picks = {key: None for key in wizard.pick_order}
+        with patch("cellmatchr.parameter_wizard.save_config"), \
+             patch("cellmatchr.parameter_wizard.save_project_config"):
+            wizard._on_window_closed()
+        settings = json.loads(wizard.cfg["seg_per_channel_filters"])
+        self.assertGreater(settings["0"]["min_size"], 0)
+        self.assertEqual(settings["1"], existing["1"])
+        self.assertEqual(settings["2"], existing["2"])
+
 
 class TrainingPresetTests(unittest.TestCase):
     def test_presets_have_real_training_settings_and_short_run(self):

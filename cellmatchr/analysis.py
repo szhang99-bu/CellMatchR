@@ -11,11 +11,13 @@ from skimage.segmentation import find_boundaries
 from skimage.draw import polygon as sk_polygon
 
 if __package__:
+    from .slide_signal import read_run_progress, run_is_brightfield
     from .roi_mask_matching import (normalize_name_for_matching, roi_choice_context,
                                     roi_mask_files, roi_match_candidates)
     from .file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
     from .validation_state import get_change_state, get_validation_tsv_path
 else:
+    from slide_signal import read_run_progress, run_is_brightfield
     from roi_mask_matching import (normalize_name_for_matching, roi_choice_context,
                                    roi_mask_files, roi_match_candidates)
     from file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
@@ -36,6 +38,7 @@ ROI_MASK_CHOICES = {}
 
 # Channel indices (0-based), matching segmentation output
 COI_CHANNEL = 1   # Cell of Interest channel
+COLOCALIZE = True
 PM_CHANNEL  = 3   # Protein Marker channel
 
 IOU_THRESHOLD = 0.35
@@ -124,10 +127,14 @@ def _matching_files(folder, pattern):
     ]
 
 
+def _analysis_channels():
+    return (COI_CHANNEL, PM_CHANNEL) if COLOCALIZE and COI_CHANNEL != PM_CHANNEL else (COI_CHANNEL,)
+
+
 def _missing_channel_inputs(project_folder):
     """Return {channel: [missing input descriptions]} for analysis inputs."""
     missing = {}
-    for channel in sorted({COI_CHANNEL, PM_CHANNEL}):
+    for channel in _analysis_channels():
         absent = []
         if not _matching_files(project_folder, PRED_TIFF_PATTERN.format(ch=channel)):
             absent.append("prediction mask")
@@ -140,28 +147,24 @@ def _missing_channel_inputs(project_folder):
 
 def _incomplete_summary_row(project_name, status, missing_channels="", error=""):
     """Keep the established Excel metric columns even if every sample is skipped."""
-    coi_ch = f"channel_{COI_CHANNEL}"
-    pm_ch = f"channel_{PM_CHANNEL}"
     row = {
         "project_name": project_name,
         "cell_of_interest_channel": COI_CHANNEL,
-        "protein_marker_channel": PM_CHANNEL,
-        "iou_threshold": IOU_THRESHOLD,
         "roi_cell_counting_rule": ROI_CELL_RULE,
         "roi_area_pixels": None,
+        "roi_mask_file": "",
     }
-    for suffix in (
-        "total_count", "average_area_pixels", "average_intensity",
-        "roi_count", "roi_average_area_pixels", "roi_average_intensity",
-        "colocalized_whole_image", "colocalized_in_roi",
-        "percent_colocalized_whole_image", "percent_colocalized_in_roi",
-    ):
-        row[f"{coi_ch}_{suffix}"] = None
-        row[f"{pm_ch}_{suffix}"] = None
-    row[f"{coi_ch}_label_file"] = ""
-    row[f"{pm_ch}_label_file"] = ""
-    row["roi_mask_file"] = ""
-    for ch in {coi_ch, pm_ch}:
+    channels = _analysis_channels()
+    metrics = ["total_count", "average_area_pixels", "average_intensity",
+               "roi_count", "roi_average_area_pixels", "roi_average_intensity"]
+    if len(channels) == 2:
+        row.update(protein_marker_channel=PM_CHANNEL, iou_threshold=IOU_THRESHOLD)
+        metrics.extend(("colocalized_whole_image", "colocalized_in_roi",
+                        "percent_colocalized_whole_image", "percent_colocalized_in_roi"))
+    for channel in channels:
+        ch = f"channel_{channel}"
+        row.update({f"{ch}_{metric}": None for metric in metrics})
+        row[f"{ch}_label_file"] = ""
         row[f"{ch}_validation_status"] = None
         row[f"{ch}_artifacts_removed"] = None
         for decision in ("yes", "no", "maybe"):
@@ -646,29 +649,12 @@ def analyze_project_folder(project_folder):
     coi_label_path = find_one_file(
         project_folder, PRED_TIFF_PATTERN.format(ch=COI_CHANNEL), required=True
     )
-    pm_label_path = find_one_file(
-        project_folder, PRED_TIFF_PATTERN.format(ch=PM_CHANNEL), required=True
-    )
     coi_raw_path = find_one_file(
         project_folder, SPLIT_TIFF_PATTERN.format(ch=COI_CHANNEL), required=True
     )
-    pm_raw_path = find_one_file(
-        project_folder, SPLIT_TIFF_PATTERN.format(ch=PM_CHANNEL), required=True
-    )
-
     print(f"  COI labels: {os.path.basename(coi_label_path)}")
-    print(f"  PM  labels: {os.path.basename(pm_label_path)}")
-
-    # ── Load images ─────────────────────────────────────────────────────────
     coi_labels = read_tiff(coi_label_path)
-    pm_labels  = read_tiff(pm_label_path)
-    coi_raw    = read_tiff(coi_raw_path)
-    pm_raw     = read_tiff(pm_raw_path)
-
-    if coi_labels.shape != pm_labels.shape:
-        raise ValueError(
-            f"COI/PM label shapes do not match: {coi_labels.shape} vs {pm_labels.shape}"
-        )
+    coi_raw = read_tiff(coi_raw_path)
 
     # ── ROI mask (optional) ─────────────────────────────────────────────────
     roi_mask = None
@@ -735,8 +721,92 @@ def analyze_project_folder(project_folder):
               f"{len(artifacts)} ARTIFACT removed")
         return label_img, val_data, status
 
+    have_roi = roi_mask is not None
+
+    def _add_val_columns(summary, ch_token, val_status, val_data, props):
+        summary[f"{ch_token}_validation_status"] = val_status
+        if val_status in ("complete", "partial_applied") and val_data is not None:
+            summary[f"{ch_token}_artifacts_removed"] = len(val_data["artifact_labels"])
+            label_to_roi = dict(
+                zip(props["label"].astype(int), props["inside_roi"].astype(bool))
+            ) if "inside_roi" in props.columns else {}
+
+            def _val_count(label_set, in_roi=None):
+                n = 0
+                for lbl in label_set:
+                    if lbl in label_to_roi:
+                        if in_roi is None or label_to_roi[lbl] == in_roi:
+                            n += 1
+                return n
+
+            summary[f"{ch_token}_validation_yes_whole_image"]   = _val_count(val_data["yes_labels"])
+            summary[f"{ch_token}_validation_no_whole_image"]     = _val_count(val_data["no_labels"])
+            summary[f"{ch_token}_validation_maybe_whole_image"]  = _val_count(val_data["maybe_labels"])
+            summary[f"{ch_token}_validation_yes_in_roi"]         = _val_count(val_data["yes_labels"],   in_roi=True) if have_roi else None
+            summary[f"{ch_token}_validation_no_in_roi"]          = _val_count(val_data["no_labels"],    in_roi=True) if have_roi else None
+            summary[f"{ch_token}_validation_maybe_in_roi"]       = _val_count(val_data["maybe_labels"], in_roi=True) if have_roi else None
+        else:
+            summary[f"{ch_token}_artifacts_removed"]             = 0
+            summary[f"{ch_token}_validation_yes_whole_image"]    = None
+            summary[f"{ch_token}_validation_no_whole_image"]     = None
+            summary[f"{ch_token}_validation_maybe_whole_image"]  = None
+            summary[f"{ch_token}_validation_yes_in_roi"]         = None
+            summary[f"{ch_token}_validation_no_in_roi"]          = None
+            summary[f"{ch_token}_validation_maybe_in_roi"]       = None
+
     coi_labels, coi_val_data, coi_val_status = _apply_val(
         coi_labels, COI_CHANNEL, coi_ch, coi_label_path)
+    if len(_analysis_channels()) == 1:
+        props = get_label_props(coi_labels, raw_img=coi_raw, roi_mask=roi_mask,
+                                channel_name=f"cell_of_interest_CH{COI_CHANNEL}")
+        inside = props.loc[props["inside_roi"].astype(bool)] if have_roi else props.iloc[:0]
+        summary = _incomplete_summary_row(project_name, "analyzed")
+        summary.update({
+            f"{coi_ch}_label_file": os.path.basename(coi_label_path),
+            f"{coi_ch}_total_count": len(props),
+            f"{coi_ch}_average_area_pixels": round(props["area"].mean(), 1),
+            f"{coi_ch}_average_intensity": round(props["mean_intensity"].mean(), 2),
+            f"{coi_ch}_roi_count": len(inside) if have_roi else None,
+            f"{coi_ch}_roi_average_area_pixels": round(inside["area"].mean(), 1),
+            f"{coi_ch}_roi_average_intensity": round(inside["mean_intensity"].mean(), 2),
+            "roi_area_pixels": int(roi_mask.sum()) if have_roi else None,
+            "roi_mask_file": os.path.basename(roi_mask_path) if roi_mask_path else "",
+            **roi_info,
+        })
+        _add_val_columns(summary, coi_ch, coi_val_status, coi_val_data, props)
+        summary_df = pd.DataFrame([summary])
+        prefix = os.path.join(analysis_folder, project_name)
+        summary_df.to_csv(filesystem_path(f"{prefix}_summary.csv"), index=False)
+        props.to_csv(filesystem_path(f"{prefix}_{coi_ch}_object_table.csv"), index=False)
+        if have_roi:
+            tifffile.imwrite(filesystem_path(f"{prefix}_roi_mask_resized.tif"),
+                             roi_mask.astype(np.uint8) * 255)
+        if SAVE_QC_PNG:
+            gray = robust_uint8(coi_raw)
+            preview = np.repeat(gray[..., None], 3, axis=-1)
+            if have_roi:
+                preview[thicken_boundary(find_boundaries(roi_mask), ROI_BORDER_THICKNESS_PX)] = (0, 220, 255)
+                make_roi_mask_preview(coi_raw, roi_mask,
+                                      filesystem_path(f"{prefix}_QC_roi_preview.tif"))
+            preview[find_boundaries(coi_labels, mode="inner")] = (255, 210, 70)
+            tifffile.imwrite(filesystem_path(f"{prefix}_QC_overlay.tif"), preview, photometric="rgb")
+        print(f"  Channel {COI_CHANNEL}: {len(props)} cells"
+              + (f", {len(inside)} inside the ROI" if have_roi else ""))
+        return summary_df
+
+    pm_label_path = find_one_file(
+        project_folder, PRED_TIFF_PATTERN.format(ch=PM_CHANNEL), required=True
+    )
+    pm_raw_path = find_one_file(
+        project_folder, SPLIT_TIFF_PATTERN.format(ch=PM_CHANNEL), required=True
+    )
+    print(f"  PM  labels: {os.path.basename(pm_label_path)}")
+    pm_labels = read_tiff(pm_label_path)
+    pm_raw = read_tiff(pm_raw_path)
+    if coi_labels.shape != pm_labels.shape:
+        raise ValueError(
+            f"COI/PM label shapes do not match: {coi_labels.shape} vs {pm_labels.shape}"
+        )
     pm_labels,  pm_val_data,  pm_val_status  = _apply_val(
         pm_labels, PM_CHANNEL, pm_ch, pm_label_path)
 
@@ -843,42 +913,8 @@ def analyze_project_folder(project_folder):
         "roi_mask_file":                                os.path.basename(roi_mask_path) if roi_mask_path else "",
     }
 
-    # ── Validation summary columns ───────────────────────────────────────────
-    have_roi = roi_mask is not None
-
-    def _add_val_columns(ch_token, val_status, val_data, props):
-        summary[f"{ch_token}_validation_status"] = val_status
-        if val_status in ("complete", "partial_applied") and val_data is not None:
-            summary[f"{ch_token}_artifacts_removed"] = len(val_data["artifact_labels"])
-            label_to_roi = dict(
-                zip(props["label"].astype(int), props["inside_roi"].astype(bool))
-            ) if "inside_roi" in props.columns else {}
-
-            def _val_count(label_set, in_roi=None):
-                n = 0
-                for lbl in label_set:
-                    if lbl in label_to_roi:
-                        if in_roi is None or label_to_roi[lbl] == in_roi:
-                            n += 1
-                return n
-
-            summary[f"{ch_token}_validation_yes_whole_image"]   = _val_count(val_data["yes_labels"])
-            summary[f"{ch_token}_validation_no_whole_image"]     = _val_count(val_data["no_labels"])
-            summary[f"{ch_token}_validation_maybe_whole_image"]  = _val_count(val_data["maybe_labels"])
-            summary[f"{ch_token}_validation_yes_in_roi"]         = _val_count(val_data["yes_labels"],   in_roi=True) if have_roi else None
-            summary[f"{ch_token}_validation_no_in_roi"]          = _val_count(val_data["no_labels"],    in_roi=True) if have_roi else None
-            summary[f"{ch_token}_validation_maybe_in_roi"]       = _val_count(val_data["maybe_labels"], in_roi=True) if have_roi else None
-        else:
-            summary[f"{ch_token}_artifacts_removed"]             = 0
-            summary[f"{ch_token}_validation_yes_whole_image"]    = None
-            summary[f"{ch_token}_validation_no_whole_image"]     = None
-            summary[f"{ch_token}_validation_maybe_whole_image"]  = None
-            summary[f"{ch_token}_validation_yes_in_roi"]         = None
-            summary[f"{ch_token}_validation_no_in_roi"]          = None
-            summary[f"{ch_token}_validation_maybe_in_roi"]       = None
-
-    _add_val_columns(coi_ch, coi_val_status, coi_val_data, coi_props)
-    _add_val_columns(pm_ch,  pm_val_status,  pm_val_data,  pm_props)
+    _add_val_columns(summary, coi_ch, coi_val_status, coi_val_data, coi_props)
+    _add_val_columns(summary, pm_ch,  pm_val_status,  pm_val_data,  pm_props)
 
     if roi_info:
         summary.update(roi_info)
@@ -1016,6 +1052,8 @@ def main():
         return
 
     print(f"Found {len(project_folders)} project folder(s).")
+    if len(_analysis_channels()) == 1:
+        print(f"Single-channel analysis on channel {COI_CHANNEL}.")
 
     missing_inputs = {
         pf: _missing_channel_inputs(pf) for pf in project_folders
@@ -1025,7 +1063,7 @@ def main():
     # for it; otherwise filtering is skipped (unless APPLY_PARTIAL_VALIDATION).
     global CHANNEL_FULLY_VALIDATED
     CHANNEL_FULLY_VALIDATED = {}
-    for ch in {COI_CHANNEL, PM_CHANNEL}:
+    for ch in _analysis_channels():
         CHANNEL_FULLY_VALIDATED[ch] = bool(project_folders) and all(
             is_validation_complete(pf, ch) for pf in project_folders
         )
@@ -1136,7 +1174,7 @@ def _apply_config(config_path: str) -> None:
     """Override module-level settings from a CellMatchr config file."""
     import json
     global MICROSAM_OUTPUT_ROOT, ANALYSIS_OUTPUT_ROOT, ROI_MASK_FOLDER, ROI_MASK_CHOICES
-    global COI_CHANNEL, PM_CHANNEL, IOU_THRESHOLD
+    global COI_CHANNEL, PM_CHANNEL, IOU_THRESHOLD, COLOCALIZE
     global ROI_CELL_RULE, ANALYSIS_SUBFOLDER_NAME, SAVE_QC_PNG
 
     with open(filesystem_path(config_path)) as f:
@@ -1179,6 +1217,16 @@ def _apply_config(config_path: str) -> None:
         IOU_THRESHOLD = float(cfg.get("ana_iou_threshold", IOU_THRESHOLD))
     except (ValueError, TypeError):
         pass
+
+    brightfield = run_is_brightfield(MICROSAM_OUTPUT_ROOT, cfg)
+    COLOCALIZE = bool(cfg.get("ana_coloc_enabled", True)) and not brightfield
+    if brightfield:
+        COI_CHANNEL = 0
+    else:
+        planned = read_run_progress(MICROSAM_OUTPUT_ROOT).get("channels")
+        if isinstance(planned, list) and len(planned) == 1 and type(planned[0]) is int:
+            COI_CHANNEL = planned[0]
+            COLOCALIZE = False
 
     if cfg.get("ana_roi_cell_rule") in ("centroid", "any_pixel"):
         ROI_CELL_RULE = cfg["ana_roi_cell_rule"]

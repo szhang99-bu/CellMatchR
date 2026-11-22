@@ -34,6 +34,7 @@ class AnalysisReportingTests(unittest.TestCase):
             "ANALYSIS_OUTPUT_ROOT": str(self.out_root),
             "COI_CHANNEL": 1,
             "PM_CHANNEL": 3,
+            "COLOCALIZE": True,
             "ROI_MASK_FOLDER": "",
             "ROI_MASK_CHOICES": {},
             "SAVE_QC_PNG": False,
@@ -142,6 +143,32 @@ class AnalysisReportingTests(unittest.TestCase):
         self.assertEqual(report["skipped_missing_channel"], 2)
         self.assertEqual(report["errors"], 0)
         self.assertIn("2 skipped", output)
+
+    def test_brightfield_measures_channel_zero_even_with_stale_colocalization(self):
+        normal = self.make_sample("brightfield", missing={(3, "mask"), (3, "raw")})
+        empty = self.make_sample("empty", missing={(3, "mask"), (3, "raw")})
+        for sample in (normal, empty):
+            for path in sample.glob("*.tif"):
+                path.rename(path.with_name(path.name.replace("ch1", "ch0")))
+        tifffile.imwrite(next(empty.glob("*predict*.tif")), np.zeros((8, 8), np.uint16))
+        masks = self.root / "masks"
+        masks.mkdir()
+        for sample in (normal, empty):
+            tifffile.imwrite(masks / f"{sample.name}.tif", np.ones((8, 8), np.uint8))
+        (self.seg_root / "_run_progress.json").write_text(json.dumps({
+            "channels": [0], "run_identity": {"slide_signal_type": "brightfield"}}))
+        settings = self.root / "analysis.json"
+        settings.write_text(json.dumps({
+            "ana_microsam_output_root": str(self.seg_root), "ana_roi_mask_folder": str(masks),
+            "ana_red_channel": "3", "ana_pv_channel": "3", "ana_coloc_enabled": True}))
+        analysis._apply_config(str(settings))
+        table, report, console = self.run_analysis()
+        self.assertEqual(table["channel_0_total_count"].tolist(), [1, 0])
+        self.assertEqual(table["channel_0_roi_count"].tolist(), [1, 0])
+        self.assertNotIn("protein_marker_channel", table)
+        self.assertNotIn("channel_0_colocalized_whole_image", table)
+        self.assertEqual((report["analyzed"], report["errors"]), (2, 0))
+        self.assertIn("Single-channel analysis on channel 0", console)
 
     def test_skipped_sample_does_not_change_legacy_validation_gate(self):
         good = self.make_sample("good")

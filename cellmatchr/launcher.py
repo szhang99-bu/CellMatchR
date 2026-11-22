@@ -17,7 +17,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 
 from .config import (load_config, save_config, save_project_config,
-                     load_project_config, CONFIG_PATH, DEFAULT_CONFIG)
+                     load_project_config, CONFIG_PATH, DEFAULT_CONFIG, PROJECT_CONFIG_FILE)
 from .legacy_cellpose import segmentation_command
 from .microsam2 import (
     DEFAULT_MODEL as MICROSAM2_DEFAULT_MODEL, DISPLAY_NAME as MICROSAM2_DISPLAY,
@@ -25,7 +25,9 @@ from .microsam2 import (
 )
 from .file_paths import filesystem_path, matching_paths, prediction_channel
 from .model_wizard_archive import FOLDER as MODEL_PREVIEW_FOLDER
+from .model_download import DOWNLOADS_TITLE, MICROSAM_MODELS
 from .roi_mask_matching import roi_choice_context, roi_mask_files, roi_match_candidates
+from .slide_signal import is_brightfield, run_is_brightfield
 
 # Optional PIL for logo
 try:
@@ -57,7 +59,6 @@ FONT_MONO  = ("Courier New", 9)
 
 SEGMENTATION_BACKENDS = {"microsam": "Micro-SAM", "microsam2": MICROSAM2_DISPLAY,
                          "cellpose": "Cellpose", "stardist": "StarDist 2D"}
-MICROSAM_MODELS = ("vit_b_lm", "vit_l_lm", "vit_h_lm", "vit_b", "vit_l", "vit_h")
 SEGMENTATION_CHECKPOINT_KEYS = {"microsam": "seg_custom_model_path",
                                 "cellpose": "seg_cellpose_model_path",
                                 "stardist": "seg_stardist_model_path"}
@@ -546,10 +547,13 @@ class CellMatchrLauncher:
         self._ana_pm_chan_var: tk.StringVar | None = None
         # open-existing project JSON path (populated in Step 1 open pane)
         self._open_json_var: tk.StringVar = tk.StringVar()
+        self._loaded_project_file = ""
+        self._project_mode = "new"
 
         self._vars: dict = {}
         self._build_vars()
         self._build_layout()
+        self._open_json_var.trace_add("write", self._on_project_file_changed)
         self._show_step(0)
 
     # ------------------------------------------------------------------
@@ -762,6 +766,9 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
 
     def _on_scroll(self, event):
+        widget = event.widget
+        if not hasattr(widget, "winfo_toplevel") or widget.winfo_toplevel() is not self.root:
+            return
         if event.num == 4:                            # Linux scroll-up
             self._canvas.yview_scroll(-2, "units")
         elif event.num == 5:                          # Linux scroll-down
@@ -937,12 +944,22 @@ class CellMatchrLauncher:
             ):
                 return
             self._terminate_running()
+        self._finish_close()
+
+    def _finish_close(self) -> None:
+        self._sync_vars_to_config()
+        save_config(self.config)
+        project = self.config.get("project_output_folder", "").strip()
+        if project and os.path.isfile(os.path.join(project, PROJECT_CONFIG_FILE)):
+            save_project_config(self.config)
         cached = getattr(self, "_model_preview_cache", None)
         if cached:
             cached["directory"].cleanup()
         self.root.quit()
 
     def _show_step(self, idx: int) -> None:
+        if not self._can_leave_project_step() and idx != 0:
+            return
         # Guard against navigating away while a run/window is in progress.
         if idx != self.current_step and not self._confirm_leave_running():
             return
@@ -974,6 +991,7 @@ class CellMatchrLauncher:
             self.btn_next.config(text="Save & Close", command=self._save_and_close)
         else:
             self.btn_next.config(text="Next  ▶", command=self._next)
+        self._update_project_navigation()
 
         self._canvas.yview_moveto(0)
         self._update_project_display()
@@ -989,9 +1007,7 @@ class CellMatchrLauncher:
     def _save_and_close(self):
         if not self._confirm_leave_running():
             return
-        self._sync_vars_to_config()
-        save_config(self.config)
-        self.root.quit()
+        self._finish_close()
 
     def _update_project_display(self) -> None:
         name   = self.config.get("project_name", "").strip() or "No project set"
@@ -1293,8 +1309,8 @@ class CellMatchrLauncher:
                  str(self.config.get("seg_cellpose_variant") or "cpsam")
                  if backend == "cellpose" else "2D_versatile_fluo")
         raw_channels = str(self.config.get("seg_channels") or "")
-        channels = [int(part.strip()) for part in raw_channels.split(",")
-                    if part.strip()]
+        channels = ([0] if brightfield else
+                    [int(part.strip()) for part in raw_channels.split(",") if part.strip()])
         identity = {
             "backend": backend,
             "model": model,
@@ -1912,6 +1928,7 @@ class CellMatchrLauncher:
     # ==================================================================
 
     def _build_project_step(self, parent) -> None:
+        self._project_mode = "new"
         self._section_header(
             parent,
             "Step 1 — Create Project",
@@ -1973,7 +1990,7 @@ class CellMatchrLauncher:
         self._pane_open = tk.Frame(mode_card, bg=CARD)
 
         tk.Label(self._pane_open,
-                 text="Select the  cellmatchr_project.json  file saved inside a previous project folder.",
+                 text="Select your project's cellmatchr_project.json, then click Load Project Settings.",
                  bg=CARD, fg=MUTED, font=FONT, wraplength=660).pack(anchor="w", pady=(0, 10))
 
         # File-picker row for the JSON file
@@ -1981,9 +1998,10 @@ class CellMatchrLauncher:
         _json_row.pack(fill="x", pady=(0, 4))
         tk.Label(_json_row, text="Project file (.json):", bg=CARD, fg=FG,
                  font=FONT, width=26, anchor="w").pack(side="left")
-        tk.Entry(_json_row, textvariable=self._open_json_var,
-                 bg="#3c3c4e", fg=FG, insertbackground=FG,
-                 relief="flat", font=FONT).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        project_entry = tk.Entry(_json_row, textvariable=self._open_json_var,
+                                 bg="#3c3c4e", fg=FG, insertbackground=FG,
+                                 relief="flat", font=FONT)
+        project_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         tk.Button(_json_row, text="Browse…",
                   command=self._browse_project_json,
                   bg=ACTIVE, fg=FG, font=FONT, relief="flat", padx=10).pack(side="left")
@@ -2001,6 +2019,7 @@ class CellMatchrLauncher:
         self._pane_new.pack(fill="x")
 
     def _set_proj_mode(self, mode: str) -> None:
+        self._project_mode = mode
         if mode == "new":
             self._pane_open.pack_forget()
             self._pane_new.pack(fill="x")
@@ -2011,6 +2030,27 @@ class CellMatchrLauncher:
             self._pane_open.pack(fill="x")
             self._btn_new.config(bg=ACTIVE, fg=MUTED)
             self._btn_open.config(bg=ACCENT, fg="#1e1e2e")
+        self._update_project_navigation()
+
+    def _can_leave_project_step(self) -> bool:
+        if self.current_step != 0 or self._project_mode != "open":
+            return True
+        path = self._open_json_var.get().strip()
+        return bool(path and os.path.abspath(path) == self._loaded_project_file
+                    and os.path.isfile(path))
+
+    def _update_project_navigation(self) -> None:
+        state = "normal" if self._can_leave_project_step() else "disabled"
+        self.btn_next.config(state=state)
+        for button in self._step_btns[1:]:
+            button.config(state=state)
+
+    def _on_project_file_changed(self, *_args) -> None:
+        if self.current_step == 0 and self._project_mode == "open":
+            waiting = self._open_json_var.get().strip() and not self._can_leave_project_step()
+            self._open_status.config(text="Click Load Project Settings to continue." if waiting else "",
+                                     fg=MUTED)
+            self._update_project_navigation()
 
     def _create_project(self) -> None:
         self._sync_vars_to_config()
@@ -2039,26 +2079,25 @@ class CellMatchrLauncher:
         if path:
             self._open_json_var.set(path)
 
-    def _open_project(self) -> None:
+    def _open_project(self) -> bool:
         json_path = self._open_json_var.get().strip()
-        if not json_path or not os.path.isfile(json_path):
+        self._loaded_project_file = ""
+        if os.path.basename(json_path) != PROJECT_CONFIG_FILE or not os.path.isfile(json_path):
             self._open_status.config(
                 text="⚠  Select a cellmatchr_project.json file first.", fg=RED)
-            return
+            self._update_project_navigation()
+            return False
         folder = os.path.dirname(os.path.abspath(json_path))
         cfg = load_project_config(folder)
         if cfg is None:
             self._open_status.config(
                 text=f"✗  Could not read project file:\n   {json_path}",
                 fg=RED)
-            return
+            self._update_project_navigation()
+            return False
         # Load config into memory and re-sync all vars
         self.config = cfg
-        # Always repoint the project to where the .json actually lives — the
-        # stored project_output_folder may be a stale path from another machine
-        # or a moved/renamed folder. Using the json's own directory guarantees
-        # the segmentation/validation/analysis folders are found on disk.
-        self.config["project_output_folder"] = folder
+        self._loaded_project_file = os.path.abspath(json_path)
         self._val_input_var = None
         self._ana_input_var = None
         recovered = 0
@@ -2075,10 +2114,9 @@ class CellMatchrLauncher:
         # Repair a stale input folder (e.g. the converter output folder was
         # renamed after saving) so the channel preview and segmentation still
         # find the images.
-        if self._folder_image_count(self.config.get("input_root_folder", "").strip()) == 0:
-            healed = self._resolve_existing_input_folder()
-            if self._folder_image_count(healed) > 0:
-                self.config["input_root_folder"] = healed
+        self.config["input_root_folder"] = self._resolve_existing_input_folder()
+        if self.config.get("input_type") == "vsi":
+            self._align_converter_roi_folder(self.config["input_root_folder"])
         for k, v in self._vars.items():
             val = self.config.get(k)
             if val is not None:
@@ -2106,6 +2144,8 @@ class CellMatchrLauncher:
                      "interrupted analysis run(s).", fg=GREEN)
         else:
             self._open_status.config(text=f"✔  Loaded project: {name}", fg=GREEN)
+        self._update_project_navigation()
+        return True
 
     # ==================================================================
     # STEP 2 — Input & Paths
@@ -2290,9 +2330,18 @@ class CellMatchrLauncher:
 
     def _vsi_auto_text(self) -> str:
         folder = self.config.get("input_root_folder", "").strip()
+        count = self._folder_image_count(folder)
+        if count:
+            text = f"{count} saved TIFF crop(s) found in:\n{folder}"
+            masks = self._saved_roi_mask_text()
+            return f"{text}\n{masks}" if masks else text
         if folder:
-            return f"TIF exports will be read from:  {folder}"
+            return f"No TIFF crops found in:\n{folder}"
         return "TIF input folder will be set automatically after the converter closes."
+
+    def _saved_roi_mask_text(self) -> str:
+        folder = self.config.get("ana_roi_mask_folder", "").strip()
+        return f"Saved ROI masks: {folder}" if folder and _has_analysis_roi_masks(folder) else ""
 
     def _on_input_type_changed(self) -> None:
         # Guard: frames only exist while Step 2 is displayed
@@ -2381,8 +2430,10 @@ class CellMatchrLauncher:
     # ==================================================================
 
     def _build_segmentation_step(self, parent) -> None:
-        is_brightfield = (self._vars["input_type"].get() == "vsi"
-                          and self._vars["slide_signal_type"].get() == "brightfield")
+        slide_scanner = self._vars["input_type"].get() == "vsi"
+        is_brightfield = slide_scanner and self._vars["slide_signal_type"].get() == "brightfield"
+        if is_brightfield:
+            self._vars["seg_channels"].set("0")
         self._section_header(
             parent,
             "Step 3 — Segmentation",
@@ -2393,22 +2444,21 @@ class CellMatchrLauncher:
         input_card = self._card(parent, "Input Folder")
 
         # Converter outputs available to segment (VSI_Converted_TIFF[_*]).
-        self._seg_input_variants = self._find_input_variants()
+        self._seg_input_variants = [(name, path) for name, path in self._find_input_variants()
+                                    if self._direct_image_count(path)] if slide_scanner else []
         _path_by_name = {n: p for n, p in self._seg_input_variants}
 
-        folder = self.config.get("input_root_folder", "").strip()
-        # If the stored folder has no images (e.g. it was renamed), default to a
-        # converter output that does, so the preview and run work out of the box.
-        if self._folder_image_count(folder) == 0 and self._seg_input_variants:
-            folder = next((p for _, p in self._seg_input_variants
-                           if self._direct_image_count(p) > 0),
-                          self._seg_input_variants[0][1])
-            self.config["input_root_folder"] = folder
-        input_ok = bool(folder and os.path.isdir(folder))
+        folder = self._resolve_existing_input_folder()
+        self.config["input_root_folder"] = folder
+        self._vars["input_root_folder"].set(folder)
+        if slide_scanner:
+            self._align_converter_roi_folder(folder)
+        input_ok = self._folder_image_count(folder) > 0
 
         self._seg_input_warn = tk.Label(
             input_card,
-            text="" if input_ok else "⚠  No input folder set — go to Step 2 to set your data source.",
+            text=("" if input_ok else "Choose the converted output for this run." if _path_by_name
+                  else "⚠  No input images found — check your data source in Step 2."),
             bg=CARD, fg=RED, font=FONT, wraplength=700,
         )
         self._seg_input_warn.pack(anchor="w")
@@ -2419,18 +2469,22 @@ class CellMatchrLauncher:
             bg=CARD, fg=FG if input_ok else MUTED, font=FONT_MONO, wraplength=700,
         )
         self._seg_input_display.pack(anchor="w", pady=(2, 0))
+        if slide_scanner:
+            roi_status = tk.Label(input_card, text=self._saved_roi_mask_text(), bg=CARD,
+                                  fg=MUTED, font=FONT, wraplength=700, justify="left")
+            roi_status.pack(anchor="w")
 
         # Dropdown to choose among multiple converter outputs (like Val/Analysis)
-        if len(self._seg_input_variants) > 1:
+        if len(self._seg_input_variants) > 1 or (self._seg_input_variants and not input_ok):
             _names = [n for n, _ in self._seg_input_variants]
             _cur = next((n for n, p in self._seg_input_variants
-                         if os.path.normpath(p) == os.path.normpath(folder)), _names[0])
+                         if os.path.normpath(p) == os.path.normpath(folder)), "")
             self._seg_src_var = tk.StringVar(value=_cur)
 
             ttk.Separator(input_card, orient="horizontal").pack(fill="x", pady=(8, 6))
             tk.Label(input_card, text="Converted output to use:", bg=CARD, fg=MUTED,
                      font=FONT).pack(anchor="w")
-            self._seg_src_cur_lbl = tk.Label(input_card, text=f"Using:  {_cur}",
+            self._seg_src_cur_lbl = tk.Label(input_card, text=f"Using:  {_cur}" if _cur else "",
                                              bg=CARD, fg=FG, font=FONT_MONO, wraplength=660)
             self._seg_src_cur_lbl.pack(anchor="w", pady=(0, 4))
 
@@ -2459,6 +2513,13 @@ class CellMatchrLauncher:
                 self._seg_input_display.config(text=p if p else "—", fg=FG if has else MUTED)
                 self._seg_input_warn.config(
                     text="" if has else f"⚠  No images found in:  {p}")
+                roi_status.config(text=self._saved_roi_mask_text())
+                self._seg_run_btn.config(state="normal" if has else "disabled")
+                self._wizard_btn.config(state="normal" if has else "disabled")
+                self._model_wizard_btn.config(state="normal" if (has and _PIL) else "disabled")
+                resume_btn = getattr(self, "_seg_resume_btn", None)
+                if resume_btn is not None and resume_btn.winfo_exists():
+                    resume_btn.config(state="normal" if has else "disabled")
                 # reset the channel preview for the newly chosen source
                 self._ch_images = []
                 self._ch_photo_refs = []
@@ -2484,6 +2545,8 @@ class CellMatchrLauncher:
                     _ovr_frame.pack(fill="x", pady=(0, 4))
                     lbl.config(text="▼  Use a different converted output")
             _ovr_lbl.bind("<Button-1>", lambda _: _toggle_seg_src())
+            if not input_ok:
+                _toggle_seg_src()
 
         # ── Channel preview + picker ─────────────────────────────────
         ch_card = self._card(parent, "Channel Preview  (click to toggle prediction)")
@@ -2555,6 +2618,12 @@ class CellMatchrLauncher:
                               values=list(_BK_DISPLAY.values()), state="readonly", width=18)
         _cb_bk.pack(side="left", padx=8)
         self._bind_combobox_scroll(_cb_bk)
+        ttk.Button(_bk_frame, text=f"{DOWNLOADS_TITLE}…",
+                   command=self._open_builtin_model_downloads).pack(side="left", padx=(10, 0))
+        tk.Label(model_card, text="Optional. The wizard downloads the models it needs. "
+                 "Use this button to download additional models ahead of time.",
+                 bg=CARD, fg=MUTED, font=FONT, wraplength=660, justify="left"
+                 ).pack(anchor="w", pady=(0, 10))
 
         g = tk.Frame(model_card, bg=CARD)
         g.pack(fill="x")
@@ -2570,7 +2639,8 @@ class CellMatchrLauncher:
         ch_entry_frame = tk.Frame(g, bg=CARD)
         ch_entry_frame.grid(row=0, column=1, sticky="w", pady=3, padx=8)
         tk.Entry(ch_entry_frame, textvariable=self._vars["seg_channels"],
-                 bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=16).pack(side="left")
+                 bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=16,
+                 state="readonly" if is_brightfield else "normal").pack(side="left")
 
         tk.Label(g, text=("Brightfield RGB is combined into one cell signal: channel 0."
                           if is_brightfield else
@@ -2781,53 +2851,86 @@ class CellMatchrLauncher:
         self._seg_backend_disp.trace_add("write", _on_seg_backend_changed)
         _on_seg_backend_changed()   # apply initial state
 
-        def apply_model_preview(settings, result, comparison):
+        def apply_model_preview(settings, result, comparison, finished):
             channel = comparison["channel"]
             backend = settings["seg_backend"]
-            checkpoint = settings.get(model_keys.get(backend))
-            if checkpoint and not os.path.exists(filesystem_path(checkpoint)):
-                raise ValueError("This checkpoint is unavailable on this computer.")
-            self._seg_backend_disp.set(SEGMENTATION_BACKENDS[backend])
-            if backend in model_keys:
-                custom_path.set(settings[model_keys[backend]])
-            for key, value in settings.items():
-                self._vars[key].set(value)
-            if backend in model_keys:
-                refresh_model_choices(backend)
-            if not self._vars["seg_channels"].get().strip():
-                self._vars["seg_channels"].set(str(channel))
+            checkpoint = settings.get(model_keys.get(backend)) or ""
             self._sync_vars_to_config()
-            save_config(self.config)
-            save_project_config(self.config)
-            self._cache_selected_model_preview(settings, result, channel, comparison["preview"], comparison)
-            return self._preview_matches(self._model_preview_cache, self.config, self._configured_channels())
+            config = {**self.config, **settings}
+            if not config["seg_channels"].strip():
+                config["seg_channels"] = str(channel)
+
+            def apply_to_ui(cached, can_reuse):
+                try:
+                    backend_name = SEGMENTATION_BACKENDS[backend]
+                    if self._seg_backend_disp.get() != backend_name:
+                        self._seg_backend_disp.set(backend_name)
+                    if backend in model_keys and custom_path.get() != checkpoint:
+                        custom_path.set(checkpoint)
+                    variant_changed = (backend == "cellpose" and
+                                       self._vars["seg_cellpose_variant"].get() != config["seg_cellpose_variant"])
+                    for key in (*settings, "seg_channels"):
+                        if self._vars[key].get() != str(config[key]):
+                            self._vars[key].set(config[key])
+                    if variant_changed:
+                        refresh_model_choices(backend)
+                except (OSError, KeyError, ValueError, tk.TclError) as error:
+                    cached["directory"].cleanup()
+                    finished(str(error))
+                    return
+                self.config.update(config)
+                self._replace_model_preview_cache(cached)
+                message = f"Selected {result['name']}."
+                if can_reuse:
+                    message += " The Parameter Wizard can reuse this preview."
+                model_feedback.configure(text=message)
+                model_feedback.pack(anchor="w", pady=(4, 0))
+                finished()
+
+            def worker():
+                cached = None
+                try:
+                    if checkpoint and not os.path.exists(filesystem_path(checkpoint)):
+                        raise ValueError("This checkpoint is unavailable on this computer.")
+                    cached = self._build_model_preview_cache(
+                        config, settings, result, channel, comparison["preview"], comparison)
+                    can_reuse = self._preview_matches(cached, config, self._configured_channels(config))
+                    save_config(config)
+                    save_project_config(config)
+                except Exception as error:
+                    if cached:
+                        cached["directory"].cleanup()
+                    self.root.after(0, finished, str(error))
+                else:
+                    self.root.after(0, apply_to_ui, cached, can_reuse)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         wizard_row = tk.Frame(model_card, bg=CARD)
         wizard_row.pack(fill="x", pady=(7, 0))
         project_folder = self.config.get("project_output_folder", "")
         has_saved_preview = project_folder and (Path(project_folder) / MODEL_PREVIEW_FOLDER).is_dir()
-        tk.Button(
+        self._model_wizard_btn = tk.Button(
             wizard_row, text="🪄  Model Selection Wizard",
             command=lambda: self._launch_model_wizard(apply_model_preview),
-            bg=ACTIVE, fg=FG, relief="flat", font=FONT_BOLD, padx=12, pady=6,
+            bg=ACCENT, fg="#000000", activeforeground="#000000", relief="flat",
+            font=FONT_BOLD, padx=12, pady=6,
             state="normal" if _PIL and (input_ok or has_saved_preview) else "disabled",
-        ).pack(side="left")
-        tk.Label(wizard_row, text="Compare models on the same small patch before a full run.",
+        )
+        self._model_wizard_btn.pack(side="left")
+        tk.Label(wizard_row, text="Recommended. Compare models on a small patch and apply "
+                 "the settings for the one you choose.",
                  bg=CARD, fg=FG, font=FONT, wraplength=410, justify="left").pack(side="left", padx=10)
+        model_feedback = tk.Label(model_card, text="", bg=CARD, fg=GREEN, font=FONT,
+                                  wraplength=650, justify="left")
 
         filt_card = self._card(parent, "Object Filtering")
-        tk.Label(
-            filt_card,
-            text="Set to 0 to disable a filter.  Values depend on imaging conditions —\n"
-                 "open an example image and measure a typical cell to choose appropriate bounds.",
-            bg=CARD, fg=MUTED, font=FONT, justify="left",
-        ).pack(anchor="w", pady=(0, 8))
-
         wizard_row = tk.Frame(filt_card, bg=CARD)
         wizard_row.pack(anchor="w", fill="x", pady=(0, 10))
         tk.Label(
             wizard_row,
-            text="Pick example objects to set size, shape and intensity limits.",
+            text="Recommended. Pick example cells and the wizard fills in size, shape, "
+                 "and intensity limits. A limit of 0 turns that filter off.",
             bg=CARD, fg=MUTED, font=FONT, justify="left", wraplength=650,
         ).pack(anchor="w")
         _wiz_btn_row = tk.Frame(wizard_row, bg=CARD)
@@ -2835,7 +2938,7 @@ class CellMatchrLauncher:
         self._wizard_btn = tk.Button(
             _wiz_btn_row, text="🧙  Parameter Wizard",
             command=self._launch_parameter_wizard,
-            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+            bg=ACCENT, fg="#000000", activeforeground="#000000", font=FONT_BOLD, relief="flat",
             padx=12, pady=6,
             state="normal" if input_ok else "disabled",
         )
@@ -2934,12 +3037,13 @@ class CellMatchrLauncher:
         # "Continue a previous run" appears ONLY when an unfinished run is
         # detected for this project (progress recorded but not finished).
         _prog = self._seg_run_progress()
-        if input_ok and _prog and not _prog.get("finished", True):
+        if _prog and not _prog.get("finished", True):
             self._seg_resume_btn = tk.Button(
                 btn_row, text="⟲  Continue a previous run",
                 command=lambda: self._run_segmentation_step(resume=True),
                 bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
                 padx=14, pady=10,
+                state="normal" if input_ok else "disabled",
             )
             self._seg_resume_btn.pack(side="left", padx=(8, 0))
 
@@ -2971,7 +3075,7 @@ class CellMatchrLauncher:
     # Per-channel filter helpers
     # ------------------------------------------------------------------
 
-    def _toggle_per_ch_filters(self) -> None:
+    def _toggle_per_ch_filters(self, *, persist: bool = True) -> None:
         enabled = self._per_ch_filt_enabled.get()
         for ent in getattr(self, "_global_filt_entries", []):
             ent.config(state="disabled" if enabled else "normal",
@@ -2984,7 +3088,8 @@ class CellMatchrLauncher:
             self._rebuild_per_ch_filter_rows()
         else:
             self._per_ch_filt_frame.pack_forget()
-        self._save_per_ch_filter_config()
+        if persist:
+            self._save_per_ch_filter_config()
 
     def _rebuild_per_ch_filter_rows(self) -> None:
         if not hasattr(self, "_per_ch_filt_frame") or not self._per_ch_filt_enabled.get():
@@ -3211,6 +3316,27 @@ class CellMatchrLauncher:
         converter's intermediate/mask folders are never chosen as input.
         """
         cfg_folder = self.config.get("input_root_folder", "").strip()
+        if self.config.get("input_type") == "vsi":
+            saved_output = self.config.get("vsi_output_dir", "").strip()
+            # Some early projects pointed to the converter output itself.
+            # Scan its exports so the neighboring ROI-mask TIFFs stay separate.
+            if cfg_folder:
+                exports = os.path.join(cfg_folder, "exports")
+                if self._direct_image_count(exports):
+                    return exports
+                if (not self._direct_image_count(cfg_folder)
+                        and os.path.isdir(os.path.join(cfg_folder, "DONOTDELETE-MASK_FOR_VSI"))):
+                    cfg_folder = exports
+            if self._folder_image_count(cfg_folder):
+                return cfg_folder
+            if saved_output:
+                for path in (os.path.join(saved_output, "exports"), saved_output):
+                    if self._direct_image_count(path):
+                        return path
+            populated = [path for _, path in self._find_input_variants()
+                         if self._direct_image_count(path)]
+            return populated[0] if len(populated) == 1 else cfg_folder
+
         if self._folder_image_count(cfg_folder) > 0:
             return cfg_folder
 
@@ -3279,8 +3405,28 @@ class CellMatchrLauncher:
             import numpy as np
             fname = os.path.basename(path)
             print(f"\n[Preview] Loading: {fname}")
+            roi_path = None
+            display_native = False
 
-            if path.lower().endswith(".czi"):
+            if self.config.get("input_type") == "vsi" and path.lower().endswith((".tif", ".tiff")):
+                from .slide_roi_preview import slide_roi_for_sample
+                from .slide_tiff import TiffSlide
+
+                slide = TiffSlide(path)
+                try:
+                    scene = slide.get_scene(0)
+                    w, h = scene.size
+                    factor = min(1, 640 / max(w, h))
+                    data = scene.read_block(size=(max(1, round(w * factor)), max(1, round(h * factor))))
+                finally:
+                    slide.close()
+                display_native = is_brightfield(self.config)
+                channels_np = ([data[..., :3] if data.ndim == 3 and data.shape[-1] >= 3
+                                else data[..., 0] if data.ndim == 3 else data]
+                               if display_native or data.ndim == 2
+                               else [data[..., i] for i in range(data.shape[-1])])
+                roi_path = slide_roi_for_sample(os.path.basename(path), source=path)
+            elif path.lower().endswith(".czi"):
                 channels_np = None   # filled by fast or slow path below
 
                 # ── Fast path: aicspylibczi — reads ONE Z-slice per channel ──
@@ -3438,17 +3584,15 @@ class CellMatchrLauncher:
                     channels_np = []
 
             from PIL import Image as PILImage
+            from .slide_roi_preview import overlay_slide_outline
             photos = []
-            for i, ch in enumerate(channels_np):
-                ch = ch.astype(float)
-                lo, hi = np.percentile(ch, [1, 99.5])
-                if hi > lo:
-                    ch = np.clip((ch - lo) / (hi - lo) * 255, 0, 255)
-                else:
-                    ch = np.zeros_like(ch)
-                ch = ch.astype("uint8")
-                img = PILImage.fromarray(ch, mode="L")
+            for ch in channels_np:
+                if not (display_native and ch.dtype == np.uint8):
+                    lo, hi = np.percentile(ch, [1, 99.5])
+                    ch = np.uint8(np.clip((ch.astype(float) - lo) / max(hi - lo, 1) * 255, 0, 255))
+                img = PILImage.fromarray(ch)
                 img.thumbnail((280, 200), PILImage.LANCZOS)
+                img = overlay_slide_outline(img, roi_path)
                 photos.append(ImageTk.PhotoImage(img))
 
             print(f"[Preview] Done — {len(photos)} channel(s) loaded")
@@ -3549,6 +3693,8 @@ class CellMatchrLauncher:
             or (self._find_variants(SUBFOLDER["seg"]) or [SUBFOLDER["seg"]])[-1]
         )
         seg_root = os.path.join(proj, seg_sub)
+        if run_is_brightfield(seg_root, self.config):
+            return ["0"]
 
         if os.path.isdir(seg_root):
             for d in sorted(os.listdir(seg_root)):
@@ -3586,6 +3732,8 @@ class CellMatchrLauncher:
                        or (self._find_variants(SUBFOLDER["seg"])
                            or [SUBFOLDER["seg"]])[-1])
             seg_root = os.path.join(proj, seg_sub)
+            if run_is_brightfield(seg_root, self.config):
+                return ["0"]
             chs = set()
             if os.path.isdir(seg_root):
                 for d in sorted(os.listdir(seg_root)):
@@ -3918,6 +4066,18 @@ class CellMatchrLauncher:
 
         threading.Thread(target=_thread, daemon=True).start()
 
+    def _open_builtin_model_downloads(self) -> None:
+        from .model_wizard import open_model_downloads
+
+        if self._is_running("Model Selection Wizard"):
+            messagebox.showinfo("Model comparison is running",
+                                f"Use {DOWNLOADS_TITLE} after the comparison finishes.",
+                                parent=self.root)
+            return
+        self._sync_vars_to_config()
+        models, _ = _model_wizard_options(self.config)
+        open_model_downloads(self.root, models, self._track_proc)
+
     def _launch_model_wizard(self, apply_model) -> None:
         if self._running_procs():
             messagebox.showinfo("A process is running",
@@ -3956,17 +4116,25 @@ class CellMatchrLauncher:
             messagebox.showerror("Could not open the Model Selection Wizard", str(error),
                                  parent=self.root)
 
-    def _configured_channels(self):
-        return {int(part.strip()) for part in str(self.config.get("seg_channels") or "").split(",")
+    def _configured_channels(self, config=None):
+        config = self.config if config is None else config
+        if is_brightfield(config):
+            return {0}
+        return {int(part.strip()) for part in str(config.get("seg_channels") or "").split(",")
                 if part.strip().isdigit()}
 
     def _cache_selected_model_preview(self, settings, result, channel, preview, comparison=None) -> None:
+        cached = self._build_model_preview_cache(self.config, settings, result, channel, preview, comparison)
+        self._replace_model_preview_cache(cached)
+
+    @staticmethod
+    def _build_model_preview_cache(config, settings, result, channel, preview, comparison=None):
         from .model_wizard_compute import file_identity, write_json
 
         inputs = ("project_output_folder", "input_root_folder", "input_type",
                   "slide_signal_type", "seg_skip_subdirs", "seg_tile_h", "seg_tile_w",
                   "seg_halo_h", "seg_halo_w")
-        signature = {key: self.config.get(key) for key in (*inputs, *settings)}
+        signature = {key: config.get(key) for key in (*inputs, *settings)}
         model_key = SEGMENTATION_CHECKPOINT_KEYS.get(settings["seg_backend"])
         model = signature.get(model_key) if model_key else None
         model_identity = file_identity(model) if model else None
@@ -3987,12 +4155,15 @@ class CellMatchrLauncher:
         if comparison:
             from .model_wizard_archive import capture
             capture(archive, comparison, result, signature, model_identity)
-        old = getattr(self, "_model_preview_cache", None)
-        self._model_preview_cache = {
+        return {
             "directory": directory, "manifest": str(manifest), "channel": channel,
             "signature": signature, "source": tuple(preview["source_path"]), "scene": preview["scene"],
             "model": model_identity, "archive": archive,
         }
+
+    def _replace_model_preview_cache(self, cached):
+        old = getattr(self, "_model_preview_cache", None)
+        self._model_preview_cache = cached
         if old:
             old["directory"].cleanup()
 
@@ -4159,18 +4330,19 @@ class CellMatchrLauncher:
 
                 def _done():
                     if rc == 0:
-                        self.config = load_config()
-                        if (self.config.get("input_type") == "vsi"
-                                and self.config.get("slide_signal_type") == "brightfield"):
-                            self._per_ch_filt_enabled.set(False)
-                            for key in ("seg_min_object_size", "seg_max_object_size",
-                                        "seg_max_ratio", "seg_raw_mean_min",
-                                        "seg_raw_mean_max"):
-                                self._vars[key].set(str(self.config[key]))
-                            self._toggle_per_ch_filters()
-                        else:
-                            self._per_ch_filt_enabled.set(True)
-                            self._toggle_per_ch_filters()
+                        updated = load_config()
+                        global_filters = ("seg_min_object_size", "seg_max_object_size",
+                                          "seg_max_ratio", "seg_raw_mean_min", "seg_raw_mean_max")
+                        filter_keys = (*global_filters, "seg_per_channel_filters",
+                                       "seg_per_channel_filters_enabled")
+                        if all(updated.get(key) == config.get(key) for key in filter_keys):
+                            _restore("Filter settings unchanged.", FG)
+                            return
+                        self.config.update({key: updated[key] for key in filter_keys})
+                        for key in global_filters:
+                            self._vars[key].set(str(self.config[key]))
+                        self._per_ch_filt_enabled.set(self.config["seg_per_channel_filters_enabled"])
+                        self._toggle_per_ch_filters(persist=False)
                         _log_line("\n✔  Parameter Wizard finished — filter values updated.")
                         _restore("✔  Filter values updated below.", GREEN)
                     else:
@@ -4668,6 +4840,8 @@ class CellMatchrLauncher:
             self._bind_combobox_scroll(_cb_ana_src)
 
             def _ana_src_changed(*_):
+                if not _ana_input_cur_lbl.winfo_exists():
+                    return
                 _ana_input_cur_lbl.config(text=f"Using:  {self._ana_input_var.get()}")
                 _ana_details_lbl.config(text=_segmentation_run_details(
                     self.config.get("project_output_folder", "").strip(),
@@ -4677,6 +4851,7 @@ class CellMatchrLauncher:
                 self._pair_roi_masks_with_run(self._ana_input_var.get())
                 self._ana_roi_help_lbl.config(
                     text=self._roi_help_for_run(self._ana_input_var.get()))
+                refresh_channels()
             self._ana_input_var.trace_add("write", _ana_src_changed)
         elif not _a_seg_variants:
             tk.Label(toggle_card,
@@ -4737,24 +4912,16 @@ class CellMatchrLauncher:
         channel_options = self._detect_predicted_channels()
         n_channels = len(channel_options)
 
-        # Default colocalization to True only when ≥2 channels configured
-        if "ana_coloc_enabled" not in self.config:
-            self._vars["ana_coloc_enabled"].set(n_channels >= 2)
-            self.config["ana_coloc_enabled"] = (n_channels >= 2)
-
         coloc_card = self._card(parent, "Colocalization")
-        tk.Checkbutton(
+        coloc_toggle = tk.Checkbutton(
             coloc_card, text="Run colocalization analysis between two channels",
             variable=self._vars["ana_coloc_enabled"],
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT_BOLD,
             command=self._toggle_ana_coloc,
-        ).pack(anchor="w")
-        if n_channels < 2:
-            tk.Label(
-                coloc_card,
-                text="⚠  Only one channel configured in Step 3 — colocalization requires two channels.",
-                bg=CARD, fg=YELLOW, font=FONT, wraplength=660,
-            ).pack(anchor="w", pady=(4, 0))
+        )
+        coloc_toggle.pack(anchor="w")
+        single_note = tk.Label(coloc_card, bg=CARD, fg=MUTED, font=FONT, wraplength=660)
+        single_note.pack(anchor="w", pady=(4, 0))
 
         # ── Colocalization parameters (shown/hidden by toggle) ───────
         # Container is always packed at this position in parent; content
@@ -4763,7 +4930,7 @@ class CellMatchrLauncher:
         _coloc_container.pack(fill="x")
         self._ana_coloc_frame = tk.Frame(_coloc_container, bg=BG)
 
-        params_card = self._card(self._ana_coloc_frame, "Channel Selection")
+        params_card = self._card(parent, "Measurement Channel")
         g = tk.Frame(params_card, bg=CARD)
         g.pack(fill="x")
         g.grid_columnconfigure(0, minsize=240)
@@ -4789,41 +4956,67 @@ class CellMatchrLauncher:
         self._ana_coi_chan_var = tk.StringVar(value=coi_default)
         self._ana_pm_chan_var  = tk.StringVar(value=pm_default)
 
-        tk.Label(g, text="Cell of interest channel:", bg=CARD, fg=FG, font=FONT).grid(
+        tk.Label(g, text="Channel to measure:", bg=CARD, fg=FG, font=FONT).grid(
             row=0, column=0, sticky="w", pady=3)
         _cb_coi = ttk.Combobox(g, textvariable=self._ana_coi_chan_var,
                                values=chan_values, state=state, width=18)
         _cb_coi.grid(row=0, column=1, sticky="w", pady=3, padx=8)
         self._bind_combobox_scroll(_cb_coi)
 
-        tk.Label(g, text="Protein marker channel:", bg=CARD, fg=FG, font=FONT).grid(
-            row=1, column=0, sticky="w", pady=3)
-        _cb_pm = ttk.Combobox(g, textvariable=self._ana_pm_chan_var,
-                              values=chan_values, state=state, width=18)
-        _cb_pm.grid(row=1, column=1, sticky="w", pady=3, padx=8)
-        self._bind_combobox_scroll(_cb_pm)
-
         iou_card = self._card(self._ana_coloc_frame, "Colocalization Settings")
         g2 = tk.Frame(iou_card, bg=CARD)
         g2.pack(fill="x")
         g2.grid_columnconfigure(0, minsize=240)
         g2.grid_columnconfigure(1, weight=1)
-        tk.Label(g2, text="IoU threshold (0.0 – 1.0):", bg=CARD, fg=FG, font=FONT).grid(
+        tk.Label(g2, text="Protein marker channel:", bg=CARD, fg=FG, font=FONT).grid(
             row=0, column=0, sticky="w", pady=3)
+        _cb_pm = ttk.Combobox(g2, textvariable=self._ana_pm_chan_var,
+                              values=chan_values, state=state, width=18)
+        _cb_pm.grid(row=0, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_pm)
+        tk.Label(g2, text="IoU threshold (0.0 – 1.0):", bg=CARD, fg=FG, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=3)
         tk.Entry(g2, textvariable=self._vars["ana_iou_threshold"],
                  bg=BG, fg=FG, insertbackground=FG, relief="flat", font=FONT, width=10).grid(
-            row=0, column=1, sticky="w", pady=3, padx=8)
-        tk.Label(g2, text="ROI cell inclusion rule:", bg=CARD, fg=FG, font=FONT).grid(
-            row=1, column=0, sticky="w", pady=3)
-        _cb_rule = ttk.Combobox(g2, textvariable=self._vars["ana_roi_cell_rule"],
-                                values=["centroid", "any_pixel"],
-                                state="readonly", width=14)
-        _cb_rule.grid(row=1, column=1, sticky="w", pady=3, padx=8)
-        self._bind_combobox_scroll(_cb_rule)
+            row=1, column=1, sticky="w", pady=3, padx=8)
 
-        # Show/hide colocalization section based on current state
-        if self._vars["ana_coloc_enabled"].get():
-            self._ana_coloc_frame.pack(fill="x")
+        def save_channel(_event=None):
+            options = tuple(_cb_coi.cget("values"))
+            if len(options) > 1:
+                marker_options = tuple(name for name in options if name != self._ana_coi_chan_var.get())
+                _cb_pm.configure(values=marker_options)
+                if self._ana_pm_chan_var.get() not in marker_options:
+                    self._ana_pm_chan_var.set(marker_options[0])
+            for key, channel in (("ana_red_channel", self._ana_coi_chan_var),
+                                 ("ana_pv_channel", self._ana_pm_chan_var)):
+                value = channel.get().removeprefix("Channel ").strip()
+                if value.isdigit():
+                    self._vars[key].set(value)
+
+        _cb_coi.bind("<<ComboboxSelected>>", save_channel)
+        _cb_pm.bind("<<ComboboxSelected>>", save_channel)
+
+        def refresh_channels():
+            options = [f"Channel {ch}" for ch in self._detect_predicted_channels()]
+            if options:
+                for box in (_cb_coi, _cb_pm):
+                    box.configure(values=options, state="readonly")
+                if self._ana_coi_chan_var.get() not in options:
+                    self._ana_coi_chan_var.set(options[0])
+                if (self._ana_pm_chan_var.get() not in options
+                        or self._ana_pm_chan_var.get() == self._ana_coi_chan_var.get()):
+                    self._ana_pm_chan_var.set(next(
+                        (name for name in options if name != self._ana_coi_chan_var.get()),
+                        options[0]))
+                save_channel()
+            single = len(options) == 1
+            if single:
+                self._vars["ana_coloc_enabled"].set(False)
+            coloc_toggle.configure(state="disabled" if single else "normal")
+            single_note.configure(text=f"{options[0]} will be measured on its own." if single else "")
+            self._toggle_ana_coloc()
+
+        refresh_channels()
 
         # ── Other settings ───────────────────────────────────────────
         misc_card = self._card(parent, "Settings")
@@ -4831,6 +5024,12 @@ class CellMatchrLauncher:
         g3.pack(fill="x")
         g3.grid_columnconfigure(0, minsize=240)
         g3.grid_columnconfigure(1, weight=1)
+        tk.Label(g3, text="ROI cell inclusion rule:", bg=CARD, fg=FG, font=FONT).grid(
+            row=1, column=0, sticky="w", pady=3)
+        _cb_rule = ttk.Combobox(g3, textvariable=self._vars["ana_roi_cell_rule"],
+                                values=["centroid", "any_pixel"], state="readonly", width=14)
+        _cb_rule.grid(row=1, column=1, sticky="w", pady=3, padx=8)
+        self._bind_combobox_scroll(_cb_rule)
         tk.Label(g3, text="Analysis subfolder name:", bg=CARD, fg=FG, font=FONT).grid(
             row=0, column=0, sticky="w", pady=3)
         tk.Entry(g3, textvariable=self._vars["ana_subfolder_name"],
@@ -5947,7 +6146,7 @@ class CellMatchrLauncher:
         imported_frame.pack(fill="x", pady=(6, 2))
         gallery_state = {"examples": [], "sources": "", "generation": 0,
                          "excluded": set(), "photos": [], "choosing": False,
-                         "unfinished": []}
+                         "unfinished": [], "unavailable": []}
         start_button_ref = [None]
 
         def source_specs():
@@ -6334,7 +6533,8 @@ class CellMatchrLauncher:
             for child in gallery_grid.winfo_children():
                 child.destroy()
             gallery_state["photos"] = []
-            items = gallery_state["examples"]
+            items = sorted(gallery_state["examples"] + gallery_state["unavailable"],
+                           key=lambda entry: (entry["project_name"], entry["seg_run"], entry["sample"]))
             if not items:
                 tk.Label(gallery_grid, text="No saved corrected masks or completed cell reviews found.",
                          bg=CARD, fg=YELLOW, font=FONT).grid(row=0, column=0,
@@ -6346,7 +6546,8 @@ class CellMatchrLauncher:
                 chosen = selected_cell_labels()
                 targets = (sum(len(ids) for word, ids in item["label_ids"].items()
                                if word in chosen) if chosen else item["final_count"])
-                eligible = targets > 0
+                unavailable = item.get("unavailable")
+                eligible = targets > 0 and not unavailable
                 image = item.get("preview")
                 if image is not None and _PIL:
                     photo = ImageTk.PhotoImage(image)
@@ -6382,24 +6583,28 @@ class CellMatchrLauncher:
                              "match selected labels and are included")
                 tk.Checkbutton(tile, text=f"{item['project_name']} / {item['sample']} "
                                f"(ch{item['channel']})" +
-                               (" — no selected cells" if not eligible else ""),
+                               (" — unavailable for training" if unavailable else
+                                " — no selected cells" if not eligible else ""),
                                variable=included,
                                command=toggle, bg=ACTIVE, fg=FG, selectcolor=BG,
                                activebackground=ACTIVE, font=FONT_BOLD,
                                state="normal" if eligible else "disabled",
                                wraplength=330, justify="left").pack(anchor="w")
-                tk.Label(tile, text=(f"Original proposals: ~{item['original_count']}  ·  "
-                                     f"ARTIFACT/erased: {item['incorrect_count']}  ·  "
-                                     f"Training targets: {targets}"),
-                         bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
-                         wraplength=330, justify="left").pack(anchor="w")
+                if not unavailable:
+                    tk.Label(tile, text=(f"Original proposals: ~{item['original_count']}  ·  "
+                                         f"ARTIFACT/erased: {item['incorrect_count']}  ·  "
+                                         f"Training targets: {targets}"),
+                             bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
+                             wraplength=330, justify="left").pack(anchor="w")
                 label_counts = "  ·  ".join(
                     f"{word}: {len(ids)}" for word, ids in sorted(item["label_ids"].items()))
-                review_note = (f"Completed cell labels: {label_counts}"
-                               if item["review_level"] == "cell_labels" else
-                               "Mask corrected; individual cell labels not required")
-                tk.Label(tile, text=review_note,
-                         bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
+                if label_counts:
+                    tk.Label(tile, text=f"Completed cell labels: {label_counts}",
+                             bg=ACTIVE, fg=MUTED, font=("Segoe UI", 8),
+                             wraplength=330, justify="left").pack(anchor="w")
+                verified = item.get("verified", item.get("review_level") == "cell_labels")
+                tk.Label(tile, text="Verified" if verified else "Not verified",
+                         bg=ACTIVE, fg=GREEN if verified else MUTED, font=("Segoe UI", 8),
                          wraplength=330, justify="left").pack(anchor="w")
             for column in (0, 1):
                 gallery_grid.grid_columnconfigure(column, weight=1)
@@ -6417,6 +6622,7 @@ class CellMatchrLauncher:
                 gallery_state["sources"] = ""
                 gallery_state["examples"] = []
                 gallery_state["unfinished"] = []
+                gallery_state["unavailable"] = []
                 render_label_choices()
                 render_gallery()
                 status.config(text=str(exc), fg=RED)
@@ -6428,21 +6634,27 @@ class CellMatchrLauncher:
             def worker():
                 try:
                     from .retraining import collect_source_examples
-                    from .training_gallery import composite_preview, project_preview_settings
+                    from .training_gallery import (composite_preview, project_preview_settings,
+                                                   unavailable_gallery_samples)
+                    from .slide_roi_preview import slide_roi_for_sample
                     examples, skipped, unfinished = collect_source_examples(
                         specs, with_review_status=True)
-                    display = {os.path.normcase(os.path.realpath(spec["project"])):
+                    unavailable = unavailable_gallery_samples(specs, examples, skipped)
+                    display = {(os.path.normcase(os.path.realpath(spec["project"])), spec["seg_run"]):
                                project_preview_settings(
                                    spec["project"],
-                                   self.config.get("project_output_folder", ""), self.config)
+                                   self.config.get("project_output_folder", ""), self.config,
+                                   run=spec["seg_run"])
                                for spec in specs}
-                    for item in examples:
+                    for item in examples + unavailable:
                         try:
                             colors, brightfield = display[
-                                os.path.normcase(os.path.realpath(item["project"]))]
+                                os.path.normcase(os.path.realpath(item["project"])), item["seg_run"]]
+                            run = os.path.join(item["project"], item["seg_run"])
+                            roi_path = slide_roi_for_sample(item["sample"], run=run)
+                            folder = item.get("folder") or os.path.dirname(item["mask"])
                             item["preview"] = composite_preview(
-                                os.path.dirname(item["mask"]),
-                                color_names=colors, brightfield=brightfield)
+                                folder, color_names=colors, brightfield=brightfield, roi_path=roi_path)
                         except (OSError, ValueError, ImportError) as exc:
                             item["preview"] = None
                             item["preview_error"] = str(exc)
@@ -6454,6 +6666,7 @@ class CellMatchrLauncher:
                             gallery_state["sources"] = json.dumps(specs, sort_keys=True)
                             gallery_state["examples"] = examples
                             gallery_state["unfinished"] = unfinished
+                            gallery_state["unavailable"] = unavailable
                             render_label_choices()
                             render_gallery()
                             cell_count = sum(len(item["accepted_ids"]) for item in examples)
@@ -6749,8 +6962,7 @@ class CellMatchrLauncher:
                     save_config(self.config)
                     save_project_config(self.config)
                     try:
-                        self._vsi_auto_label.config(
-                            text=f"TIF exports will be read from:  {exports}", fg=FG)
+                        self._vsi_auto_label.config(text=self._vsi_auto_text(), fg=FG)
                     except Exception:
                         pass
                     self._vsi_warn.config(text="✓  Converter finished successfully.", fg=GREEN)

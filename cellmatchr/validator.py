@@ -8,6 +8,7 @@ import pandas as pd
 from skimage.measure import regionprops_table, find_contours
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.gridspec import GridSpec
 from matplotlib.colors import LinearSegmentedColormap
@@ -80,6 +81,7 @@ FALLBACK_CHANNEL_COLORS = [
 # Names and colors set by the launcher config (keyed by display index)
 CHANNEL_NAME_OVERRIDES:  dict = {}
 CHANNEL_COLOR_OVERRIDES: dict = {}
+VALIDATOR_CONFIG = {}
 
 # Map user-friendly color labels → internal cmap names
 _COLOR_LABEL_TO_INTERNAL = {
@@ -250,6 +252,11 @@ def detect_channel_configs(project_path):
     Returns a list of configs sorted by actual channel number. Each config has:
         channel_index, name, glob_pattern, color, rgb_weights
     """
+    if __package__:
+        from .slide_signal import run_is_brightfield
+    else:
+        from slide_signal import run_is_brightfield
+    brightfield = run_is_brightfield(os.path.dirname(project_path), VALIDATOR_CONFIG)
     split_files = sorted(matching_paths(project_path, "*_split_ch*.tif"))
     detected_channels = []
 
@@ -260,6 +267,8 @@ def detect_channel_configs(project_path):
             detected_channels.append(int(m.group(1)))
 
     detected_channels = sorted(set(detected_channels))
+    if brightfield:
+        detected_channels = [0]
 
     if not detected_channels:
         # Fallback to the historical 3-channel behavior if no split files are found yet.
@@ -287,6 +296,8 @@ def detect_channel_configs(project_path):
         else:
             color       = template['color']
             rgb_weights = template['rgb_weights']
+        if brightfield:
+            name, color, rgb_weights = "Brightfield", "gray", (1.0, 1.0, 1.0)
 
         configs.append({
             'channel_index': ch,
@@ -332,6 +343,18 @@ def setup_dark_theme(root):
 # =============================================================================
 # ROI VERIFIER CLASS
 # =============================================================================
+def _build_review_axes(figure, channels):
+    rows = max(2, channels)
+    grid = GridSpec(rows, 4, figure=figure, width_ratios=[1, 1, 1, 1.5],
+                    wspace=0.05, hspace=0.08)
+    channel_rows = [slice(None)] if channels == 1 else range(channels)
+    primary = [[figure.add_subplot(grid[row, column]) for row in channel_rows]
+               for column in range(3)]
+    middle = rows // 2
+    return (*primary, figure.add_subplot(grid[:middle, 3]),
+            figure.add_subplot(grid[middle:, 3]))
+
+
 class RoiVerifierApp:
     def __init__(self, root, project_path, filtered_mask_path, channel_file_paths, output_file_path, channel_configs=None, on_close_callback=None, val_channel=None):
         self.root = root
@@ -441,32 +464,11 @@ class RoiVerifierApp:
         # --- Matplotlib Setup ---
         # Use a conservative initial size; the canvas resizes dynamically with the window.
         fig_height = max(6, 2.0 * self.n_channels + 2)
-        self.fig = plt.figure(figsize=(10, fig_height))
+        self.fig = Figure(figsize=(10, fig_height))
         self.fig.patch.set_facecolor(DARK_BG)
 
-        gs = GridSpec(
-            self.n_channels,
-            4,
-            figure=self.fig,
-            width_ratios=[1, 1, 1, 1.5],
-            wspace=0.05,
-            hspace=0.08
-        )
-
-        # Columns 0-2: one row per detected channel
-        self.col_axes = []
-        self.gray_axes = []
-        self.mid_axes = []
-
-        for i in range(self.n_channels):
-            self.col_axes.append(self.fig.add_subplot(gs[i, 0]))
-            self.gray_axes.append(self.fig.add_subplot(gs[i, 1]))
-            self.mid_axes.append(self.fig.add_subplot(gs[i, 2]))
-
-        # Column 3: merged + context views.
-        split_row = max(1, self.n_channels // 2)
-        self.ax_merge = self.fig.add_subplot(gs[0:split_row, 3])
-        self.ax_context = self.fig.add_subplot(gs[split_row:self.n_channels, 3])
+        (self.col_axes, self.gray_axes, self.mid_axes,
+         self.ax_merge, self.ax_context) = _build_review_axes(self.fig, self.n_channels)
 
         # Tight fixed margins — avoids large blank gaps around subplots
         self.fig.subplots_adjust(
@@ -519,12 +521,9 @@ class RoiVerifierApp:
         self._decision_box.grid_columnconfigure(0, weight=1)
         self._build_decision_buttons()
 
-        # Hidden-ish "customize" link (change words / keys)
-        self._customize_lbl = ttk.Label(
-            self.control_frame, text="⚙  Customize buttons…",
-            font=("Arial", 9, "underline"), foreground=HIGHLIGHT, cursor="hand2")
+        self._customize_lbl = ttk.Button(
+            self.control_frame, text="Edit decision buttons…", command=self._open_customize_dialog)
         self._customize_lbl.grid(row=row, column=0, sticky="e", pady=(2, 0)); row+=1
-        self._customize_lbl.bind("<Button-1>", lambda e: self._open_customize_dialog())
 
         self.decision_status_label = ttk.Label(self.control_frame, text="No decision made", font=("Arial", 10, "italic"), anchor="center")
         self.decision_status_label.grid(row=row, column=0, sticky="ew", pady=8); row+=1
@@ -637,59 +636,107 @@ class RoiVerifierApp:
 
         ttk.Label(
             dlg, justify="left", font=("Arial", 10),
-            text=("Rename the decision words and set each shortcut key (up to 6).\n"
-                  "Keys: arrow names (Left / Right / Up) or a single letter (a, n, …).\n\n"
-                  "Reserved — cannot be reused:  Shift = Artifact   ·   Down = Save & Next.\n"
-                  "The Artifact button is always present and always bound to Shift."),
+            text=("Enter each decision word, then click its key and press a shortcut.\n"
+                  "Use a letter, number, or the Left, Right, or Up arrow.\n\n"
+                  "Shift is reserved for Artifact. Down is reserved for Save & Next."),
         ).grid(row=0, column=0, columnspan=3, padx=14, pady=(14, 8), sticky="w")
 
-        hdr = ttk.Frame(dlg); hdr.grid(row=1, column=0, columnspan=3, padx=14, sticky="w")
-        ttk.Label(hdr, text="Word", font=("Arial", 10, "bold"), width=18).pack(side=tk.LEFT)
-        ttk.Label(hdr, text="Key",  font=("Arial", 10, "bold"), width=12).pack(side=tk.LEFT)
-
-        rows_frame = ttk.Frame(dlg); rows_frame.grid(row=2, column=0, columnspan=3, padx=14, sticky="ew")
+        table = ttk.Frame(dlg)
+        table.grid(row=1, column=0, columnspan=3, padx=14, sticky="ew")
+        table.columnconfigure(0, weight=1)
+        for column, name in enumerate(("Word", "Key")):
+            ttk.Label(table, text=name, font=("Arial", 10, "bold")).grid(row=0, column=column, sticky="w")
         cust_rows = []
+        capturing = None
+        note = tk.StringVar(dlg)
+
+        def key_text(key):
+            return key.upper() if len(key) == 1 else key or "Set key…"
+
+        def stop_capture():
+            nonlocal capturing
+            if capturing is not None:
+                capturing["button"].config(text=key_text(capturing["key"]))
+                capturing = None
+                note.set("")
+
+        def start_capture(row):
+            nonlocal capturing
+            stop_capture()
+            capturing = row
+            row["button"].config(text="Press a key…")
+            row["button"].focus_set()
+            note.set("Press a shortcut key. Escape cancels recording.")
+
+        def record_key(event, row):
+            if capturing is not row:
+                return None
+            key = event.keysym
+            if key == "Escape":
+                stop_capture()
+            elif key in ("Tab", "ISO_Left_Tab"):
+                stop_capture()
+                return None
+            elif key in RESERVED_KEYS:
+                note.set("Shift and Down are reserved. Press a different key.")
+            elif not (key in ("Left", "Right", "Up") or
+                      len(key) == 1 and key.isascii() and key.isalnum()):
+                note.set("Press a letter, number, or the Left, Right, or Up arrow.")
+            elif any(other is not row and other["key"].lower() == key.lower() for other in cust_rows):
+                note.set(f"{key_text(key)} is already assigned. Press a different key.")
+            else:
+                row["key"] = key.lower() if len(key) == 1 else key
+                stop_capture()
+            return "break"
+
+        def layout_rows():
+            for index, row in enumerate(cust_rows, 1):
+                row["entry"].grid(row=index, column=0, padx=(0, 6), pady=2, sticky="ew")
+                row["button"].grid(row=index, column=1, padx=(0, 6), pady=2, sticky="ew")
+                row["remove"].grid(row=index, column=2, pady=2)
+            add_btn.config(state=tk.NORMAL if len(cust_rows) < MAX_DECISIONS else tk.DISABLED)
 
         def add_row(word="", key=""):
             if len(cust_rows) >= MAX_DECISIONS:
                 return
-            rf = ttk.Frame(rows_frame); rf.pack(fill="x", pady=2)
-            wv, kv = tk.StringVar(value=word), tk.StringVar(value=key)
-            ttk.Entry(rf, textvariable=wv, width=18).pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Entry(rf, textvariable=kv, width=12).pack(side=tk.LEFT, padx=(0, 6))
-            ttk.Button(rf, text="✕", width=3,
-                       command=lambda: remove_row(rf)).pack(side=tk.LEFT)
-            cust_rows.append((wv, kv, rf))
-            _update_add_state()
+            row = {"word": tk.StringVar(dlg, value=word), "key": key}
+            row["entry"] = ttk.Entry(table, textvariable=row["word"], width=18)
+            row["button"] = ttk.Button(table, text=key_text(key), width=14,
+                                       command=lambda: start_capture(row))
+            row["button"].bind("<KeyPress>", lambda event: record_key(event, row))
+            row["button"].bind("<FocusOut>", lambda _event: stop_capture() if capturing is row else None)
+            row["remove"] = ttk.Button(table, text="✕", width=3, command=lambda: remove_row(row))
+            cust_rows.append(row)
+            layout_rows()
 
-        def remove_row(rf):
+        def remove_row(row):
             if len(cust_rows) <= 1:
                 messagebox.showwarning("Keep one", "You need at least one decision button.", parent=dlg)
                 return
-            cust_rows[:] = [t for t in cust_rows if t[2] is not rf]
-            rf.destroy()
-            _update_add_state()
+            if capturing is row:
+                stop_capture()
+            cust_rows.remove(row)
+            for field in ("entry", "button", "remove"):
+                row[field].destroy()
+            layout_rows()
 
         add_btn = ttk.Button(dlg, text="＋  Add button", command=lambda: add_row())
-        def _update_add_state():
-            add_btn.config(state=(tk.NORMAL if len(cust_rows) < MAX_DECISIONS else tk.DISABLED))
-
         for c in self.decisions:
             add_row(c["word"], c["key"])
 
-        # Locked Artifact row (display only)
-        artf = ttk.Frame(dlg); artf.grid(row=3, column=0, columnspan=3, padx=14, pady=(6, 0), sticky="w")
-        ttk.Label(artf, text="ARTIFACT", width=18, foreground="#8e44ad",
-                  font=("Arial", 10, "bold")).pack(side=tk.LEFT)
-        ttk.Label(artf, text="Shift  (fixed)", width=12, foreground="#888888").pack(side=tk.LEFT)
+        ttk.Label(table, text="ARTIFACT", foreground="#8e44ad", font=("Arial", 10, "bold")).grid(
+            row=MAX_DECISIONS + 1, column=0, pady=(6, 0), sticky="w")
+        ttk.Label(table, text="Shift (fixed)", foreground="#888888").grid(
+            row=MAX_DECISIONS + 1, column=1, pady=(6, 0), sticky="w")
 
-        add_btn.grid(row=4, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="w")
-        _update_add_state()
+        add_btn.grid(row=2, column=0, columnspan=3, padx=14, pady=(10, 6), sticky="w")
+        ttk.Label(dlg, textvariable=note, wraplength=440).grid(
+            row=3, column=0, columnspan=3, padx=14, sticky="w")
 
         def do_save():
             cats, seen_w, seen_k = [], set(), set()
-            for wv, kv, _ in cust_rows:
-                w, k = wv.get().strip(), kv.get().strip()
+            for row in cust_rows:
+                w, k = row["word"].get().strip(), row["key"]
                 if not w or not k:
                     messagebox.showwarning("Incomplete", "Every button needs a word and a key.", parent=dlg); return
                 if w.upper() == ARTIFACT_WORD:
@@ -698,9 +745,9 @@ class RoiVerifierApp:
                     messagebox.showwarning("Reserved key", f"'{k}' is reserved (Shift = Artifact, Down = Save & Next).", parent=dlg); return
                 if w.upper() in seen_w:
                     messagebox.showwarning("Duplicate word", f"'{w}' is used more than once.", parent=dlg); return
-                if k in seen_k:
+                if k.lower() in seen_k:
                     messagebox.showwarning("Duplicate key", f"Key '{k}' is used more than once.", parent=dlg); return
-                seen_w.add(w.upper()); seen_k.add(k)
+                seen_w.add(w.upper()); seen_k.add(k.lower())
                 cats.append({"word": w, "key": k})
             if not (1 <= len(cats) <= MAX_DECISIONS):
                 messagebox.showwarning("Count", f"Use between 1 and {MAX_DECISIONS} buttons.", parent=dlg); return
@@ -711,7 +758,7 @@ class RoiVerifierApp:
             self._build_decision_buttons()
             dlg.destroy()
 
-        btns = ttk.Frame(dlg); btns.grid(row=5, column=0, columnspan=3, padx=14, pady=(8, 14), sticky="e")
+        btns = ttk.Frame(dlg); btns.grid(row=4, column=0, columnspan=3, padx=14, pady=(8, 14), sticky="e")
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btns, text="Save", command=do_save).pack(side=tk.LEFT)
 
@@ -1294,6 +1341,8 @@ class ProjectChooser:
 
         self.root.withdraw()
         top = tk.Toplevel(self.root)
+        top.geometry(f"{min(1320, top.winfo_screenwidth() - 60)}x"
+                     f"{min(830, top.winfo_screenheight() - 100)}+20+35")
         top.lift()
         top.attributes("-topmost", True)
         top.focus_force()
@@ -1306,20 +1355,26 @@ class ProjectChooser:
 
         top.protocol("WM_DELETE_WINDOW", on_app_close)
 
-        RoiVerifierApp(
-            top, proj["path"], mask_path, ch_paths, out_path,
-            channel_configs=channel_configs,
-            on_close_callback=on_app_close,
-            val_channel=val_channel,
-        )
+        try:
+            RoiVerifierApp(
+                top, proj["path"], mask_path, ch_paths, out_path,
+                channel_configs=channel_configs,
+                on_close_callback=on_app_close,
+                val_channel=val_channel,
+            )
+        except Exception as exc:
+            on_app_close()
+            messagebox.showerror("Could not open cell review", str(exc), parent=self.root)
 
 def _apply_config(config_path: str) -> None:
     """Pre-populate main folder, mask pattern, channel names and colors from CellMatchr config."""
     import json
     global PREDICTED_MASK_GLOB_PATTERN, CHANNEL_NAME_OVERRIDES, CHANNEL_COLOR_OVERRIDES, CONFIGURED_VAL_CHANNEL
+    global VALIDATOR_CONFIG
     try:
         with open(config_path) as f:
             cfg = json.load(f)
+        VALIDATOR_CONFIG = cfg
 
         pattern = cfg.get("val_mask_pattern", "").strip()
         if pattern:

@@ -66,6 +66,26 @@ class SegmentationScriptLaunchTests(unittest.TestCase):
                     self.assertEqual(len(ids[-1]), 1)
                 self.assertEqual(len(set.union(*ids)), 3)
 
+    def test_microsam_without_decoder_gets_amg_size_argument(self):
+        from cellmatchr import segmentation
+        from micro_sam.instance_segmentation import AutomaticMaskGenerator
+        from unittest.mock import Mock
+
+        prediction = np.zeros((16, 16), dtype=np.uint32)
+        prediction[5:9, 5:9] = 1
+        segmenter = Mock(spec=AutomaticMaskGenerator)
+        segmenter.generate.return_value = prediction
+        predictor = Mock(original_size=prediction.shape, input_size=prediction.shape)
+        with patch.object(segmentation, "should_save_debug_images", return_value=False), \
+                patch.multiple(segmentation, MIN_OBJECT_SIZE=0, MAX_OBJECT_SIZE=0,
+                               RAW_MEAN_MIN=0, RAW_MEAN_MAX=0), \
+                contextlib.redirect_stdout(io.StringIO()):
+            mask = segmentation.segment_by_tiling(
+                predictor, segmenter, prediction.astype(np.uint8) * 200, (16, 16), (0, 0),
+                2, min_size=7)
+        segmenter.generate.assert_called_once_with(min_mask_region_area=7)
+        np.testing.assert_array_equal(mask, prediction)
+
     def test_direct_script_reaches_microsam_model_loader(self):
         script = Path(__file__).resolve().parents[1] / "cellmatchr" / "segmentation.py"
         code = """

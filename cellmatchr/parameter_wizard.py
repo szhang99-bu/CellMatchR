@@ -42,10 +42,10 @@ the 2nd- or 3rd-most-extreme object instead of the literal extreme still
 keeps the true extreme inside the kept range.
 
 Closing the window (or clicking "Save & Next Channel" / "Save & Finish")
-writes fluorescence results into seg_per_channel_filters for every channel
-actually visited and enables per-channel filtering. Brightfield has one
-combined channel, so its picks update Step 3's global fields instead.
-Channels never reached (if you close early) are left alone.
+writes thresholds for channels with at least one picked object. Fluorescence
+uses seg_per_channel_filters. Brightfield has one combined channel, so its
+picks update Step 3's global fields instead. If nothing was picked, the
+existing filter settings are preserved.
 
 Launched from the CellMatchR launcher (Step 3 -> "Parameter Wizard"),
 after parameter_wizard_compute.py has produced a manifest. Can also be
@@ -430,7 +430,8 @@ class ParameterWizardApp:
             f"<b>Channel {ch}</b><br>"
             "Click a button, then click the matching object's outline in the "
             "image -- a colored box marks it there.<br>"
-            "Leave any blank to disable that filter."
+            "When you pick at least one cell, blank criteria are disabled. "
+            "Leave every criterion blank to keep the existing settings."
         ))
 
         self._pick_btns = {}
@@ -508,19 +509,29 @@ class ParameterWizardApp:
         if self._finished:
             return
         self._finished = True
+        picked = {ch: picks for ch, picks in self.results.items()
+                  if any(value is not None for value in picks.values())}
+        if picked:
+            self._save_picked_filters(picked)
+        else:
+            print("[parameter_wizard] No objects picked. Existing filter settings kept.")
 
+        if self.viewer is not None:
+            try:
+                self.viewer.close()
+            except Exception:
+                pass
+
+    def _save_picked_filters(self, picked) -> None:
         print("[parameter_wizard] Computing filter thresholds (with safety margin)...")
         try:
             existing = json.loads(self.cfg.get("seg_per_channel_filters", "{}") or "{}")
-        except Exception:
+        except (TypeError, ValueError):
+            existing = {}
+        if not isinstance(existing, dict):
             existing = {}
 
-        visited = set(self.results.keys())
-        for ch in self.channels:
-            if ch not in visited:
-                print(f"[parameter_wizard] Channel {ch} was never opened -- left unchanged.")
-                continue
-            picks = self.results[ch]
+        for ch, picks in picked.items():
             entry = {key: _apply_margin(key, picks.get(key)) for key in self.pick_order}
             entry["min_intensity" if self.brightfield else "max_intensity"] = 0
             if self.brightfield:
@@ -547,12 +558,6 @@ class ParameterWizardApp:
         save_config(self.cfg)
         save_project_config(self.cfg)
         print("[parameter_wizard] Saved to config. Done.")
-
-        if self.viewer is not None:
-            try:
-                self.viewer.close()
-            except Exception:
-                pass
 
 
 def main() -> None:

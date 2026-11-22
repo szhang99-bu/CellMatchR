@@ -267,7 +267,8 @@ For slide scans, select **Laser fluorescence** when cells are bright labeled
 signals, or **Brightfield stain** for dark stained cells such as Nissl. The
 brightfield option adapts model input and the Parameter Wizard internally;
 the image you see stays at its original stain brightness. Brightfield is
-treated as one combined cell signal, **channel 0**.
+treated as one combined cell signal, **channel 0**. Color crops are exported
+as RGB TIFFs, retaining the original colors for previews and compatible models.
 
 ## Step 1: Create or open a project
 
@@ -275,14 +276,15 @@ treated as one combined cell signal, **channel 0**.
 2. Click **Create Project Folder**. CellMatchR creates
    `cellmatchr_project.json` and output subfolders there.
 3. For an existing project, choose **Open Existing Project** and select its
-   `cellmatchr_project.json` file. Check the input folder and selected run
-   before starting another stage, especially after moving a project.
+   `cellmatchr_project.json` file. Click **Load Project Settings** to enable
+   **Next**. Confirm the restored input and selected run before processing.
 
 The project file stores paths and settings; masks, tables, and crops live in
 the project output folder. You can open an earlier project with the current
-app. If a project has been moved, CellMatchR resolves the output folder from
-the selected project file and can find outputs stored there; external raw
-image paths may still need to be selected again in Step 2.
+app. CellMatchR restores the saved input type and slide signal. If a project
+has moved, it reconnects project-local crops and ROI masks using the folder
+that contains the selected project file. External raw image paths may still
+need to be selected again in Step 2.
 
 ## Step 2: Select images and regions
 
@@ -309,7 +311,10 @@ You can also use TIFF files as direct input.
    or TIFF slide.
 3. Draw and name the regions you need. Save and export them as full-resolution
    TIFF crops and matching region masks.
-4. Return to Step 3. The exported TIFF folder is selected automatically.
+4. After closing the ROI editor, review the saved ROIs in the converter
+   window. Choose **Select another image** to process another slide, or
+   **Done — return to CellMatchR** to continue to Step 3. The exported TIFF
+   folder is selected automatically.
 
 The normal export location is `VSI_Converted_TIFF/` inside the project. If you
 convert the same or another scan later, inspect the output choice: existing
@@ -331,7 +336,7 @@ use `0` because the RGB stain is combined into one cell signal.
 | **Micro-SAM** | Built-in model types such as `vit_b_lm`, plus saved models | You want SAM-based masks or have a compatible fine-tuned checkpoint. |
 | **micro-SAM2** | `hvit_t_cells`, `hvit_s_cells`, `hvit_b_cells` (default), `hvit_l_cells` | Try Base first for Nissl brightfield, or Tiny for a smaller model. |
 | **Cellpose** | Cellpose-SAM (`cpsam`), Cellpose 2 (`cyto2`), Rat Nissl v2, plus saved models | You want Cellpose behavior or to compare its Nissl-specific option. |
-| **StarDist 2D** | Built-in `2D_versatile_fluo`, plus saved models | Cells are reasonably star-convex and StarDist dependencies are installed. |
+| **StarDist 2D** | Built-in `2D_versatile_fluo`, plus saved models | Cells are reasonably star-convex. First use sets up StarDist and fetches its weights if needed. |
 
 Select the **Segmentation backend** and then choose the **Model type** or
 **Model for this run** shown for that backend. Saved
@@ -352,20 +357,20 @@ that includes dim cells or uneven background as well as obvious cells.
 Click **Compare models** to run Micro-SAM, micro-SAM2, Cellpose-SAM and
 StarDist on the same patch. You can remove a model or add another built-in
 or saved model before starting. The progress bar advances as each model
-finishes. First use may install an optional runtime or download weights.
-If a model fails, use **View log** on its card. Other previews can still
-finish.
+finishes. The status line shows when a backend is being set up, when it is
+downloading weights, and when it starts predicting. If a model fails, use
+**View log** on its card. Other previews can still finish.
 
 The first panel shows the source patch. The other panels show proposed
 masks before size, shape and intensity filters. Click the source panel to
 zoom every preview to the same location. Look for visible cells the model
 missed, then check for excess masks. Click the prediction you prefer. A green
-outline marks your choice and CellMatchR applies that model and its tested
-inference settings in Step 3.
+outline marks your choice. Click **Use selected model** at the bottom to apply
+the model and the tested settings. The comparison closes and returns you to
+Step 3 once the preview is saved.
 
-Use **Open Parameter Wizard** to set filters from the same patch. The
-regular **Parameter Wizard** uses the same controls and also reuses that
-prediction while the input and model settings match. If you configured
+Use **Parameter Wizard** in Step 3 to set filters from the same patch.
+It reuses the prediction while the input and model settings match. If you configured
 multiple channels, it computes fresh masks only for the other channels.
 Without a matching preview, it uses the first image as usual.
 
@@ -373,8 +378,32 @@ Starting a full segmentation run after choosing a model saves the source
 patch, prediction images, masks and model settings under the project's
 `Model_Wizard_Previews/<segmentation run>` folder. When you reopen the
 project, **Model Selection Wizard** opens the saved comparison. Choose
-**Choose another patch or models** to run a new comparison. The **Parameter
+**Change patch or models** to run a new comparison. The **Parameter
 Wizard** can also reuse the saved mask after a restart.
+
+### Additional Pretrained Model Downloads
+
+Open **Additional Pretrained Model Downloads** beside **Segmentation backend**
+in Step 3 or from the Model Selection Wizard. Use it to prepare a model ahead
+of time. The Model Selection Wizard and segmentation can also download the
+weights they need on first use.
+
+1. Choose a model in the dropdown. It lists models that still need weights
+   and their approximate download sizes. The **Downloaded models** list shows
+   models whose weights are already cached on this computer.
+2. Click **Download selected model**. The status and log show what the app is
+   doing. First use can also install the backend runtime. A micro-SAM2
+   microscopy model downloads its encoder and decoder separately, so the
+   status identifies the current file. Slow transfers can switch to parallel
+   connections and keep the bytes already received.
+3. Once complete, the model moves into **Downloaded models**. The Model
+   Selection Wizard and Step 3 share the same model cache across projects.
+   Choose the model in Step 3, or add it to a wizard comparison.
+
+If the Micro-SAM host is unavailable, select the pending model and use
+**Import Micro-SAM weights** to add the original checkpoint and decoder from
+another computer. CellMatchR checks both files against the published
+checksums before adding them to the cache.
 
 ### Run micro-SAM2
 
@@ -422,8 +451,9 @@ not appear for later validation or analysis.
 The **Parameter Wizard** segments the first sample without object filters,
 then lets you pick example cells to derive size, shape, and signal thresholds.
 For brightfield it shows the original stain brightness. You can leave a bound
-unset to keep that filter off. Use a representative image and inspect its
-results before processing a full batch.
+unset to keep that filter off when you make a selection. Closing the wizard
+without picking an object keeps your existing filters. Use a representative
+image and inspect its results before processing a full batch.
 
 **Preprocessing mode** changes model input. For brightfield, inversion is
 handled in the backend as needed; the visible image is not inverted. **Tiling**
@@ -455,10 +485,10 @@ window shows raw images, predicted objects, and drawing layers.
 | Task | Action |
 |---|---|
 | Add a missed cell | Click the large **ADD MISSED CELLS** button on the right and paint it. Each disconnected painted area becomes a separate object. For touching cells, use different label colors. |
-| Remove a false prediction | Click the large red **REMOVE PREDICTED OBJECTS** button on the right, then paint any part of the prediction. This switches to a separate removal layer; the whole predicted object is removed when saved. |
+| Remove a false prediction | Click the large red **REMOVE PREDICTED OBJECTS** button on the right, then brush over any part of the prediction. The whole object disappears from the preview and is removed from the active mask when saved. |
 | Undo a stroke | Press **Ctrl+Z** before saving. |
 | Paint or navigate | Press **P** for paint mode; right-drag to pan; use `[` and `]` to change brush size. |
-| Save changes | Click **Save & Next**. **Skip** leaves the image unchanged; **Previous** returns; **Finish** ends the session. |
+| Save changes | Click **Save & Next** to move forward, **Skip** to leave the current image untouched, or **Previous** to go back. **Finish** becomes available on the last image. |
 
 On a Mac using an iPad as a Sidecar display, Apple Pencil draws or erases, one
 finger pans, two fingers pinch to zoom, and Pencil double-tap switches tools.
@@ -483,8 +513,9 @@ before analysis or retraining.
 
 Click **Open Validation Window**. For each object, select a decision and save.
 The default keys are **Left = YES**, **Right = NO**, **Up = MAYBE**,
-**Shift = ARTIFACT**, and **Down = Save & Next**. You can customize decision
-buttons and keys, up to six options; Shift and Down stay reserved. Use notes
+**Shift = ARTIFACT**, and **Down = Save & Next**. Use **Edit decision buttons**
+on the right to customize up to six options. Enter the decision word, click
+its key button, then press the shortcut. Shift and Down stay reserved. Use notes
 and **Go Back** if you need to revise an earlier object. Decisions save as TSV
 files alongside the prediction files.
 
@@ -525,6 +556,9 @@ channels**, choose the **cell of interest** and **protein marker** channels,
 and set the IoU threshold from `0.0` to `1.0`. This requires two segmented
 channels. The ROI inclusion rule is **centroid** or **any_pixel**. If you need
 only object measurements from one channel, leave colocalization off.
+Brightfield is measured on **Channel 0** and automatically uses single-channel
+analysis. The report still includes ROI counts, per-cell measurements, and
+validation summaries.
 
 Analysis writes per-image object CSV tables and
 `combined_analysis_summary.xlsx`. The workbook includes counts, object size,
@@ -605,22 +639,21 @@ another computer. Other projects are read as sources; training results are
 written to the **current** project. Click **Refresh image library** after
 changing the sources.
 
-The library shows a color overlay of saved image channels without mask
-outlines. Each image card lists approximate original proposals,
-ARTIFACT/erased predictions, and training target cells. A corrected mask with
-no individual cell review is marked **Mask corrected**; every remaining cell
-is treated as a target in the default mode. An image with completed cell
-review also lists counts for each cell label (for example, YES and NO). Those
-counts show all confirmed cell types, even when you select only some as
-training targets. Uncheck an image to exclude it from this run. The log lists
-skipped images and why.
+The library shows saved image channels and the original slide ROI outline
+when available. Each image card says **Verified** or **Not verified** for
+its selected channel. A corrected mask can still train in the default mode
+before individual cell review. Available training images list approximate
+original proposals, ARTIFACT/erased predictions, and training target cells.
+Completed cell-label counts (for example, YES and NO) show all confirmed
+cell types, even when you select only some as training targets.
 The listed counts help spot an unusual sample before starting; inspect the
 mask in Step 4 when a count is surprising.
 
 **Refresh image library** after changing the selected run or channel, adding
-a project, or saving mask corrections or cell decisions. The gallery may show
-fewer images than a segmentation run contains: uncorrected masks without
-completed cell review are skipped. With selected cell labels, corrected masks
+a project, or saving mask corrections or cell decisions. Samples waiting for
+review stay visible in the gallery. Uncorrected masks without completed cell
+review are excluded from training, and the log lists why images were skipped.
+With selected cell labels, corrected masks
 without completed cell review and images containing none of those labels are
 left out. Unchecking an image excludes it from this training run; it does not
 delete the image or its validation. If some images are not ready for your
@@ -636,6 +669,10 @@ Keep at least one other included image for training.
 to leave it out of this run. The Mac screenshot uses real VSI slide scanner
 crops with illustrative review labels; the displayed counts are examples, not
 measured model accuracy.*
+
+The library also shows images that still need review, with the reason they
+are unavailable for training. Converted slide-scanner images show the drawn
+ROI outline in the library, channel previews, and **Review Segmented Images**.
 
 ### Choose a validation approach
 

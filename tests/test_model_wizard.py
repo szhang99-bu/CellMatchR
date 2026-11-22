@@ -1,12 +1,15 @@
 """Check that model selection and filter calibration use the same original pixels."""
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+from zipfile import ZipFile
 
 import numpy as np
 import tifffile
@@ -16,9 +19,177 @@ from cellmatchr import model_wizard_archive as archives
 from cellmatchr import parameter_wizard_compute as parameters
 from cellmatchr.config import DEFAULT_CONFIG
 from cellmatchr.launcher import CellMatchrLauncher, _model_wizard_options
+from cellmatchr.model_wizard import ModelWizard
 
 
 class ModelWizardTests(unittest.TestCase):
+    def test_parameter_wizard_no_pick_leaves_launcher_filter_controls_alone(self):
+        launcher = CellMatchrLauncher.__new__(CellMatchrLauncher)
+        launcher.config = dict(self.cfg, project_output_folder=str(self.root),
+                               seg_min_object_size=70, seg_per_channel_filters_enabled=False)
+        launcher.root = Mock()
+        launcher.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
+        launcher._is_running = Mock(return_value=False)
+        launcher._sync_vars_to_config = Mock()
+        launcher._matching_model_preview = Mock(return_value={"channel": 1, "manifest": "cached.json"})
+        launcher._track_proc = Mock()
+        launcher._wizard_status = Mock()
+        launcher._wizard_btn = Mock()
+        launcher._wizard_progress = Mock()
+        launcher._per_ch_filt_enabled = Mock()
+        launcher._toggle_per_ch_filters = Mock()
+        process = Mock(stdout=[], returncode=0)
+        with (patch("cellmatchr.launcher.save_config"), patch("cellmatchr.launcher.save_project_config"),
+              patch("cellmatchr.launcher.load_config", return_value=dict(launcher.config)),
+              patch("cellmatchr.launcher.subprocess.Popen", return_value=process),
+              patch("cellmatchr.launcher.threading.Thread",
+                    side_effect=lambda target, daemon: SimpleNamespace(start=target))):
+            launcher._launch_parameter_wizard()
+        launcher._per_ch_filt_enabled.set.assert_not_called()
+        launcher._toggle_per_ch_filters.assert_not_called()
+        self.assertEqual(launcher.config["seg_min_object_size"], 70)
+        self.assertEqual(launcher._wizard_status.config.call_args.kwargs["text"], "Filter settings unchanged.")
+
+    def test_using_selected_model_closes_after_save_and_can_retry_failure(self):
+        dialog = ModelWizard.__new__(ModelWizard)
+        result = {"name": "Micro-SAM"}
+        settings = {"seg_backend": "microsam", "seg_model_type": "vit_b_lm"}
+        dialog.applying = False
+        dialog.chosen_model = result["name"]
+        dialog.applied_model = None
+        dialog.comparison_results = [result]
+        dialog.result_models = {result["name"]: settings}
+        dialog.job = Path("comparison")
+        dialog.box = (0, 0, 32, 32)
+        dialog.channel = SimpleNamespace(get=lambda: "0")
+        dialog.preview = {}
+        for control in ("primary", "filter_button", "close_button", "download_button", "status"):
+            setattr(dialog, control, Mock())
+        dialog.apply_model = Mock()
+        dialog._mark_selection = Mock()
+        dialog.close = Mock()
+
+        dialog._apply_selection({})
+        self.assertTrue(dialog.applying)
+        dialog.close.assert_not_called()
+        dialog.apply_model.call_args.args[-1]("Preview could not be written")
+        self.assertFalse(dialog.applying)
+        dialog.close.assert_not_called()
+        self.assertIn("Preview could not be written", dialog.status.configure.call_args.kwargs["text"])
+
+        dialog._apply_selection({})
+        dialog.apply_model.call_args.args[-1]()
+        self.assertEqual(dialog.applied_model, result["name"])
+        dialog.close.assert_called_once()
+
+    def test_patch_move_skips_redraw_and_resize_coalesces_events(self):
+        dialog = ModelWizard.__new__(ModelWizard)
+        dialog.window = Mock()
+        dialog.window.after.side_effect = ("first", "last")
+        dialog._patch_redraw_job = None
+        dialog._rendered_canvas_sizes = ((400, 400), (400, 400))
+        dialog._canvas_sizes = Mock(return_value=dialog._rendered_canvas_sizes)
+        dialog._redraw_patch = Mock()
+
+        dialog._schedule_patch_redraw()
+        dialog.window.after.assert_not_called()
+        dialog._canvas_sizes.return_value = ((410, 410), (410, 410))
+        dialog._schedule_patch_redraw()
+        dialog._canvas_sizes.return_value = ((420, 420), (420, 420))
+        dialog._schedule_patch_redraw()
+        dialog.window.after_cancel.assert_called_once_with("first")
+        dialog.window.after.call_args.args[-1]()
+        dialog._redraw_patch.assert_called_once()
+
+    def test_scroll_from_download_toplevel_leaves_main_canvas_unchanged(self):
+        app = CellMatchrLauncher.__new__(CellMatchrLauncher)
+        app.root = object()
+        app._canvas = Mock()
+        for window in (object(), app.root):
+            widget = SimpleNamespace(winfo_toplevel=lambda: window)
+            app._on_scroll(SimpleNamespace(widget=widget, num=5, delta=0))
+        app._canvas.yview_scroll.assert_called_once_with(2, "units")
+
+    def test_download_size_and_file_stages_are_labelled(self):
+        from cellmatchr.model_download import model_choice_label, model_stage
+
+        self.assertIn("626 MB", model_choice_label(
+            "micro-SAM2 · hvit_b_cells",
+            {"seg_backend": "microsam2", "seg_microsam2_model": "hvit_b_cells"}))
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "download.log"
+            log.write_text("Downloading file 'hvit_b_cells'\n100%|####\n"
+                           "Downloading file 'hvit_b_cells_decoder'\n 3%|#\n")
+            self.assertIn("decoder (file 2 of 2) (3%)", model_stage(log))
+            log.write_text("[MODEL] Downloading hvit_b_cells encoder (file 1 of 2) — 60% (0.8 MB/s)\n")
+            self.assertEqual(model_stage(log), "Downloading hvit_b_cells encoder (file 1 of 2) — 60% (0.8 MB/s)")
+
+    def test_model_status_and_verified_offline_import(self):
+        import hashlib
+        import tempfile
+        from cellmatchr.model_download import import_microsam_weights, model_stage
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "weights.pt"
+            decoder = root / "decoder.pt"
+            weights.write_bytes(b"upstream weight")
+            decoder.write_bytes(b"upstream decoder")
+            names = ["vit_t_lm", "vit_t_lm_decoder"]
+            registry = SimpleNamespace(abspath=root / "cache", registry={
+                name: hashlib.sha256(file.read_bytes()).hexdigest()
+                for name, file in zip(names, (weights, decoder))})
+            with patch("cellmatchr.model_download.microsam_weights", return_value=(registry, names)):
+                with self.assertRaisesRegex(ValueError, "published checksum"):
+                    import_microsam_weights(names[0], [weights])
+                self.assertFalse((registry.abspath / names[0]).exists())
+                import_microsam_weights(names[0], [decoder, weights])
+            self.assertEqual((registry.abspath / names[0]).read_bytes(), weights.read_bytes())
+            log = root / "run.log"
+            log.write_text("[MODEL] Downloading weights\n 42%|####\n")
+            self.assertEqual(model_stage(log), "Downloading weights (42%)")
+
+    def test_download_inventory_uses_each_cache_and_requires_all_weight_files(self):
+        from cellmatchr.model_download import model_is_downloaded
+
+        cases = [
+            ("microsam", "seg_model_type", "vit_b_lm", "sam/models/vit_b_lm", "sam/models/vit_b_lm_decoder"),
+            ("microsam2", "seg_microsam2_model", "hvit_b_cells",
+             "sam2/model-cache/models/hvit_b_cells", "sam2/model-cache/models/hvit_b_cells_decoder"),
+            ("microsam2", "seg_microsam2_model", "hvit_b", "sam2/model-cache/models/hvit_b", ""),
+            ("cellpose", "seg_cellpose_variant", "cpsam", "cellpose/models/cpsam", ""),
+            ("cellpose", "seg_cellpose_variant", "cyto2", "legacy/models/cyto2torch_0", ""),
+        ]
+        env = {"MICROSAM_CACHEDIR": str(self.root / "sam"),
+               "CELLMATCHR_MICROSAM2_HOME": str(self.root / "sam2"),
+               "CELLPOSE_LOCAL_MODELS_PATH": str(self.root / "cellpose" / "models"),
+               "CELLMATCHR_LEGACY_CELLPOSE_HOME": str(self.root / "legacy"),
+               "KERAS_HOME": str(self.root / "keras")}
+        with patch.dict(os.environ, env):
+            for backend, key, model, checkpoint, decoder in cases:
+                with self.subTest(model=model):
+                    settings = {"seg_backend": backend, key: model}
+                    self.assertFalse(model_is_downloaded(settings))
+                    path = self.root / checkpoint
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"checkpoint")
+                    if decoder:
+                        self.assertFalse(model_is_downloaded(settings))
+                        (self.root / decoder).write_bytes(b"")
+                        self.assertFalse(model_is_downloaded(settings))
+                        (self.root / decoder).write_bytes(b"decoder")
+                    self.assertTrue(model_is_downloaded(settings))
+
+            stardist = {"seg_backend": "stardist"}
+            archive = self.root / "keras/models/StarDist2D/2D_versatile_fluo/2D_versatile_fluo.zip"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"incomplete archive")
+            self.assertFalse(model_is_downloaded(stardist))
+            with ZipFile(archive, "w") as complete:
+                complete.writestr("weights_best.h5", b"weights")
+            self.assertTrue(model_is_downloaded(stardist))
+
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -90,7 +261,8 @@ class ModelWizardTests(unittest.TestCase):
         self.assertEqual(progress["current"], "")
         first, *_, last = progress["results"]
         self.assertEqual(first["count"], 1)
-        self.assertIn("not installed", last["error"])
+        self.assertIn("Open the log", last["error"])
+        self.assertIn("No module named 'stardist'", Path(last["log"]).read_text())
 
         launcher = object.__new__(CellMatchrLauncher)
         launcher.config = self.cfg

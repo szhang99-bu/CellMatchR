@@ -5,6 +5,7 @@ Config is stored as a flat JSON dict at ~/.cellmatchr/config.json.
 
 import json
 import os
+from pathlib import PurePosixPath, PureWindowsPath
 
 CONFIG_PATH = os.path.expanduser("~/.cellmatchr/config.json")
 
@@ -120,6 +121,23 @@ def load_project_config(folder: str) -> dict | None:
         with open(path) as f:
             saved = json.load(f)
         cfg.update(saved)
+        folder = os.path.abspath(folder)
+        old_root = str(saved.get("project_output_folder") or "").strip()
+        path_type = PureWindowsPath if PureWindowsPath(old_root).drive else PurePosixPath
+        old_project = path_type(old_root)
+        for key in ("input_root_folder", "vsi_output_dir", "ana_roi_mask_folder"):
+            value = cfg.get(key)
+            if not isinstance(value, str) or not value.strip():
+                continue
+            try:
+                saved_path = path_type(value.strip())
+                if saved_path.is_absolute() and old_project.is_absolute():
+                    relative = saved_path.relative_to(old_project)
+                    if ".." not in relative.parts:
+                        cfg[key] = os.path.join(folder, *relative.parts)
+            except ValueError:
+                continue  # External data and manually selected folders keep their paths.
+        cfg["project_output_folder"] = folder
         return cfg
     except Exception as e:
         print(f"[config] Warning: could not load project config from {path}: {e}")

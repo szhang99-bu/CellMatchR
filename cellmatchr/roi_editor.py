@@ -379,6 +379,7 @@ class RoiEditorApp:
         self._status_lbl = None
         self._save_btn   = None     # stored so we can disable it in test mode
         self._skip_btn   = None     # stored so we can disable after all reviewed
+        self._finish_btn = None
         self._colour_btns: dict = {}  # label_value → QPushButton
         self._add_btn = None
         self._erase_btn = None
@@ -726,14 +727,15 @@ class RoiEditorApp:
 
         lay.addStretch()
 
-        finish_btn = QPushButton("Finish  ✓")
-        finish_btn.setStyleSheet(
+        self._finish_btn = QPushButton("Finish  ✓")
+        self._finish_btn.setStyleSheet(
             "QPushButton { background:#444; color:white; padding:6px;"
             " border-radius:4px; }"
             "QPushButton:hover { background:#666; }"
+            "QPushButton:disabled { background:#333; color:#888; }"
         )
-        finish_btn.clicked.connect(self._finish)
-        lay.addWidget(finish_btn)
+        self._finish_btn.clicked.connect(self._finish)
+        lay.addWidget(self._finish_btn)
 
         self._refresh_labels()
         return root
@@ -767,6 +769,25 @@ class RoiEditorApp:
 
         raw_d = _downsample(raw, self._scale)
         msk_d = _downsample(msk, self._scale)
+        if __package__:
+            from .slide_roi_preview import slide_outline, slide_roi_for_sample
+        else:
+            from slide_roi_preview import slide_outline, slide_roi_for_sample
+        region_path = slide_roi_for_sample(s["name"], run=self.seg_folder)
+        region = None
+        if region_path:
+            try:
+                region = slide_outline(region_path, raw_d.shape[::-1])
+            except (OSError, ValueError) as exc:
+                print(f"[roi_editor] Could not show the slide ROI: {exc}")
+        region_layer = getattr(self, "_region_lyr", None)
+        if region_layer is not None:
+            self.viewer.layers.remove(region_layer)
+        self._region_lyr = None
+        if region is not None:
+            # RGBA keeps the selected region visible without obscuring the image.
+            overlay = np.zeros((*region.shape, 4), dtype=np.uint8)
+            overlay[region] = (56, 228, 237, 255)
         self._base_display_mask = msk_d.copy()
         predicted = _model_prediction_mask(s["mask"], self.channel, msk)
         self._prediction_display_mask = _downsample(predicted, self._scale)
@@ -801,7 +822,9 @@ class RoiEditorApp:
             self._add_lyr.mode           = "paint"
             self._erase_lyr = self.viewer.add_labels(
                 np.zeros_like(msk_d, dtype=np.uint8),
-                name="Erase whole objects", opacity=0.65,
+                # Keep the editing layer and its undo history active. The
+                # disappearing cell itself is the preview of the removal.
+                name="Erase whole objects", opacity=0.0,
             )
             self._erase_lyr.color = {1: "red"}
             self._erase_lyr.brush_size = self.DEFAULT_BRUSH_SIZE
@@ -831,6 +854,9 @@ class RoiEditorApp:
             self.viewer.layers.selection.active = self._add_lyr
             self._sync_tool_buttons()
 
+        if region is not None:
+            self._region_lyr = self.viewer.add_image(overlay, name="Drawn slide region", rgb=True)
+            self.viewer.layers.selection.active = self._add_lyr
         self.viewer.reset_view()
 
     # ── Button callbacks ─────────────────────────────────────────────────────
@@ -914,8 +940,13 @@ class RoiEditorApp:
         self._advance()
 
     def _finish(self) -> None:
+        if not self._can_finish():
+            return
         if self.test_mode or self._auto_save_current():
             self.viewer.close()
+
+    def _can_finish(self) -> bool:
+        return self.test_mode or self.idx == len(self.samples) - 1
 
     def _prev(self) -> None:
         if self.idx > 0:
@@ -1153,6 +1184,10 @@ class RoiEditorApp:
     # ── Label helpers ────────────────────────────────────────────────────────
 
     def _refresh_labels(self) -> None:
+        if self._finish_btn is not None:
+            can_finish = self._can_finish()
+            self._finish_btn.setEnabled(can_finish)
+            self._finish_btn.setToolTip("" if can_finish else "Go to the last image to finish.")
         if self._prog_lbl is None:
             return
         n = len(self.samples)

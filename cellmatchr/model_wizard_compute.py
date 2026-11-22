@@ -14,6 +14,7 @@ import tifffile
 
 from cellmatchr.file_paths import filesystem_path
 from cellmatchr.legacy_cellpose import segmentation_command
+from cellmatchr.model_download import DOWNLOADS_TITLE
 
 
 def write_json(path, data):
@@ -160,9 +161,6 @@ def compare(request, scratch):
     for index, (name, settings) in enumerate(choices):
         if (scratch / "stop").exists():
             break
-        progress["current"] = name
-        write_json(scratch / "progress.json", progress)
-
         model_dir = scratch / f"model-{index}"
         model_dir.mkdir()
         config = dict(request["config"], **settings)
@@ -176,21 +174,33 @@ def compare(request, scratch):
         config_path = model_dir / "settings.json"
         write_json(config_path, config)
         log = model_dir / "run.log"
+        progress.update(current=name, current_log=str(log))
+        write_json(scratch / "progress.json", progress)
         result = {"name": name, "log": str(log)}
         overlay = model_dir / "overlay.png"
         try:
             with log.open("wb") as stream:
                 # Route legacy Cellpose and its model weights through the same setup as Step 3.
+                if settings.get("seg_cellpose_variant") in ("cyto2", "rat_nissl_v2"):
+                    stream.write(b"[MODEL] Preparing legacy Cellpose and its model weights.\n")
+                    stream.flush()
                 command, env = segmentation_command(
                     str(Path(__file__).with_name("segmentation.py")), str(config_path), config)
                 command.insert(1, "-u")
                 completed = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
             if completed.returncode:
-                if settings["seg_backend"] == "stardist" and b"No module named 'stardist'" in log.read_bytes():
-                    raise RuntimeError("StarDist is not installed in this environment.")
-                raise RuntimeError("Segmentation failed. Open the log for details.")
+                with log.open("rb") as stream:
+                    stream.seek(max(0, log.stat().st_size - 22000))
+                    detail = stream.read().decode("utf-8", errors="replace")
+                if any(marker in detail for marker in (
+                        "ConnectionError", "Connection refused", "HTTPError", "DownloadError")):
+                    raise RuntimeError(f"Could not download this model. Retry from {DOWNLOADS_TITLE} or see the log.")
+                raise RuntimeError("This model could not generate a preview. Open the log for details.")
             sample = output / "patch"
-            prediction, = sample.glob("patch_predict_original_ch0_*.tif")
+            predictions = list(sample.glob("patch_predict_original_ch0_*.tif"))
+            if len(predictions) != 1:
+                raise RuntimeError("This model did not produce exactly one mask for the patch. See the run log.")
+            prediction = predictions[0]
             result["raw"] = str(sample / "patch_split_ch0.tif")
             result["labels"] = str(prediction)
             if raw.ndim == 3:
@@ -202,7 +212,7 @@ def compare(request, scratch):
                 traceback.print_exc(file=stream)
             result["error"] = str(error)
         progress["results"].append(result)
-    progress["current"] = ""
+    progress.update(current="", current_log="")
     write_json(scratch / "progress.json", progress)
 
 

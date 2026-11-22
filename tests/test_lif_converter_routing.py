@@ -59,6 +59,23 @@ class LifConverterRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no stitched image"):
             self._open([_scene("raw tile", mosaic=40, scanner=True)])
 
+    def test_brightfield_rgb_is_one_natural_color_layer(self):
+        app = self.converter.VSINapariROIApp.__new__(self.converter.VSINapariROIApp)
+        app.brightfield = True
+        app.overview = np.full((12, 16, 3), (12, 57, 93), dtype=np.uint8)
+        images = []
+        app.viewer = SimpleNamespace(layers=[], add_image=lambda pixels, **kwargs: images.append((pixels, kwargs)))
+        app._add_overview_layers()
+        self.assertEqual(len(images), 1)
+        self.assertTrue(images[0][1]["rgb"])
+        np.testing.assert_array_equal(images[0][0], app.overview)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stain.tif"
+            self.converter.write_multichannel_tiff(path, app.overview, brightfield=True)
+            with tifffile.TiffFile(path) as file:
+                self.assertEqual(file.series[0].axes, "YXS")
+                np.testing.assert_array_equal(file.asarray(), app.overview)
+
     def test_same_stem_scanner_sources_keep_earlier_exports_and_pair_new_masks(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -89,6 +106,22 @@ class LifConverterRoutingTests(unittest.TestCase):
                 self.assertEqual(choices, [])
                 self.assertEqual(int(tifffile.imread(export)[0, 0]), index + 1)
             self.assertEqual(len(list((root / "intermediate_files").glob("*_overview_meta.json"))), 2)
+
+    def test_return_picker_lists_saved_crops_and_ignores_debug_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(self.converter.saved_roi_exports(root), [])
+            exports = root / "exports"
+            exports.mkdir()
+            for name in ("slide_slice02_roi01_FULLRES_right V1.tif",
+                         "slide_slice01_roi02_FULLRES_left V1.TIFF",
+                         "DEBUG_slide_slice01_roi01_FULLRES_trial.tif",
+                         "slide_slice01_roi01_mask_overview.tif"):
+                tifffile.imwrite(exports / name, np.ones((4, 4), np.uint8))
+            (exports / "slide_slice03_roi01_FULLRES_interrupted.tif").touch()
+            saved = self.converter.saved_roi_exports(root)
+            self.assertEqual([(scene, name) for _, scene, _, name, _ in saved],
+                             [(1, "left V1"), (2, "right V1")])
 
 
 if __name__ == "__main__":

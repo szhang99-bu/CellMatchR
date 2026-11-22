@@ -2,6 +2,12 @@ import os
 import sys
 import gc
 from contextlib import ExitStack
+
+# Prompt-grid SAM models use torchvision NMS, which can fall back to CPU
+# while the encoder still runs on Apple Silicon's GPU.
+if sys.platform == "darwin":
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 import torch
 from czifile import CziFile
 import numpy as np
@@ -966,7 +972,11 @@ def segment_by_tiling(
                 image_embeddings=image_embeddings_dict
             )
 
-            segmentation_result = segmenter.generate(**generate_kwargs)
+            from micro_sam.instance_segmentation import AMGBase
+            options = generate_kwargs
+            if isinstance(segmenter, AMGBase):
+                options = {"min_mask_region_area": generate_kwargs.get("min_size", 0)}
+            segmentation_result = segmenter.generate(**options)
 
             # micro-sam ≥1.1: InstanceSegmentationWithDecoder.generate() returns a
             # numpy labeled array (output_mode='instance_segmentation' default).
@@ -2114,6 +2124,9 @@ def _run(resources):
                 sys.exit(1)
             if CELLPOSE_VARIANT == "cpsam":
                 chosen_model = CELLPOSE_MODEL_PATH or "cpsam"
+                if not CELLPOSE_MODEL_PATH:
+                    print("[MODEL] Preparing Cellpose-SAM weights. First use downloads them.",
+                          flush=True)
             else:
                 if CELLPOSE_MODEL_PATH:
                     raise ValueError("Legacy Cellpose choices cannot use a Cellpose-SAM "
@@ -2125,36 +2138,41 @@ def _run(resources):
             cellpose_model = _cp_models.CellposeModel(
                 gpu=(device != "cpu"),
                 pretrained_model=chosen_model)
+            print("[MODEL] Cellpose weights ready. Generating predictions…", flush=True)
             print(f"  diameter={CELLPOSE_DIAMETER or 'auto'}  "
                   f"flow_threshold={CELLPOSE_FLOW_THRESHOLD}  "
                   f"cellprob_threshold={CELLPOSE_CELLPROB_THRESHOLD}")
         elif SEG_BACKEND == "stardist":
-            try:
-                from stardist.models import StarDist2D
-            except ImportError as exc:
-                raise RuntimeError("StarDist is not installed. Install the optional "
-                                   "StarDist packages before selecting this backend.") from exc
-            if STARDIST_MODEL_PATH:
-                source = os.path.abspath(STARDIST_MODEL_PATH)
-                stardist_model = StarDist2D(
-                    None, name=os.path.basename(source),
-                    basedir=os.path.dirname(source))
-            else:
-                stardist_model = StarDist2D.from_pretrained("2D_versatile_fluo")
+            from cellmatchr.stardist_runtime import StarDistRuntime
+            stardist_model = resources.enter_context(StarDistRuntime(STARDIST_MODEL_PATH))
+            print("[MODEL] StarDist weights ready. Generating predictions…", flush=True)
             print("Segmentation backend: StarDist 2D")
         else:
+            from cellmatchr.model_download import (MICROSAM_MIRRORS, enable_mobile_sam,
+                                                    fetch_microsam_weight, microsam_weights)
             print(f"Segmentation backend: Micro-SAM (model {MODEL_TYPE})")
             model_type = MODEL_TYPE
             if CUSTOM_MODEL_PATH:
                 from cellmatchr.retraining import microsam_architecture
                 model_type = microsam_architecture(CUSTOM_MODEL_PATH)
             else:
+                enable_mobile_sam(model_type)
                 _restore_cached_microsam_decoder(model_type)
+                registry, names = microsam_weights(model_type)
+                if any(not os.path.isfile(registry.abspath / name) for name in names):
+                    print(f"[MODEL] Downloading Micro-SAM weights for {model_type}. "
+                          "First use may take several minutes.", flush=True)
+                    for name in names:
+                        if name in MICROSAM_MIRRORS and not os.path.isfile(registry.abspath / name):
+                            fetch_microsam_weight(registry, name)
+                else:
+                    print(f"[MODEL] Loading Micro-SAM model {model_type} from the cache…", flush=True)
             predictor, segmenter = micro_sam.automatic_segmentation.get_predictor_and_segmenter(
                 model_type=model_type,
                 device=device,
                 checkpoint=CUSTOM_MODEL_PATH or None,
             )
+            print("[MODEL] Micro-SAM weights ready. Generating predictions…", flush=True)
 
     generate_kwargs = {
         "min_size": MIN_OBJECT_SIZE,
@@ -2387,7 +2405,9 @@ def _apply_config(config_path: str) -> None:
         except (ValueError, TypeError): pass
 
     raw_ch = cfg.get("seg_channels", "")
-    if raw_ch:
+    if INPUT_TYPE == "vsi" and SLIDE_SIGNAL_TYPE == "brightfield":
+        CHANNELS_TO_PREDICT = [0]
+    elif raw_ch:
         CHANNELS_TO_PREDICT = [
             int(x.strip()) for x in str(raw_ch).split(",") if x.strip()
         ]

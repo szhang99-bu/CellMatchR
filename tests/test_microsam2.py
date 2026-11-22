@@ -2,7 +2,10 @@
 
 import tempfile
 import unittest
+import hashlib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -10,9 +13,75 @@ import tifffile
 
 from cellmatchr import segmentation as seg
 from cellmatchr.launcher import CellMatchrLauncher
+from cellmatchr.microsam2 import _download_weight_ranges, _prepare_model_weights
 
 
 class MicroSam2Tests(unittest.TestCase):
+    def test_cached_encoder_is_reused_and_only_missing_decoder_is_fetched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            names = ("hvit_b_cells", "hvit_b_cells_decoder")
+            (folder / names[0]).write_bytes(b"known encoder")
+            registry = SimpleNamespace(abspath=folder, fetch=Mock(), registry={
+                names[0]: hashlib.sha256(b"known encoder").hexdigest(),
+                names[1]: hashlib.sha256(b"known decoder").hexdigest(),
+            })
+            util = SimpleNamespace(models=lambda: registry)
+            with patch.dict(sys.modules, {"micro_sam.v2": SimpleNamespace(util=util)}):
+                _prepare_model_weights(names[0])
+                self.assertEqual(registry.fetch.call_args.args, (names[1],))
+                registry.fetch.reset_mock()
+                (folder / names[1]).write_bytes(b"known decoder")
+                _prepare_model_weights(names[0])
+            registry.fetch.assert_not_called()
+
+    def test_slow_download_switches_connections_without_redownloading_bytes(self):
+        from io import BytesIO
+
+        size = 32_000_000
+        payload = b"ABCD1234" * (size // 8)
+
+        class Response:
+            status_code = 206
+
+            def __init__(self, range_header):
+                first, last = map(int, range_header.removeprefix("bytes=").split("-"))
+                self.headers = {"Content-Range": f"bytes {first}-{last}/{size}"}
+                self.body = BytesIO(payload[first:last + 1])
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                self.body.close()
+
+            def iter_content(self, chunk_size):
+                return iter(lambda: self.body.read(chunk_size), b"")
+
+        for slow in (False, True):
+            with self.subTest(slow=slow), tempfile.TemporaryDirectory() as directory:
+                destination = Path(directory) / "download"
+                elapsed = 7 if slow else 0
+                clock = iter([0, elapsed])
+                with patch("time.monotonic", side_effect=lambda: next(clock, elapsed)), patch(
+                    "requests.get", side_effect=lambda _url, *, headers, **_kw: Response(headers["Range"]),
+                ) as get:
+                    self.assertTrue(_download_weight_ranges(
+                        "https://owncloud.gwdg.de/checkpoint", destination, "decoder (file 2 of 2)"))
+                requests = [call.kwargs["headers"]["Range"] for call in get.call_args_list]
+                self.assertEqual(requests[:2], ["bytes=0-0", f"bytes=0-{size - 1}"])
+                self.assertEqual(len(requests), 6 if slow else 2)
+                if slow:
+                    remaining_ranges = sorted(
+                        tuple(map(int, bounds.removeprefix("bytes=").split("-"))) for bounds in requests[2:]
+                    )
+                    start = 256 * 1024
+                    for first, last in remaining_ranges:
+                        self.assertEqual(first, start)
+                        start = last + 1
+                    self.assertEqual(start, size)
+                self.assertEqual(destination.read_bytes(), payload)
+
     def test_converter_tiff_feeds_native_rgb_to_model_and_gray_to_filters(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "nissl.tif"

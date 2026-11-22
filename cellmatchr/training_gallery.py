@@ -11,6 +11,9 @@ import numpy as np
 import tifffile
 from PIL import Image
 
+from .slide_roi_preview import overlay_slide_outline
+from .slide_signal import run_is_brightfield
+
 
 CHANNEL_COLORS = {
     "blue": (0.33, 0.56, 1.0),
@@ -23,8 +26,52 @@ CHANNEL_COLORS = {
 DEFAULT_COLORS = ("blue", "green", "red", "purple", "cyan", "yellow")
 
 
+def unavailable_gallery_samples(sources, examples, skipped):
+    """Show every segmented sample while keeping training eligibility separate."""
+    from .retraining import _review_complete, example_id
+    from .roi_editor import _find_mask
+    from .validation_state import get_change_state, get_validation_tsv_path
+
+    present = {item["key"] for item in examples}
+    unavailable = []
+    for source in sources:
+        project = Path(source["project"]).expanduser().resolve()
+        run = source["seg_run"]
+        channel = int(source["channel"])
+        title = source.get("name") or project.name
+        for sample in sorted((project / run).iterdir()):
+            if not sample.is_dir() or sample.name.startswith((".", "DEBUG")):
+                continue
+            if not any(path.is_file() and path.suffix.lower() in (".tif", ".tiff")
+                       for path in sample.iterdir()):
+                continue
+            key = example_id(str(project), run, channel, sample.name)
+            if key in present:
+                continue
+            present.add(key)
+            prefix = f"{title} / {run} / ch{channel}: {sample.name}: "
+            reason = next((note[len(prefix):] for note in skipped if note.startswith(prefix)),
+                          "No reviewed mask is available for this channel.")
+            mask = _find_mask(str(sample), channel)
+            verified = (
+                mask is not None and _review_complete(sample, channel)
+                and get_change_state(str(sample), channel, mask, verify_hash=False)["status"]
+                in ("current", "legacy")
+                and get_validation_tsv_path(str(sample), channel) is not None
+            )
+            unavailable.append({
+                "key": key, "sample": sample.name, "project": str(project),
+                "project_name": title, "seg_run": run, "channel": channel,
+                "folder": str(sample), "unavailable": reason, "label_ids": {},
+                "verified": verified,
+                "final_count": 0, "original_count": 0, "incorrect_count": 0,
+            })
+    return unavailable
+
+
 def project_preview_settings(project: str, active_project: str = "",
-                             active_config: dict | None = None) -> tuple[dict[int, str], bool]:
+                             active_config: dict | None = None, *,
+                             run: str = "") -> tuple[dict[int, str], bool]:
     """Use each source project's own visible colors and brightfield choice."""
     if (active_project and
             os.path.normcase(os.path.realpath(project)) ==
@@ -42,8 +89,7 @@ def project_preview_settings(project: str, active_project: str = "",
     names = raw_colors.split(",") if isinstance(raw_colors, str) else raw_colors
     colors = {index: name.strip() for index, name in enumerate(names)
               if isinstance(name, str) and name.strip()} if isinstance(names, (list, tuple)) else {}
-    brightfield = (settings.get("input_type") == "vsi" and
-                   settings.get("slide_signal_type") == "brightfield")
+    brightfield = run_is_brightfield(os.path.join(project, run) if run else "", settings)
     return colors, brightfield
 
 
@@ -82,7 +128,7 @@ def _small_array(path: Path, max_side: int) -> np.ndarray:
 
 def composite_preview(sample_dir: str, size: tuple[int, int] = (340, 230),
                       color_names: dict[int, str] | None = None,
-                      brightfield: bool = False) -> Image.Image:
+                      brightfield: bool = False, roi_path=None) -> Image.Image:
     """Overlay all split channels with their display colors, without masks."""
     paths = sorted(Path(sample_dir).glob("*_split_ch*.tif"), key=_channel_number)
     if not paths:
@@ -100,7 +146,7 @@ def composite_preview(sample_dir: str, size: tuple[int, int] = (340, 230),
         gray = np.uint8(channels[0][1][:h, :w] * 255)
         preview = Image.fromarray(gray).convert("RGB")
         preview.thumbnail(size, Image.Resampling.LANCZOS)
-        return preview
+        return overlay_slide_outline(preview, roi_path)
     rgb = np.zeros((h, w, 3), dtype=np.float32)
     for position, (number, image) in enumerate(channels):
         name = (color_names or {}).get(number, DEFAULT_COLORS[position % len(DEFAULT_COLORS)])
@@ -108,4 +154,4 @@ def composite_preview(sample_dir: str, size: tuple[int, int] = (340, 230),
     rgb = np.uint8(np.clip(rgb, 0, 1) * 255)
     preview = Image.fromarray(rgb, "RGB")
     preview.thumbnail(size, Image.Resampling.LANCZOS)
-    return preview
+    return overlay_slide_outline(preview, roi_path)

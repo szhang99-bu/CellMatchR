@@ -6,11 +6,172 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory, mkdtemp
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import filedialog, scrolledtext, ttk
 
 from PIL import Image, ImageTk
 
+from .model_download import (DOWNLOADS_TITLE, built_in_model_id, model_choice_label,
+                             model_is_downloaded, model_stage)
 from .model_wizard_compute import crop_box, display_image, patch_pixels, write_json
+
+
+def open_model_downloads(parent, models, track_process):
+    """Download built-in models one at a time and keep their output available."""
+    existing = getattr(parent, "_cellmatchr_download_window", None)
+    if existing is not None and existing.winfo_exists():
+        existing.deiconify()
+        existing.lift()
+        existing.grab_set()
+        return existing
+    built_in = {name: settings for name, settings in models.items()
+                if not any(value for key, value in settings.items() if key.endswith("_model_path"))}
+    available = {}
+    previous_grab = parent.grab_current()
+    window = tk.Toplevel(parent)
+    parent._cellmatchr_download_window = window
+    window._download_active = False
+    window.transient(parent)
+    window.title(DOWNLOADS_TITLE)
+    frame = ttk.Frame(window, padding=16)
+    frame.pack(fill="both", expand=True)
+    ttk.Label(frame, text="Approximate weight sizes. First use may also install the runtime.").pack(anchor="w")
+    choice = ttk.Combobox(frame, state="readonly", width=55)
+    choice.pack(fill="x", pady=8)
+    ttk.Label(frame, text="Downloaded models:", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+    inventory = ttk.Frame(frame)
+    inventory.pack(fill="x", pady=(4, 8))
+    inventory.columnconfigure(0, weight=1)
+    downloaded_list = ttk.Treeview(inventory, show="tree", selectmode="none", height=1)
+    downloaded_list.grid(row=0, column=0, sticky="ew")
+    inventory_scroll = ttk.Scrollbar(inventory, orient="vertical", command=downloaded_list.yview)
+    inventory_scroll.grid(row=0, column=1, sticky="ns")
+    downloaded_list.configure(yscrollcommand=inventory_scroll.set)
+    status = ttk.Label(frame, wraplength=480)
+    status.pack(anchor="w")
+    output = scrolledtext.ScrolledText(frame, height=8, width=67, wrap="word", state="disabled")
+    output.pack(fill="both", expand=True, pady=8)
+    temp = TemporaryDirectory(prefix="cellmatchr-model-download-")
+    log = Path(temp.name) / "download.log"
+    process = None
+    last_size = -1
+
+    def poll():
+        nonlocal process, last_size
+        if not window.winfo_exists():
+            return
+        try:
+            size = log.stat().st_size
+            if size != last_size and window.state() != "withdrawn":
+                with log.open("rb") as source:
+                    source.seek(max(0, size - 24000))
+                    lines = source.read().decode("utf-8", errors="replace")
+                output.configure(state="normal")
+                output.delete("1.0", "end")
+                output.insert("1.0", lines)
+                output.see("end")
+                output.configure(state="disabled")
+                last_size = size
+        except OSError:
+            pass
+        detail = model_stage(log)
+        if process.poll() is None:
+            if detail:
+                status.configure(text=detail)
+            window.after(400, poll)
+            return
+        status.configure(text=("Model ready." if process.returncode == 0
+                               else "Could not prepare this model. The log below shows the reason."))
+        process = None
+        window._download_active = False
+        if window.state() == "withdrawn":
+            close()
+            return
+        refresh_models()
+
+    def launch(args):
+        nonlocal process, last_size
+        try:
+            with log.open("wb") as stream:
+                process = subprocess.Popen(
+                    [sys.executable, "-u", "-m", "cellmatchr.model_download", *args],
+                    cwd=Path(__file__).resolve().parent.parent, stdout=stream, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            status.configure(text=str(exc))
+            return
+        track_process(process, DOWNLOADS_TITLE)
+        window._download_active = True
+        last_size = -1
+        status.configure(text=f"Preparing {choice.get()}…")
+        update_actions()
+        poll()
+
+    def start():
+        settings = available.get(choice.get())
+        if settings:
+            launch([settings["seg_backend"], built_in_model_id(settings)])
+
+    def import_weights():
+        model = available[choice.get()]["seg_model_type"]
+        paths = filedialog.askopenfilenames(
+            parent=window, title="Select the original model weights and decoder")
+        if paths:
+            launch(["--import-microsam", model, *paths])
+
+    def update_actions(_event=None):
+        settings = available.get(choice.get())
+        enabled = process is None and settings is not None
+        choice.configure(state="readonly" if process is None and available else "disabled")
+        download.configure(state="normal" if enabled else "disabled")
+        import_button.configure(state="normal" if enabled and settings["seg_backend"] == "microsam"
+                                else "disabled")
+
+    def refresh_models():
+        downloaded = []
+        available.clear()
+        for name, settings in built_in.items():
+            if model_is_downloaded(settings):
+                downloaded.append(name)
+            else:
+                available[model_choice_label(name, settings)] = settings
+        for item in downloaded_list.get_children():
+            downloaded_list.delete(item)
+        for name in downloaded or ("None yet.",):
+            downloaded_list.insert("", "end", text=name)
+        downloaded_list.configure(height=max(1, min(len(downloaded), 6)))
+        if len(downloaded) > 6:
+            inventory_scroll.grid()
+        else:
+            inventory_scroll.grid_remove()
+        selection = choice.get()
+        choice.configure(values=tuple(available))
+        choice.set(selection if selection in available else
+                   next(iter(available), "All pretrained models are downloaded"))
+        update_actions()
+
+    def close():
+        if window.grab_current() is window:
+            window.grab_release()
+            if previous_grab is not None and previous_grab.winfo_exists():
+                previous_grab.grab_set()
+        if process is not None:
+            window.withdraw()
+            return
+        window.destroy()
+        temp.cleanup()
+
+    buttons = ttk.Frame(frame)
+    buttons.pack(fill="x")
+    download = ttk.Button(buttons, text="Download selected model", command=start)
+    download.pack(side="right")
+    ttk.Button(buttons, text="Close", command=close).pack(side="right", padx=5)
+    import_button = ttk.Button(buttons, text="Import Micro-SAM weights…", command=import_weights)
+    import_button.pack(side="left")
+    choice.bind("<<ComboboxSelected>>", update_actions)
+    refresh_models()
+    window.protocol("WM_DELETE_WINDOW", close)
+    window.bind("<Escape>", lambda _event: close())
+    window.grab_set()
+    return window
 
 
 class ModelWizard:
@@ -28,10 +189,17 @@ class ModelWizard:
         self.process = None
         self.job = None
         self.chosen_model = None
+        self.applied_model = None
+        self.model_stage = ("", "")
         self.can_use_filters = False
         self.stop_requested = False
         self.closing = False
+        self.applying = False
         self.images = {}
+        self._patch_redraw_job = None
+        self._rendered_canvas_sizes = None
+        self._overview_preview = (None, None)
+        self._patch_preview = (None, None)
         self.temp = TemporaryDirectory(prefix="cellmatchr-model-wizard-")
         self.scratch = Path(self.temp.name)
 
@@ -60,6 +228,9 @@ class ModelWizard:
         self.primary.grid(row=2, column=2, sticky="e", padx=(8, 0))
         self.close_button = ttk.Button(self.footer, text="Close", command=self.close)
         self.close_button.grid(row=2, column=1, sticky="e")
+        self.download_button = ttk.Button(self.footer, text=f"{DOWNLOADS_TITLE}…",
+                                          command=self._open_downloads)
+        self.download_button.grid(row=2, column=0, sticky="w")
         self.window.grab_set()
 
         if saved:
@@ -68,6 +239,7 @@ class ModelWizard:
             self.box = saved["box"]
             self.result_models = saved["models"]
             self.chosen_model = saved["chosen"]
+            self.applied_model = saved["chosen"] if can_reuse else None
             self.can_use_filters = can_reuse
             self.channel = tk.StringVar(self.window, value=str(saved["channel"]))
             self.size = tk.StringVar(self.window, value="1024")
@@ -77,7 +249,13 @@ class ModelWizard:
         else:
             self._prepare()
 
+    def _open_downloads(self):
+        if self.process is None:
+            open_model_downloads(self.window, self.models, self.track_process)
+
     def _prepare(self):
+        if self.applying:
+            return
         self._clear()
         self.box = self.center = None
         self.heading.configure(text="Choose a patch")
@@ -85,7 +263,7 @@ class ModelWizard:
         self.primary.configure(state="disabled")
         self.progress.configure(mode="indeterminate")
         self.progress.grid()
-        self.progress.start(12)
+        self.progress.start(50)
         settings = self.scratch / "settings.json"
         try:
             write_json(settings, self.config)
@@ -101,6 +279,7 @@ class ModelWizard:
                 [sys.executable, "-u", "-m", "cellmatchr.model_wizard_compute", action, str(settings)],
                 cwd=Path(__file__).resolve().parents[1], stdout=stream, stderr=subprocess.STDOUT)
         self.track_process(self.process, "Model Selection Wizard")
+        self.download_button.configure(state="disabled")
         self.window.after(120, self._poll, action, log)
 
     def _poll(self, action, log):
@@ -112,14 +291,22 @@ class ModelWizard:
             current = data["current"]
             if current:
                 info = f"Comparing {count + 1} of {data['total']} · {current}"
+                detail = model_stage(data["current_log"]) if data.get("current_log") else ""
+                if detail:
+                    self.model_stage = (current, detail)
+                elif current == self.model_stage[0]:
+                    detail = self.model_stage[1]
+                if detail:
+                    info += f"\n{detail}"
                 if self.stop_requested:
                     info += " · Stopping after this model"
                 self.status.configure(text=info)
         exit_code = self.process.poll()
         if exit_code is None:
-            self.window.after(150, self._poll, action, log)
+            self.window.after(350, self._poll, action, log)
             return
         self.process = None
+        self.download_button.configure(state="normal")
         if self.closing:
             self.close()
             return
@@ -169,12 +356,17 @@ class ModelWizard:
         dialog.bind("<Escape>", lambda _event: dismiss())
 
     def _clear(self):
+        self._cancel_patch_redraw()
+        self._rendered_canvas_sizes = None
         for child in self.body.winfo_children():
             child.destroy()
         self.images.clear()
 
     def _show_picker(self):
+        if self.applying:
+            return
         self._clear()
+        self.close_button.configure(text="Close")
         self.heading.configure(text="Choose a patch")
         ttk.Label(self.body, text=self.preview["sample"], font=("TkDefaultFont", 11, "bold"),
                   wraplength=890).pack(anchor="w")
@@ -213,11 +405,11 @@ class ModelWizard:
         self.overview = tk.Canvas(images, background="#151722", highlightthickness=0, width=240, height=240)
         self.overview.grid(row=1, column=0, sticky="nsew", pady=5)
         self.overview.bind("<Button-1>", self._choose_center)
-        self.overview.bind("<Configure>", lambda _event: self._redraw_patch())
+        self.overview.bind("<Configure>", self._schedule_patch_redraw)
         self.detail = tk.Canvas(images, background="#151722", highlightthickness=0, width=240, height=240)
         self.detail.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=5)
         self.detail.bind("<Button-1>", self._refine_center)
-        self.detail.bind("<Configure>", lambda _event: self._redraw_patch())
+        self.detail.bind("<Configure>", self._schedule_patch_redraw)
         selection = ttk.Frame(self.body)
         selection.pack(fill="x", pady=(7, 1))
         selection.columnconfigure(0, weight=1)
@@ -245,6 +437,24 @@ class ModelWizard:
     def _source(self):
         return self.preview["channels"][self.channel.get()]
 
+    def _canvas_sizes(self):
+        return tuple((canvas.winfo_width(), canvas.winfo_height())
+                     for canvas in (self.overview, self.detail))
+
+    def _cancel_patch_redraw(self):
+        if self._patch_redraw_job is not None:
+            self.window.after_cancel(self._patch_redraw_job)
+            self._patch_redraw_job = None
+
+    def _schedule_patch_redraw(self, _event=None):
+        self._cancel_patch_redraw()
+        if self._canvas_sizes() != self._rendered_canvas_sizes:
+            self._patch_redraw_job = self.window.after(75, self._run_patch_redraw)
+
+    def _run_patch_redraw(self):
+        self._patch_redraw_job = None
+        self._redraw_patch()
+
     def _draw_image(self, canvas, image):
         canvas.delete("all")
         width, height = canvas.winfo_width(), canvas.winfo_height()
@@ -259,10 +469,15 @@ class ModelWizard:
         return x, y, image.width, image.height
 
     def _redraw_patch(self):
+        self._cancel_patch_redraw()
+        self._rendered_canvas_sizes = self._canvas_sizes()
         source = self._source()
         width, height = source["width"], source["height"]
-        with Image.open(source["overview"]) as overview:
-            self.overview_rect = self._draw_image(self.overview, overview)
+        overview_path = source["overview"]
+        if overview_path != self._overview_preview[0]:
+            with Image.open(overview_path) as overview:
+                self._overview_preview = (overview_path, overview.copy())
+        self.overview_rect = self._draw_image(self.overview, self._overview_preview[1])
         if self.center is None:
             self.detail.delete("all")
             self.detail.create_text(self.detail.winfo_width() / 2, self.detail.winfo_height() / 2,
@@ -276,8 +491,11 @@ class ModelWizard:
             self.overview.create_rectangle(x + left*w/width, y + top*h/height,
                                            x + right*w/width, y + bottom*h/height,
                                            outline="#ffd15c", width=2)
-        patch = patch_pixels(source, self.box, self.preview["brightfield"])
-        self.detail_rect = self._draw_image(self.detail, display_image(patch))
+        patch_key = (overview_path, self.box)
+        if patch_key != self._patch_preview[0]:
+            patch = patch_pixels(source, self.box, self.preview["brightfield"])
+            self._patch_preview = (patch_key, display_image(patch))
+        self.detail_rect = self._draw_image(self.detail, self._patch_preview[1])
         self._update_compare_button()
 
     @staticmethod
@@ -315,7 +533,11 @@ class ModelWizard:
         self.model_list.delete(0, "end")
         for model in self.selected:
             self.model_list.insert("end", model)
-        additional = [model for model in self.models if model not in self.selected]
+        self._additional_models = {
+            model_choice_label(name, settings): name for name, settings in self.models.items()
+            if name not in self.selected
+        }
+        additional = list(self._additional_models)
         self.add_choice.configure(values=additional)
         self.add_choice.set(additional[0] if additional else "")
         self.add_button.configure(state="normal" if additional else "disabled")
@@ -326,7 +548,7 @@ class ModelWizard:
                                self.process is None else "disabled")
 
     def _add_model(self):
-        name = self.add_choice.get()
+        name = self._additional_models.get(self.add_choice.get())
         if name in self.models and name not in self.selected:
             self.selected.append(name)
             self._refresh_models()
@@ -341,6 +563,10 @@ class ModelWizard:
     def _compare(self):
         if self.process or self.box is None or len(self.selected) < 2:
             return
+        downloads = getattr(self.window, "_cellmatchr_download_window", None)
+        if getattr(downloads, "_download_active", False):
+            self.status.configure(text="Wait for the model download to finish before comparing.")
+            return
         try:
             job = Path(mkdtemp(prefix="comparison-", dir=self.scratch))
             settings = job / "settings.json"
@@ -353,6 +579,7 @@ class ModelWizard:
             return
         self.stop_requested = False
         self.chosen_model = None
+        self.applied_model = None
         self.can_use_filters = False
         self.result_models = {name: self.models[name] for name in self.selected}
         self._set_picker_enabled(False)
@@ -363,10 +590,12 @@ class ModelWizard:
         self.progress.grid()
 
     def _show_results(self, results, zoom=None):
+        if self.applying:
+            return
         self.comparison_results = results
         self._clear()
         self.heading.configure(text=f"Compare predictions · Channel {self.channel.get()}")
-        ttk.Label(self.body, text="Look for missed cells first. Click the preview you want to use.").pack(
+        ttk.Label(self.body, text="Look for missed cells first. Click a preview, then choose Use selected model.").pack(
             anchor="w", pady=(1, 8))
         # The same zoom window is applied to every model and the original image.
         controls = ttk.Frame(self.body)
@@ -384,7 +613,7 @@ class ModelWizard:
         canvas.configure(xscrollcommand=scroll_x.set)
         strip = ttk.Frame(canvas)
         canvas.create_window(0, 0, window=strip, anchor="nw")
-        strip.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        strip.bind("<Configure>", lambda event: canvas.configure(scrollregion=(0, 0, event.width, event.height)))
         display = [("Original patch", self.job / "original.png", "Source", None)]
         for result in results:
             overlay = result.get("overlay")
@@ -434,9 +663,11 @@ class ModelWizard:
         self.filter_button = ttk.Button(controls, text="Open Parameter Wizard", command=self._open_filters,
                                         state="disabled")
         self.filter_button.pack(side="right")
-        self._mark_selection(selected)
         picker = self._show_picker if "channels" in self.preview else self._prepare
-        self.primary.configure(text="Choose another patch or models", command=picker, state="normal")
+        ttk.Button(controls, text="Change patch or models", command=picker).pack(side="right", padx=6)
+        self.primary.configure(text="Use selected model",
+                               command=lambda: self._apply_selection(selected))
+        self._mark_selection(selected)
 
     def _mark_selection(self, tiles):
         for name, tile in tiles.items():
@@ -445,36 +676,67 @@ class ModelWizard:
                 side = int(tile.cget("width"))
                 tile.create_rectangle(2, 2, side-2, side-2, width=4, outline="#39b967", tags="selection")
         if self.chosen_model:
-            if self.can_use_filters:
+            if self.chosen_model != self.applied_model:
+                message = "Click Use selected model to apply it to Step 3."
+            elif self.can_use_filters:
                 message = "Open the Parameter Wizard to reuse this patch."
             elif self.channel.get() not in {part.strip() for part in self.config["seg_channels"].split(",")}:
                 message = f"Add channel {self.channel.get()} in Step 3 to reuse this patch."
             else:
                 message = "The comparison uses different input or model settings."
             self.status.configure(text=f"Selected {self.chosen_model}. {message}")
-        self.filter_button.configure(state="normal" if self.can_use_filters else "disabled")
+        pending = bool(self.chosen_model and self.chosen_model != self.applied_model)
+        self.primary.configure(state="normal" if pending else "disabled")
+        self.filter_button.configure(state="normal" if self.can_use_filters and not pending else "disabled")
+        self.close_button.configure(text="Done" if self.applied_model and not pending else "Close")
 
     def _use_model(self, result, tiles):
-        name = result["name"]
+        if self.applying:
+            return
+        self.chosen_model = result["name"]
+        self._mark_selection(tiles)
+
+    def _apply_selection(self, tiles):
+        name = self.chosen_model
+        if self.applying or not name or name == self.applied_model:
+            return
+        result = next(item for item in self.comparison_results if item["name"] == name)
         comparison = {
             "original": str(self.job / "original.png"),
             "results": self.comparison_results, "models": self.result_models,
             "box": list(self.box), "channel": int(self.channel.get()),
             "preview": self.preview,
         }
+        self.applying = True
+        self.primary.configure(state="disabled")
+        self.filter_button.configure(state="disabled")
+        self.close_button.configure(state="disabled")
+        self.download_button.configure(state="disabled")
+        self.status.configure(text=f"Applying {name} and saving its preview…")
+
+        def finished(error=None):
+            self.applying = False
+            if error is None:
+                self.applied_model = name
+                self.close()
+                return
+            self.close_button.configure(state="normal")
+            self.download_button.configure(state="normal")
+            self._mark_selection(tiles)
+            self.status.configure(text=f"Could not use the selected model. {error}")
+
         try:
-            self.can_use_filters = self.apply_model(self.result_models[name], result, comparison)
-        except (OSError, ValueError) as error:
-            messagebox.showerror("Could not select model", str(error), parent=self.window)
-            return
-        self.chosen_model = name
-        self._mark_selection(tiles)
+            self.apply_model(self.result_models[name], result, comparison, finished)
+        except (OSError, ValueError, KeyError, RuntimeError) as error:
+            finished(error)
 
     def _open_filters(self):
         self.close()
         self.open_filters()
 
     def close(self):
+        if self.applying:
+            return
         if self.process is not None:
             if self.job != self.scratch:
                 (self.job / "stop").touch()
@@ -487,5 +749,9 @@ class ModelWizard:
                 self.process.terminate()
             self.close_button.configure(state="disabled")
             return
+        self._cancel_patch_redraw()
         self.window.destroy()
+        self.images.clear()
+        self._overview_preview = (None, None)
+        self._patch_preview = (None, None)
         self.temp.cleanup()

@@ -80,25 +80,25 @@ class SidecarInputTests(unittest.TestCase):
         app.viewer = SimpleNamespace(
             layers=SimpleNamespace(selection=SimpleNamespace(active=None)), status=""
         )
-        app._sidecar_select_mode = False
         app._sync_roi_ui = Mock()
-        app._ensure_roi_on_top = Mock()
-        app._force_polygon_mode = Mock()
 
-        app._on_shapes_data_changed()
-        app._force_polygon_mode.assert_called_once_with()
+        app._on_shapes_data_changed(SimpleNamespace(action="adding"))
+        app._sync_roi_ui.assert_not_called()
+        app._on_shapes_data_changed(SimpleNamespace(action="added"))
+        app._sync_roi_ui.assert_called_once_with()
+        self.assertEqual(app.shapes.mode, "add_polygon")
 
-        app._force_polygon_mode.reset_mock()
         app._toggle_sidecar_shape_tool()
         self.assertEqual(app.shapes.mode, "select")
         self.assertIs(app.viewer.layers.selection.active, app.shapes)
         app._on_shapes_data_changed()
-        app._force_polygon_mode.assert_not_called()
+        self.assertEqual(app.shapes.mode, "select")
 
         app._toggle_sidecar_shape_tool()
         self.assertEqual(app.shapes.mode, "add_polygon")
+        app.shapes.mode = "add_ellipse"
         app._on_shapes_data_changed()
-        app._force_polygon_mode.assert_called_once_with()
+        self.assertEqual(app.shapes.mode, "add_ellipse")
 
 
 if __name__ == "__main__":

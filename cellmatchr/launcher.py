@@ -76,9 +76,10 @@ STEPS = [
     ("3", "Segmentation"),
     ("4", "Review Segmentation"),
     ("5", "Analysis"),
-    ("6", "Large Batch Processing"),
-    ("7", "Retrain Models"),
+    ("6", "Retrain Models"),
 ]
+BATCH_PAGE = len(STEPS)
+BATCH_TITLE = "Large Batch Processing"
 
 # Spinner frames
 _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -586,6 +587,7 @@ class CellMatchrLauncher:
 
         self.config = DEFAULT_CONFIG.copy()  # always start clean
         self.current_step = 0
+        self._batch_return_step = 0
         self._spinning = False
         self._spin_idx  = 0
         # Live background processes (segmentation/analysis runs, validation
@@ -741,14 +743,13 @@ class CellMatchrLauncher:
         for i, (num, name) in enumerate(STEPS):
             btn = tk.Button(
                 self.sidebar,
-                text=name if num == "6" else f"  {num}   {name}",
+                text=f"  {num}   {name}",
                 bg=SIDEBAR, fg=MUTED, font=FONT_STEP,
                 anchor="w", relief="flat", bd=0,
                 activebackground=ACTIVE, activeforeground=FG,
                 command=lambda idx=i: self._show_step(idx),
             )
-            if num != "6":
-                btn.pack(fill="x", padx=8, ipady=7, pady=2)
+            btn.pack(fill="x", padx=8, ipady=7, pady=2)
             self._step_btns.append(btn)
 
         # ── Project info panel (bottom of sidebar) ───────────────────
@@ -767,7 +768,13 @@ class CellMatchrLauncher:
                  font=("Segoe UI", 7)).pack(side="bottom", anchor="w", padx=14, pady=(6, 0))
         tk.Label(self.sidebar, text="v0.1.0", bg=SIDEBAR, fg=MUTED,
                  font=("Segoe UI", 7)).pack(side="bottom", pady=4)
-        self._step_btns[5].pack(side="bottom", fill="x", padx=8, ipady=7, pady=(0, 10))
+        batch_button = tk.Button(
+            self.sidebar, text=f"  {BATCH_TITLE}", bg=SIDEBAR, fg=MUTED, font=FONT_STEP,
+            anchor="w", relief="flat", bd=0, activebackground=ACTIVE, activeforeground=FG,
+            command=lambda: self._show_step(BATCH_PAGE),
+        )
+        batch_button.pack(side="bottom", fill="x", padx=8, ipady=7, pady=(0, 10))
+        self._step_btns.append(batch_button)
 
         # ── Scrollable content area ───────────────────────────────────
         content_outer = tk.Frame(self.root, bg=BG)
@@ -968,7 +975,7 @@ class CellMatchrLauncher:
         running = self._running_procs()
         active = {label for _, label in running}
         if self._batch_stop is not None:
-            active.add("Large Batch Processing")
+            active.add(BATCH_TITLE)
         if not active:
             return True
         labels = "\n      • ".join(sorted(active))
@@ -1005,7 +1012,7 @@ class CellMatchrLauncher:
         running = self._running_procs()
         active = {label for _, label in running}
         if self._batch_stop is not None:
-            active.add("Large Batch Processing")
+            active.add(BATCH_TITLE)
         if active:
             labels = "\n      • ".join(sorted(active))
             if not self._warn_yesno(
@@ -1041,6 +1048,8 @@ class CellMatchrLauncher:
         self._sync_vars_to_config()
         save_config(self.config)
         save_project_config(self.config)
+        if idx == BATCH_PAGE and self.current_step != BATCH_PAGE:
+            self._batch_return_step = self.current_step
         self.current_step = idx
 
         for i, btn in enumerate(self._step_btns):
@@ -1056,16 +1065,20 @@ class CellMatchrLauncher:
             self._build_segmentation_step,
             self._build_validation_step,
             self._build_analysis_step,
-            self._build_batch_step,
             self._build_retraining_step,
+            self._build_batch_step,
         ]
         builders[idx](self.content_frame)
 
         self.btn_back.config(state="normal" if idx > 0 else "disabled")
-        if idx == len(STEPS) - 1:
-            self.btn_next.config(text="Save & Close", command=self._save_and_close)
+        if idx == BATCH_PAGE:
+            self.btn_next.pack_forget()
         else:
-            self.btn_next.config(text="Next  ▶", command=self._next)
+            self.btn_next.pack(side="right", padx=14, pady=10)
+            if idx == len(STEPS) - 1:
+                self.btn_next.config(text="Save & Close", command=self._save_and_close)
+            else:
+                self.btn_next.config(text="Next  ▶", command=self._next)
         self._update_project_navigation()
 
         self._canvas.yview_moveto(0)
@@ -1076,7 +1089,9 @@ class CellMatchrLauncher:
             self._show_step(self.current_step + 1)
 
     def _back(self):
-        if self.current_step > 0:
+        if self.current_step == BATCH_PAGE:
+            self._show_step(self._batch_return_step)
+        elif self.current_step > 0:
             self._show_step(self.current_step - 1)
 
     def _save_and_close(self):
@@ -1095,10 +1110,12 @@ class CellMatchrLauncher:
     # UI helpers
     # ------------------------------------------------------------------
 
-    def _section_header(self, parent, step: int, subtitle: str, *, optional=False,
-                        numbered=True) -> None:
-        number, name = STEPS[step - 1]
-        title = f"Step {number} — {name}" if numbered else name
+    def _section_header(self, parent, step: int | str, subtitle: str, *, optional=False) -> None:
+        if isinstance(step, int):
+            number, name = STEPS[step - 1]
+            title = f"Step {number} — {name}"
+        else:
+            title = step
         if optional:
             title += " (optional)"
         tk.Label(parent, text=title, bg=BG, fg=FG,
@@ -5336,8 +5353,7 @@ class CellMatchrLauncher:
 
     def _build_batch_step(self, parent) -> None:
         self._section_header(
-            parent, 6, "Apply this project's segmentation and analysis settings to several image folders.",
-            numbered=False,
+            parent, BATCH_TITLE, "Apply this project's segmentation and analysis settings to several image folders.",
         )
         project = self.config.get("project_output_folder", "").strip()
         if project != self._batch_project:
@@ -5628,7 +5644,7 @@ class CellMatchrLauncher:
                                     command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                     text=True, encoding="utf-8", errors="replace", bufsize=1,
                                 )
-                                self._track_proc(proc, "Large Batch Processing")
+                                self._track_proc(proc, BATCH_TITLE)
                             with proc.stdout:
                                 for line in proc.stdout:
                                     log(line.rstrip())
@@ -5663,7 +5679,7 @@ class CellMatchrLauncher:
     def _build_retraining_step(self, parent) -> None:
         button_fg = "#1e1e2e" if sys.platform == "darwin" else FG
         self._section_header(
-            parent, 7,
+            parent, 6,
             "Fine-tune a model with saved mask corrections or completed object reviews.")
         card = self._card(parent, "Training data and model")
         tk.Label(card, text=(

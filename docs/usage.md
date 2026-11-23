@@ -16,8 +16,8 @@ the full workflow and answers common questions.
 - [Step 3: Segment cells](#step-3-segment-cells)
 - [Step 4: Correct and validate predictions](#step-4-correct-and-validate-predictions)
 - [Step 5: Analyze results](#step-5-analyze-results)
+- [Step 6: Retrain a model](#step-6-retrain-a-model)
 - [Large Batch Processing](#large-batch-processing)
-- [Step 7: Retrain a model](#step-7-retrain-a-model)
 - [Understand files and outputs](#understand-files-and-outputs)
 - [Frequently asked questions](#frequently-asked-questions)
 - [Troubleshooting by symptom](#troubleshooting-by-symptom)
@@ -421,7 +421,7 @@ Python environment and downloads the chosen weights. Allow that step to
 finish with an internet connection. The runtime and built-in model cache live
 in `~/CellMatchR/MicroSAM2` and are reused across projects. Saved fine-tuned
 Micro-SAM models are still selected under **Micro-SAM**. Corrected micro-SAM2
-masks can be used in Step 7 to train the existing model families.
+masks can be used in Step 6 to train the existing model families.
 
 Use a new output run when comparing the two versions. On a small comparison of
 published 20× Nissl fields, micro-SAM2 Base found more annotated objects with
@@ -540,7 +540,7 @@ Decisions save as TSV files alongside the prediction files.
 
 For training, **YES** and **NO** are both cell labels and are targets by
 default. **ARTIFACT** alone marks an incorrect prediction; **MAYBE** must be
-resolved. You can choose one or several cell labels in Step 7 for a specialized
+resolved. You can choose one or several cell labels in Step 6 for a specialized
 model. If the goal is high recall, add genuinely
 missed cells in the mask editor rather than trying to label them in a list of
 existing predictions: a missing prediction has no object to validate.
@@ -605,42 +605,7 @@ runs the analysis. Other segmentation runs are not replaced. When reopening
 a project after an interrupted replacement, the app checks unfinished backups
 and attempts recovery.
 
-## Large Batch Processing
-
-Open **Large Batch Processing** near the bottom of the sidebar to apply the
-current project's segmentation and analysis settings to several image folders.
-Set up the project and its source images in Steps 1 and 2, configure the model,
-channels, and filters in Step 3, and select measurement channels and output
-options in Step 5. If a setting is missing, the page links to the step that
-needs attention.
-
-Check the filters on representative images from each group before starting.
-Changing the stain, tissue, magnification, or imaging settings can affect cell
-size and intensity. The folders should use the template project's input format
-and channel order.
-
-1. Click **Add Folder…** for an image folder, or **Add Subfolders…** to queue
-   folders inside a common parent. For slide scans, use TIFFs already exported
-   from the converter in Step 2. You can select a converter's output folder or
-   its `exports` folder.
-2. Select a row and click **Set ROI Masks…** if that folder has its own masks.
-   The app picks up matching converter mask folders automatically when they
-   are present. **Use Whole Image** clears the selected folders' ROI choice.
-3. Click **Run Batch**. CellMatchR segments and analyzes each full folder in
-   queue order. Check the status column and batch log for progress. An error
-   in one folder appears in the log and the batch continues with the next
-   folder. Use **Cancel Batch** to stop the queue and keep results already
-   written.
-
-Each run creates a new folder under the template project’s
-`Large_Batch_Processing/`. It contains separate CellMatchR projects with their
-own `Segmentation/` and `Analysis/` results, plus `batch.log` and
-`batch_report.json` for the entire run. The report records each input folder,
-its output location, and the outcome. A row set to **Whole image** leaves the
-ROI-specific measurements blank. Batch projects start with fresh predictions
-and can be opened individually for review and reanalysis in Steps 4 and 5.
-
-## Step 7: Retrain a model
+## Step 6: Retrain a model
 
 Use masks saved after correction in Step 4, or masks with completed individual
 cell verification. Choose the segmentation run, one channel, the model family
@@ -664,7 +629,7 @@ model. You can select it for a later training round or in Step 3 for any
 project. **Select the new model for this project's next segmentation runs**
 also makes it the current choice after training.
 
-![Step 7 starting model and new model name controls, circled in red](images/step7-model-setup.png)
+![Step 6 starting model and new model name controls, circled in red](images/step7-model-setup.png)
 
 *The red circles mark the starting weights and the name of the separate new model.*
 
@@ -673,7 +638,7 @@ also makes it the current choice after training.
 | Control | What to choose and what happens |
 |---|---|
 | **Masks to train from** | Select the current project's segmentation run whose masks you corrected in Step 4 or verified cell by cell. This supplies training targets; it does not choose the model whose weights will be changed. |
-| **Channel to train** | Choose one channel found in that run. Step 7 trains one channel at a time; train channels 0, 1, and 2 separately if you need all three. The menu updates when the reviewed run changes. |
+| **Channel to train** | Choose one channel found in that run. Step 6 trains one channel at a time; train channels 0, 1, and 2 separately if you need all three. The menu updates when the reviewed run changes. |
 | **Cell labels to train** | Leave every box unchecked (the default) to use **all cells kept in a saved corrected mask**; individual cell verification is optional. Check one or more labels after completing cell-by-cell review to make only those cells training targets. Other valid cell types become background in this specialized model, so it may stop detecting them. Erased predictions and ARTIFACT remain background and cannot be selected as cell labels. |
 | **Model family to train** | Pick **Micro-SAM**, **Cellpose**, or **StarDist**. This controls the training software, compatible starting weights, and later Step 3 model choice. Reviewed masks can come from a different family. |
 | **Initialize weights from** | Choose a built-in model or a previously saved fine-tuned model **of the selected family**. Continuing a fine-tuned model creates a *new* model; the prior checkpoint stays available. Use **Other starting model** under advanced settings only for a compatible checkpoint that is not listed. |
@@ -719,7 +684,7 @@ images. Choose **No** to correct or review more images first; choosing
 **Choose held-out image from library** button and then that image's preview.
 Keep at least one other included image for training.
 
-![Step 7 image library and Add another project control, circled in red](images/step7-image-library.png)
+![Step 6 image library and Add another project control, circled in red](images/step7-image-library.png)
 
 *Use **Add another project** to bring in more reviewed data. Uncheck an image
 to leave it out of this run. The Mac screenshot uses real VSI slide scanner
@@ -740,7 +705,7 @@ You must choose one of these before **Start Retraining** becomes available:
 | **Reserve a small patch** | A randomly chosen patch around an ARTIFACT or erased prediction; its pixels and overlapping cell labels are excluded from training. | Only a small dataset is available, but it has a known incorrect prediction. Erased predictions can anchor the patch when the original prediction mask was saved by the editor. The default target is 8 incorrect predictions; the report records the random seed, exact patch location, and actual count. |
 | **Use all images for training** | Nothing. The report evaluates an image used for training and clearly marks the result **in-sample**. | Very small datasets where an independent holdout would leave too little training data. Do not interpret this score as performance on new images. |
 
-![Step 7 validation approach choices and held-out image button, circled in red](images/step7-validation-choice.png)
+![Step 6 validation approach choices and held-out image button, circled in red](images/step7-validation-choice.png)
 
 *The red circles mark the three choices and the button for picking a whole
 image to hold out. Training stays unavailable until a choice is complete.
@@ -769,7 +734,7 @@ validation choice are valid. Progress appears in **Retraining Log**. A
 training run can take substantially longer than the short trial preset;
 leave the app open until it reports completion or an error.
 
-After training, Step 7 reveals the training curve and corrected reference,
+After training, Step 6 reveals the training curve and corrected reference,
 before, and after segmentation images below the log. The captions compare
 recall, missed cells, and false positives against the corrected or verified mask at an
 object IoU threshold of 0.5. Use **Open report folder** to inspect the full
@@ -890,6 +855,41 @@ show incomplete history. Deletion requires two confirmations: answer the
 warning and then type the exact model name. Deleting a model does not remove
 models trained from it, but projects that use the deleted checkpoint will
 need another model selected.
+
+## Large Batch Processing
+
+Open **Large Batch Processing** near the bottom of the sidebar to apply the
+current project's segmentation and analysis settings to several image folders.
+Set up the project and its source images in Steps 1 and 2, configure the model,
+channels, and filters in Step 3, and select measurement channels and output
+options in Step 5. If a setting is missing, the page links to the step that
+needs attention.
+
+Check the filters on representative images from each group before starting.
+Changing the stain, tissue, magnification, or imaging settings can affect cell
+size and intensity. The folders should use the template project's input format
+and channel order.
+
+1. Click **Add Folder…** for an image folder, or **Add Subfolders…** to queue
+   folders inside a common parent. For slide scans, use TIFFs already exported
+   from the converter in Step 2. You can select a converter's output folder or
+   its `exports` folder.
+2. Select a row and click **Set ROI Masks…** if that folder has its own masks.
+   The app picks up matching converter mask folders automatically when they
+   are present. **Use Whole Image** clears the selected folders' ROI choice.
+3. Click **Run Batch**. CellMatchR segments and analyzes each full folder in
+   queue order. Check the status column and batch log for progress. An error
+   in one folder appears in the log and the batch continues with the next
+   folder. Use **Cancel Batch** to stop the queue and keep results already
+   written.
+
+Each run creates a new folder under the template project’s
+`Large_Batch_Processing/`. It contains separate CellMatchR projects with their
+own `Segmentation/` and `Analysis/` results, plus `batch.log` and
+`batch_report.json` for the entire run. The report records each input folder,
+its output location, and the outcome. A row set to **Whole image** leaves the
+ROI-specific measurements blank. Batch projects start with fresh predictions
+and can be opened individually for review and reanalysis in Steps 4 and 5.
 
 ## Understand files and outputs
 
@@ -1015,7 +1015,7 @@ YES and NO are both cell labels and are training targets by default. The
 analysis validation filter removes ARTIFACT objects. To remove a false
 prediction from the masks used in later analysis, use **REMOVE PREDICTED OBJECTS**
 in the Step 4 editor and save the mask. To train a model for only one type of
-cell, select that label in Step 7; other cell types then become background in
+cell, select that label in Step 6; other cell types then become background in
 that specialized training run.
 
 ### Analysis and training
@@ -1033,7 +1033,7 @@ inside `.analysis_backups/` for earlier results.
 Select both channels in Step 3 and choose their masks in Step 5.
 
 **Where is my fine-tuned model?** The default shared folder is
-`~/CellMatchR/Models`. Step 7 has **Open Model Library** and a Model Manager.
+`~/CellMatchR/Models`. Step 6 has **Open Model Library** and a Model Manager.
 Saved models appear in the starting-model and future-segmentation dropdowns.
 
 **Can I continue training a fine-tuned model?** Yes. Select that saved model
@@ -1041,7 +1041,7 @@ under **Initialize weights from**, give the new result its own name, and
 review held-out predictions after training. The previous checkpoint remains.
 
 **Can I combine corrected images from several projects?** Yes. Use **Add another
-project** in Step 7 for each additional `cellmatchr_project.json`, then choose
+project** in Step 6 for each additional `cellmatchr_project.json`, then choose
 its run and channel. The image library shows which project each sample came
 from. Uncheck any sample that should not enter this training run.
 
@@ -1066,7 +1066,7 @@ cell-by-cell review and check one or more labels. Samples with none of the
 chosen labels are skipped, and unchosen cell types become background only
 in the training copy of the masks. Original masks and decisions stay intact.
 
-**Can I train all selected channels together?** Step 7 trains one channel at
+**Can I train all selected channels together?** Step 6 trains one channel at
 a time. Select another channel and create another named model if needed.
 
 **Which preset should I choose?** Start with **Default training** for a

@@ -199,7 +199,7 @@ project’s settings. Each run saves separate results and a log under
    missed cells. Individual cell verification is optional when training on all
    cells left in the corrected mask. Complete it if you want to train only
    selected cell labels such as YES or NO.
-2. Open **Step 7: Retrain Models**. Choose the corrected run and one channel,
+2. Open **Step 6: Retrain Models**. Choose the corrected run and one channel,
    the model family, starting weights, a name for the new model, and a training
    preset. Leave cell labels unselected to use all kept cells, or check multiple
    labels from completed cell reviews for a specialized model. You can add images
@@ -210,5 +210,5 @@ project’s settings. Each run saves separate results and a log under
 
 The new model is saved separately in the shared CellMatchR model library and
 can be selected for later training or segmentation in any project. See the
-[detailed Step 7 guide](docs/usage.md#step-7-retrain-a-model) for every control,
+[detailed Step 6 guide](docs/usage.md#step-6-retrain-a-model) for every control,
 advanced setting, validation choice, and result.

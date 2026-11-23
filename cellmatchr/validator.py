@@ -116,7 +116,7 @@ CONFIG_FILE = ".roi_verifier_config"
 # --- Customizable decision buttons -------------------------------------------
 # Users may rename the decision words and reassign their keyboard shortcuts
 # (up to 6).  ARTIFACT is fixed: it is always present, always bound to Shift,
-# and nothing else may use Shift.  'Down' is reserved for Save & Next.
+# and nothing else may use Shift. Down saves and advances. Z hides outlines.
 VAL_BUTTONS_FILE = os.path.expanduser("~/.cellmatchr/validator_buttons.json")
 DEFAULT_DECISIONS = [
     {"word": "YES",   "key": "Left"},
@@ -124,7 +124,9 @@ DEFAULT_DECISIONS = [
     {"word": "MAYBE", "key": "Up"},
 ]
 ARTIFACT_WORD = "ARTIFACT"
-RESERVED_KEYS = {"Shift", "Shift_L", "Shift_R", "Down"}  # Shift=Artifact, Down=Save&Next
+FIXED_DECISION_KEYS = {"Shift", "Shift_L", "Shift_R", "Down"}
+ROI_HIDE_KEYS = ("z", "Z")
+RESERVED_KEYS = FIXED_DECISION_KEYS.union(ROI_HIDE_KEYS)
 MAX_DECISIONS = 6
 DECISION_COLORS = ["#40a02b", "#d20f39", "#fe640b", "#1e88e5", "#8e44ad", "#b8860b"]
 
@@ -139,7 +141,8 @@ def load_decisions():
             for c in cats[:MAX_DECISIONS]:
                 w = str(c.get("word", "")).strip()
                 k = str(c.get("key", "")).strip()
-                if w and k and w.upper() != ARTIFACT_WORD and k not in RESERVED_KEYS:
+                # Keep buttons with a legacy Z assignment available by mouse.
+                if w and k and w.upper() != ARTIFACT_WORD and k not in FIXED_DECISION_KEYS:
                     out.append({"word": w, "key": k})
             if out:
                 for i, c in enumerate(out):
@@ -392,6 +395,8 @@ class RoiVerifierApp:
         # VISIBILITY FLAGS
         self.show_contours_global = True
         self.show_contours_channel = {i: True for i in range(self.n_channels)}
+        self._roi_hide_held = False
+        self._roi_hide_release_job = None
 
         # Layout Main
         self.main_frame = ttk.Frame(root, padding=10)
@@ -411,7 +416,9 @@ class RoiVerifierApp:
         btn_hide_all = ttk.Button(self.slider_frame, text="Hide\nALL", width=4)
         btn_hide_all.bind('<ButtonPress-1>', lambda e: self.toggle_global_roi(False))
         btn_hide_all.bind('<ButtonRelease-1>', lambda e: self.toggle_global_roi(True))
-        btn_hide_all.pack(side=tk.TOP, pady=(0, 10))
+        btn_hide_all.pack(side=tk.TOP)
+        ttk.Label(self.slider_frame, text="Hold Z", font=("Arial", 8)).pack(
+            side=tk.TOP, pady=(2, 10))
         
         # Create one vertical slider + typed entry + hide button per detected channel.
         # Slider length is adaptive so all 4 channels fit without being cut off.
@@ -551,6 +558,11 @@ class RoiVerifierApp:
         # Save & Next is always Down.
         self._rebind_decision_keys()
 
+        for key in ROI_HIDE_KEYS:
+            self.root.bind(f"<KeyPress-{key}>", self._hold_hide_rois)
+            self.root.bind(f"<KeyRelease-{key}>", self._release_hide_rois)
+        self.root.bind("<FocusOut>", self._check_hide_roi_focus, add="+")
+
         self.load_data()
 
     def _typing_in_notes(self) -> bool:
@@ -589,7 +601,8 @@ class RoiVerifierApp:
         r = 0
         for cat in self.decisions:
             word, key = cat["word"], cat["key"]
-            b = ttk.Button(self._decision_box, text=f"{word}  ({key})",
+            caption = word if key in RESERVED_KEYS else f"{word}  ({key})"
+            b = ttk.Button(self._decision_box, text=caption,
                            style="Ctrl.TButton",
                            command=lambda w=word: self.make_decision(w))
             b.grid(row=r, column=0, sticky="ew", pady=3); r += 1
@@ -638,7 +651,8 @@ class RoiVerifierApp:
             dlg, justify="left", font=("Arial", 10),
             text=("Enter each decision word, then click its key and press a shortcut.\n"
                   "Use a letter, number, or the Left, Right, or Up arrow.\n\n"
-                  "Shift is reserved for Artifact. Down is reserved for Save & Next."),
+                  "Shift is reserved for Artifact. Down is reserved for Save & Next.\n"
+                  "Hold Z to hide ROI outlines."),
         ).grid(row=0, column=0, columnspan=3, padx=14, pady=(14, 8), sticky="w")
 
         table = ttk.Frame(dlg)
@@ -678,7 +692,7 @@ class RoiVerifierApp:
                 stop_capture()
                 return None
             elif key in RESERVED_KEYS:
-                note.set("Shift and Down are reserved. Press a different key.")
+                note.set("Shift, Down, and Z are reserved. Press a different key.")
             elif not (key in ("Left", "Right", "Up") or
                       len(key) == 1 and key.isascii() and key.isalnum()):
                 note.set("Press a letter, number, or the Left, Right, or Up arrow.")
@@ -722,7 +736,7 @@ class RoiVerifierApp:
 
         add_btn = ttk.Button(dlg, text="＋  Add button", command=lambda: add_row())
         for c in self.decisions:
-            add_row(c["word"], c["key"])
+            add_row(c["word"], "" if c["key"] in RESERVED_KEYS else c["key"])
 
         ttk.Label(table, text="ARTIFACT", foreground="#8e44ad", font=("Arial", 10, "bold")).grid(
             row=MAX_DECISIONS + 1, column=0, pady=(6, 0), sticky="w")
@@ -742,7 +756,7 @@ class RoiVerifierApp:
                 if w.upper() == ARTIFACT_WORD:
                     messagebox.showwarning("Reserved", "'ARTIFACT' is reserved — it always exists.", parent=dlg); return
                 if k in RESERVED_KEYS:
-                    messagebox.showwarning("Reserved key", f"'{k}' is reserved (Shift = Artifact, Down = Save & Next).", parent=dlg); return
+                    messagebox.showwarning("Reserved key", "Shift, Down, and Z are reserved.", parent=dlg); return
                 if w.upper() in seen_w:
                     messagebox.showwarning("Duplicate word", f"'{w}' is used more than once.", parent=dlg); return
                 if k.lower() in seen_k:
@@ -809,12 +823,53 @@ class RoiVerifierApp:
     def toggle_channel_roi(self, channel_idx, state):
         if self.show_contours_channel[channel_idx] != state:
             self.show_contours_channel[channel_idx] = state
-            self.update_roi_display(recalc_roi=False)
+            self._update_contour_visibility()
 
     def toggle_global_roi(self, state):
         if self.show_contours_global != state:
             self.show_contours_global = state
-            self.update_roi_display(recalc_roi=False)
+            self._update_contour_visibility()
+
+    def _hold_hide_rois(self, event):
+        if isinstance(event.widget, (tk.Text, tk.Entry, ttk.Entry)):
+            return
+        if self._roi_hide_release_job is not None:
+            self.root.after_cancel(self._roi_hide_release_job)
+            self._roi_hide_release_job = None
+        if not self._roi_hide_held:
+            self._roi_hide_held = True
+            self._update_contour_visibility()
+
+    def _release_hide_rois(self, _event=None):
+        if self._roi_hide_held and self._roi_hide_release_job is None:
+            # Some platforms emit a release followed by a press during key repeat.
+            self._roi_hide_release_job = self.root.after_idle(self._restore_held_rois)
+
+    def _restore_held_rois(self):
+        self._roi_hide_release_job = None
+        self._roi_hide_held = False
+        self._update_contour_visibility()
+
+    def _check_hide_roi_focus(self, _event):
+        if self._roi_hide_held:
+            self.root.after_idle(self._restore_rois_if_unfocused)
+
+    def _restore_rois_if_unfocused(self):
+        focus = self.root.focus_get()
+        if focus is None or focus.winfo_toplevel() is not self.root:
+            self._release_hide_rois()
+
+    def _update_contour_visibility(self):
+        """Update the plotted overlays without rebuilding the image panels."""
+        show_all = self.show_contours_global and not self._roi_hide_held
+        for i, axes in enumerate(zip(self.col_axes, self.gray_axes, self.mid_axes)):
+            for axis in axes:
+                for contour in axis.lines:
+                    contour.set_visible(show_all and self.show_contours_channel[i])
+        for axis in (self.ax_merge, self.ax_context):
+            for contour in axis.lines:
+                contour.set_visible(show_all)
+        self.canvas.draw_idle()
 
     def finish_session(self):
         """Called when all ROIs are done."""
@@ -996,24 +1051,21 @@ class RoiVerifierApp:
                 
                 # Plot 1x Colored
                 ax_col.imshow(img_z, cmap=cmap, norm=norm, extent=extent_zoom)
-                if self.show_contours_global and self.show_contours_channel[i]:
-                    ax_col.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='white', linewidth=1, linestyle=':')
+                ax_col.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='white', linewidth=1, linestyle=':')
                 
                 ax_col.set_title(cfg['name'])
                 ax_col.axis('off')
                 
                 # Plot 1x Gray
                 ax_gray.imshow(img_z, cmap='gray', norm=norm, extent=extent_zoom)
-                if self.show_contours_global and self.show_contours_channel[i]:
-                    ax_gray.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=1, linestyle=':')
+                ax_gray.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=1, linestyle=':')
                 
                 ax_gray.set_title(f"{cfg['name']} (Gray)")
                 ax_gray.axis('off')
                 
                 # Plot 2x Gray
                 ax_mid.imshow(img_m, cmap='gray', norm=norm, extent=extent_mid)
-                if self.show_contours_global and self.show_contours_channel[i]:
-                    ax_mid.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=1.5)
+                ax_mid.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=1.5)
                 
                 ax_mid.set_title(f"{cfg['name']} (2x)")
                 ax_mid.axis('off')
@@ -1039,19 +1091,17 @@ class RoiVerifierApp:
 
         self.ax_merge.set_title("Merged View (Additive)")
         self.ax_merge.imshow(merged_zoom_rgb, extent=extent_zoom)
-        if self.show_contours_global:
-            self.ax_merge.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=1.5)
+        self.ax_merge.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=1.5)
         self.ax_merge.set_xlim(c1_z, c2_z); self.ax_merge.set_ylim(r2_z, r1_z)
         self.ax_merge.axis('off')
 
         self.ax_context.set_title("Context View")
         self.ax_context.imshow(merged_ctx_rgb, extent=extent_ctx)
-        if self.show_contours_global:
-            self.ax_context.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=2)
+        self.ax_context.plot(contour_z[:, 1] + c1_z, contour_z[:, 0] + r1_z, c='yellow', linewidth=2)
         self.ax_context.set_xlim(c1_c, c2_c); self.ax_context.set_ylim(r2_c, r1_c)
         self.ax_context.axis('off')
 
-        self.canvas.draw()
+        self._update_contour_visibility()
         self.is_updating = False
         
         if recalc_roi:

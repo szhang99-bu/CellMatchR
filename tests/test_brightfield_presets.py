@@ -21,6 +21,7 @@ from cellmatchr.retraining import (TRAINING_PRESETS, _focus_training_pairs,
                                    _accepted_manual_additions,
                                    registered_microsam_foreground_threshold,
                                    validate_advanced)
+from cellmatchr.roi_editor import RoiEditorApp
 
 
 class BrightfieldCompatibilityTests(unittest.TestCase):
@@ -73,6 +74,46 @@ class BrightfieldCompatibilityTests(unittest.TestCase):
         self.assertEqual(int(filtered[4, 4]), 1)
         self.assertEqual(int(filtered[16, 16]), 0)
         self.assertGreater(_apply_margin("max_intensity", 100), 100)
+
+    def test_roi_editor_uses_paired_original_color_on_the_mask_grid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            run = project / "Segmentation"
+            sample = run / "stain"
+            sample.mkdir(parents=True)
+            color = np.arange(25 * 33 * 3, dtype=np.uint8).reshape(25, 33, 3)
+            gray = color[..., 1].astype(np.uint16)
+            tifffile.imwrite(sample / "stain_split_ch0.tif", gray)
+            tifffile.imwrite(sample / "stain_predict_original_ch0_test.tif", np.zeros_like(gray))
+            for converter in ("VSI_Converted_TIFF", "VSI_Converted_TIFF_other"):
+                export = project / converter / "exports"
+                export.mkdir(parents=True)
+                pixels = color if converter == "VSI_Converted_TIFF" else color[..., ::-1]
+                tifffile.imwrite(export / "stain.tif", pixels, photometric="rgb",
+                                 compression="deflate", tile=(16, 16))
+            source = project / "VSI_Converted_TIFF" / "exports" / "stain.tif"
+            (run / "_run_progress.json").write_text(json.dumps({
+                "run_identity": {"slide_signal_type": "brightfield"},
+                "input_sources": {"converter_run": "VSI_Converted_TIFF",
+                                  "samples": [{"sample_name": "stain", "path": "stain.tif"}],
+                                  "files": [{"path": "stain.tif", "size_bytes": source.stat().st_size}]},
+            }))
+
+            editor = RoiEditorApp(str(run), 0)
+            editor._scale = 4
+            displayed, rgb = editor._load_background(editor.samples[0], gray.shape)
+            self.assertTrue(rgb)
+            np.testing.assert_array_equal(displayed, color[::4, ::4])
+
+            editor._input_sources = {"converter_run": "VSI_Converted_TIFF"}
+            displayed, rgb = editor._load_background(editor.samples[0], gray.shape)
+            self.assertTrue(rgb)
+            np.testing.assert_array_equal(displayed, color[::4, ::4])
+
+            source.unlink()
+            displayed, rgb = editor._load_background(editor.samples[0], gray.shape)
+            self.assertFalse(rgb)
+            np.testing.assert_array_equal(displayed, gray[::4, ::4])
 
     def test_known_nissl_model_retains_its_training_preprocess(self):
         model_path = "/tmp/example-nissl-model"

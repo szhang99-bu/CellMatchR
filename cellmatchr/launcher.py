@@ -16,6 +16,9 @@ from uuid import uuid4
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext, messagebox, simpledialog
 
+from .batch_processing import (BATCH_FOLDER, automatic_batch_masks, batch_input_folder,
+                               batch_settings_issue, batch_target_problem, create_batch_folder,
+                               run_batch)
 from .config import (load_config, save_config, save_project_config,
                      load_project_config, CONFIG_PATH, DEFAULT_CONFIG, PROJECT_CONFIG_FILE)
 from .legacy_cellpose import segmentation_command
@@ -48,14 +51,18 @@ GREEN    = "#a6e3a1"
 YELLOW   = "#f9e2af"
 RED      = "#f38ba8"
 MUTED    = "#6c7086"
+SECONDARY_FG = "#a6adc8"
 ACTIVE   = "#45475a"
 ORANGE   = "#fab387"   # warm peach — "not started" state (less alarming than RED)
 
 FONT       = ("Segoe UI", 10)
 FONT_BOLD  = ("Segoe UI", 10, "bold")
 FONT_TITLE = ("Segoe UI", 15, "bold")
+FONT_CARD_TITLE = ("Segoe UI", 12, "bold")
 FONT_STEP  = ("Segoe UI", 11)
 FONT_MONO  = ("Courier New", 9)
+
+LOGO_PATH = Path(__file__).resolve().parent.parent / "CellMatchr_Logo.png"
 
 SEGMENTATION_BACKENDS = {"microsam": "Micro-SAM", "microsam2": MICROSAM2_DISPLAY,
                          "cellpose": "Cellpose", "stardist": "StarDist 2D"}
@@ -67,9 +74,9 @@ STEPS = [
     ("1", "Create Project"),
     ("2", "Input & Paths"),
     ("3", "Segmentation"),
-    ("4", "Validation"),
+    ("4", "Review Segmentation"),
     ("5", "Analysis"),
-    ("6", "Run Pipeline"),
+    ("6", "Large Batch Processing"),
     ("7", "Retrain Models"),
 ]
 
@@ -503,6 +510,70 @@ class _ROIMaskChoiceDialog(tk.Toplevel):
 # Main launcher
 # ---------------------------------------------------------------------------
 
+class _ChannelPreview(tk.Frame):
+    """Shared channel preview controls for Segmentation and Review Segmentation."""
+
+    _LOAD_TEXT = "⟳  Load Preview"
+
+    def __init__(self, parent, *, has_input, navigate, load, select=None):
+        super().__init__(parent, bg=CARD)
+        self.request = None
+        row = tk.Frame(self, bg=CARD)
+        row.pack(anchor="w", pady=(0, 6))
+        button_style = dict(bg=ACTIVE, font=FONT_BOLD, relief="flat", padx=8, pady=4)
+        if sys.platform != "darwin":
+            button_style.update(fg=FG, activebackground=ACTIVE, activeforeground=FG)
+        self.previous = tk.Button(row, text="◀", command=lambda: navigate(-1), **button_style)
+        self.previous.pack(side="left")
+        self.status = tk.Label(row, bg=CARD, font=FONT, width=28, wraplength=200)
+        self.status.pack(side="left", padx=10)
+        self.next = tk.Button(row, text="▶", command=lambda: navigate(1), **button_style)
+        self.next.pack(side="left")
+        self.load = tk.Button(row, command=load, **button_style)
+        self.load.pack(side="left", padx=(12, 0))
+        self.preview_image = tk.Label(self, bg=CARD)
+        self.preview_image.pack(anchor="w", pady=(0, 4))
+        if select is not None:
+            self.preview_image.config(cursor="hand2")
+            self.preview_image.bind("<Button-1>", lambda _: select())
+        self.progress = ttk.Progressbar(self, mode="indeterminate", length=380)
+        self.reset(has_input)
+
+    def reset(self, has_input):
+        self.finish_load(enabled=has_input and _PIL)
+        if not _PIL:
+            message = "Install Pillow to preview channels."
+        else:
+            message = "No preview" if has_input else "No input images"
+        self.show(message, color=SECONDARY_FG)
+
+    def start_load(self):
+        self.request = object()
+        self.load.config(state="disabled", text="Loading…")
+        self.status.config(text="Loading…", fg=ACCENT)
+        self.progress.pack(anchor="w", pady=(0, 6))
+        self.progress.start(12)
+        return self.request
+
+    def finish_load(self, *, enabled=True):
+        self.request = None
+        self.load.config(text=self._LOAD_TEXT, state="normal" if enabled else "disabled")
+        self.progress.stop()
+        self.progress.pack_forget()
+
+    def show(self, text, image="", *, color=FG, previous=False, next_channel=False):
+        self.status.config(text=text, fg=color)
+        self.preview_image.config(image=image)
+        self.previous.config(state="normal" if previous else "disabled")
+        self.next.config(state="normal" if next_channel else "disabled")
+
+    def show_channel(self, photos, index, *, indicator="", color=FG):
+        last = len(photos) - 1
+        label = f"Channel {index}" if last == 0 else f"Channel {index} of {last}"
+        self.show(label + indicator, photos[index], color=color, previous=index > 0,
+                  next_channel=index < last)
+
+
 class CellMatchrLauncher:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -520,6 +591,10 @@ class CellMatchrLauncher:
         # Live background processes (segmentation/analysis runs, validation
         # windows). Used to warn before navigating away mid-run.
         self._active_procs: list = []
+        self._batch_stop = None
+        self._batch_lock = threading.Lock()
+        self._batch_project = None
+        self._batch_targets = {}
 
         # per-step input-variant selections (populated on Run step)
         self._val_input_var: tk.StringVar | None = None
@@ -532,10 +607,6 @@ class CellMatchrLauncher:
         self._val_ch_names_frame: tk.Frame | None = None
         self._val_ch_images: list = []
         self._val_ch_index: int = 0
-        self._val_lbl: tk.Label | None = None
-        self._val_preview_img: tk.Label | None = None
-        self._val_prev_btn: tk.Button | None = None
-        self._val_next_btn: tk.Button | None = None
         self._val_run_btn: tk.Button | None = None
         self._val_spin_job: str | None = None
         self._review_btn: tk.Button | None = None
@@ -615,22 +686,15 @@ class CellMatchrLauncher:
 
     def _set_window_icon(self) -> None:
         """Use CellMatchr_Logo.png as the window / Dock / taskbar icon."""
-        logo_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "CellMatchr_Logo.png",
-        )
-        if not (_PIL and os.path.exists(logo_path)):
+        if not (_PIL and LOGO_PATH.is_file()):
             return
         try:
-            img = Image.open(logo_path)
-            if (
-                sys.platform.startswith("linux")
-                and self.root.tk.call("tk", "windowingsystem") == "x11"
-            ):
-                # X11 can reject the full-size logo as an oversized window icon.
-                img.thumbnail((128, 128), Image.LANCZOS)
-            # Keep a reference so Tk doesn't garbage-collect the image.
-            self._icon_img = ImageTk.PhotoImage(img)
+            with Image.open(LOGO_PATH) as img:
+                if (sys.platform.startswith("linux")
+                        and self.root.tk.call("tk", "windowingsystem") == "x11"):
+                    # X11 can reject the full-size logo as an oversized window icon.
+                    img.thumbnail((128, 128), Image.LANCZOS)
+                self._icon_img = ImageTk.PhotoImage(img)
             self.root.iconphoto(True, self._icon_img)
         except Exception:
             pass
@@ -647,13 +711,10 @@ class CellMatchrLauncher:
         self.sidebar.grid_propagate(False)
 
         # Logo
-        logo_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "CellMatchr_Logo.png",
-        )
-        if _PIL and os.path.exists(logo_path):
-            img = Image.open(logo_path).resize((120, 120), Image.LANCZOS)
-            self._logo_img = ImageTk.PhotoImage(img)
+        if _PIL and LOGO_PATH.is_file():
+            with Image.open(LOGO_PATH) as img:
+                img.thumbnail((120, 120), Image.LANCZOS)
+                self._logo_img = ImageTk.PhotoImage(img)
             tk.Label(self.sidebar, image=self._logo_img,
                      bg=SIDEBAR).pack(pady=(18, 4))
         else:
@@ -670,8 +731,8 @@ class CellMatchrLauncher:
         _b2 = _title_cv.bbox(_t2)
         _title_cv.config(width=_b2[2], height=max(_b1[3], _b2[3]))
         _title_cv.pack(pady=(0, 2))
-        tk.Label(self.sidebar, text="confocal image pipeline",
-                 bg=SIDEBAR, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 16))
+        tk.Label(self.sidebar, text="Microscopy image analysis",
+                 bg=SIDEBAR, fg=SECONDARY_FG, font=("Segoe UI", 8)).pack(pady=(0, 16))
 
         ttk.Separator(self.sidebar).pack(fill="x", padx=16, pady=4)
 
@@ -680,13 +741,14 @@ class CellMatchrLauncher:
         for i, (num, name) in enumerate(STEPS):
             btn = tk.Button(
                 self.sidebar,
-                text=f"  {num}   {name}",
+                text=name if num == "6" else f"  {num}   {name}",
                 bg=SIDEBAR, fg=MUTED, font=FONT_STEP,
                 anchor="w", relief="flat", bd=0,
                 activebackground=ACTIVE, activeforeground=FG,
                 command=lambda idx=i: self._show_step(idx),
             )
-            btn.pack(fill="x", padx=8, ipady=7, pady=2)
+            if num != "6":
+                btn.pack(fill="x", padx=8, ipady=7, pady=2)
             self._step_btns.append(btn)
 
         # ── Project info panel (bottom of sidebar) ───────────────────
@@ -705,6 +767,7 @@ class CellMatchrLauncher:
                  font=("Segoe UI", 7)).pack(side="bottom", anchor="w", padx=14, pady=(6, 0))
         tk.Label(self.sidebar, text="v0.1.0", bg=SIDEBAR, fg=MUTED,
                  font=("Segoe UI", 7)).pack(side="bottom", pady=4)
+        self._step_btns[5].pack(side="bottom", fill="x", padx=8, ipady=7, pady=(0, 10))
 
         # ── Scrollable content area ───────────────────────────────────
         content_outer = tk.Frame(self.root, bg=BG)
@@ -803,13 +866,18 @@ class CellMatchrLauncher:
     def _running_procs(self) -> list:
         """Return [(proc, label), …] for processes still alive; prune the rest."""
         live = []
-        for proc, label in list(self._active_procs):
+        for entry in list(self._active_procs):
             try:
-                if proc.poll() is None:
-                    live.append((proc, label))
+                if entry[0].poll() is None:
+                    live.append(entry)
+                    continue
             except Exception:
                 pass
-        self._active_procs = live
+            # A batch worker may register the next subprocess during this scan.
+            try:
+                self._active_procs.remove(entry)
+            except ValueError:
+                pass
         return live
 
     def _is_running(self, label: str) -> bool:
@@ -818,6 +886,9 @@ class CellMatchrLauncher:
 
     def _terminate_running(self) -> None:
         """Terminate (then kill) every tracked process that is still alive."""
+        with self._batch_lock:
+            if self._batch_stop is not None:
+                self._batch_stop.set()
         for proc, _ in self._running_procs():
             try:
                 proc.terminate()
@@ -895,9 +966,12 @@ class CellMatchrLauncher:
         Returns True if it is safe to navigate (nothing running, or the user
         confirmed twice — in which case the process is terminated)."""
         running = self._running_procs()
-        if not running:
+        active = {label for _, label in running}
+        if self._batch_stop is not None:
+            active.add("Large Batch Processing")
+        if not active:
             return True
-        labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
+        labels = "\n      • ".join(sorted(active))
         first = self._warn_yesno(
             "PROCESS IN PROGRESS",
             "A process is currently running:\n\n"
@@ -929,8 +1003,11 @@ class CellMatchrLauncher:
             wizard.close()
             return
         running = self._running_procs()
-        if running:
-            labels = "\n      • ".join(sorted({lbl for _, lbl in running}))
+        active = {label for _, label in running}
+        if self._batch_stop is not None:
+            active.add("Large Batch Processing")
+        if active:
+            labels = "\n      • ".join(sorted(active))
             if not self._warn_yesno(
                 "PROCESS IN PROGRESS",
                 "A process is currently running:\n\n"
@@ -979,7 +1056,7 @@ class CellMatchrLauncher:
             self._build_segmentation_step,
             self._build_validation_step,
             self._build_analysis_step,
-            self._build_run_step,
+            self._build_batch_step,
             self._build_retraining_step,
         ]
         builders[idx](self.content_frame)
@@ -1018,24 +1095,29 @@ class CellMatchrLauncher:
     # UI helpers
     # ------------------------------------------------------------------
 
-    def _section_header(self, parent, title: str, subtitle: str = "") -> None:
+    def _section_header(self, parent, step: int, subtitle: str, *, optional=False,
+                        numbered=True) -> None:
+        number, name = STEPS[step - 1]
+        title = f"Step {number} — {name}" if numbered else name
+        if optional:
+            title += " (optional)"
         tk.Label(parent, text=title, bg=BG, fg=FG,
                  font=FONT_TITLE, anchor="w").pack(
             fill="x", padx=32, pady=(32, 4)
         )
         if subtitle:
-            tk.Label(parent, text=subtitle, bg=BG, fg=MUTED,
+            tk.Label(parent, text=subtitle, bg=BG, fg=SECONDARY_FG,
                      font=FONT, anchor="w", wraplength=700).pack(
                 fill="x", padx=32, pady=(0, 12)
             )
         ttk.Separator(parent).pack(fill="x", padx=32, pady=(0, 20))
 
-    def _card(self, parent, title: str = "", *, title_font=FONT_BOLD) -> tk.Frame:
+    def _card(self, parent, title: str = "") -> tk.Frame:
         outer = tk.Frame(parent, bg=CARD, padx=20, pady=14)
         outer.pack(fill="x", padx=32, pady=6)
         if title:
             tk.Label(outer, text=title, bg=CARD, fg=ACCENT,
-                     font=title_font).pack(anchor="w", pady=(0, 8))
+                     font=FONT_CARD_TITLE).pack(anchor="w", pady=(0, 8))
         return outer
 
     def _form_grid(self, card: tk.Frame, rows: list,
@@ -1925,8 +2007,7 @@ class CellMatchrLauncher:
     def _build_project_step(self, parent) -> None:
         self._project_mode = "new"
         self._section_header(
-            parent,
-            "Step 1 — Create Project",
+            parent, 1,
             "Start a new project or reload an existing one.",
         )
 
@@ -2148,9 +2229,8 @@ class CellMatchrLauncher:
 
     def _build_input_step(self, parent) -> None:
         self._section_header(
-            parent,
-            "Step 2 — Input & Paths",
-            "Select your data source and (if needed) convert VSI files to TIF.",
+            parent, 2,
+            "Select your data source and convert slide scans to TIFF if needed.",
         )
 
         # ── Input type radio ─────────────────────────────────────────
@@ -2430,8 +2510,7 @@ class CellMatchrLauncher:
         if is_brightfield:
             self._vars["seg_channels"].set("0")
         self._section_header(
-            parent,
-            "Step 3 — Segmentation",
+            parent, 3,
             "Choose a model and segment cells in your images.",
         )
 
@@ -2517,19 +2596,10 @@ class CellMatchrLauncher:
                     resume_btn.config(state="normal" if has else "disabled")
                 # reset the channel preview for the newly chosen source
                 self._ch_images = []
-                self._ch_photo_refs = []
                 self._ch_index = 0
-                try:
-                    self._ch_preview_img.config(image="")
-                    self._ch_lbl.config(
-                        text="Press 'Load Preview' to load channels." if has
-                        else "No images in this output",
-                        fg=ACCENT if has else MUTED)
-                    self._ch_load_btn.config(state="normal" if (has and _PIL) else "disabled")
-                    self._ch_prev_btn.config(state="disabled")
-                    self._ch_next_btn.config(state="disabled")
-                except (tk.TclError, AttributeError):
-                    pass
+                preview = getattr(self, "_ch_preview", None)
+                if preview is not None and preview.winfo_exists():
+                    preview.reset(has)
             self._seg_src_var.trace_add("write", _seg_src_changed)
 
             def _toggle_seg_src(lbl=_ovr_lbl):
@@ -2544,58 +2614,23 @@ class CellMatchrLauncher:
                 _toggle_seg_src()
 
         # ── Channel preview + picker ─────────────────────────────────
-        ch_card = self._card(parent, "Channel Preview  (click to toggle prediction)")
+        ch_card = self._card(parent, "Channel Preview")
         self._ch_images: list = []
-        self._ch_photo_refs: list = []
         self._ch_index: int = 0
         self._ch_selected: set = set()
 
-        nav_row = tk.Frame(ch_card, bg=CARD)
-        nav_row.pack(anchor="w", pady=(0, 6))
-
-        self._ch_prev_btn = tk.Button(
-            nav_row, text="◀", command=lambda: self._ch_navigate(-1),
-            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat", padx=8, pady=4,
-            state="disabled",
+        self._ch_preview = _ChannelPreview(
+            ch_card, has_input=input_ok, navigate=self._ch_navigate,
+            load=self._trigger_ch_preview_load, select=self._ch_toggle_current,
         )
-        self._ch_prev_btn.pack(side="left")
-
-        self._ch_lbl = tk.Label(nav_row, text="No preview", bg=CARD, fg=MUTED, font=FONT, width=28)
-        self._ch_lbl.pack(side="left", padx=10)
-
-        self._ch_next_btn = tk.Button(
-            nav_row, text="▶", command=lambda: self._ch_navigate(1),
-            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat", padx=8, pady=4,
-            state="disabled",
-        )
-        self._ch_next_btn.pack(side="left")
-
-        self._ch_load_btn = tk.Button(
-            nav_row, text="⟳  Load Preview",
-            command=self._trigger_ch_preview_load,
-            bg=ACTIVE, fg=ACCENT, font=FONT_BOLD, relief="flat", padx=10, pady=4,
-            activeforeground=FG,
-            state="normal" if (input_ok and _PIL) else "disabled",
-        )
-        self._ch_load_btn.pack(side="left", padx=(12, 0))
-
-        self._ch_preview_img = tk.Label(ch_card, bg=CARD, cursor="hand2")
-        self._ch_preview_img.pack(anchor="w", pady=(0, 4))
-        self._ch_preview_img.bind("<Button-1>", lambda _: self._ch_toggle_current())
-
-        self._ch_load_progress = ttk.Progressbar(ch_card, mode="indeterminate", length=380)
-        # Hidden by default — shown only while loading
+        self._ch_preview.pack(anchor="w")
 
         self._ch_field_lbl = tk.Label(
             ch_card,
-            text="Channels to predict (click image above, or type manually):",
-            bg=CARD, fg=MUTED, font=FONT,
+            text="Click the preview to add or remove this channel from prediction.",
+            bg=CARD, fg=SECONDARY_FG, font=FONT,
         )
         self._ch_field_lbl.pack(anchor="w")
-
-        if not _PIL:
-            tk.Label(ch_card, text="Install Pillow (pip install Pillow) to enable channel preview.",
-                     bg=CARD, fg=YELLOW, font=FONT).pack(anchor="w", pady=4)
 
         # ── Channels field ───────────────────────────────────────────
         model_card = self._card(parent, "Segmentation Settings")
@@ -3372,10 +3407,8 @@ class CellMatchrLauncher:
             bool(self._vars["seg_skip_subdirs"].get()),
         )
 
-    def _load_channel_previews(self, callback=None) -> None:
+    def _load_channel_previews(self, callback) -> None:
         """Run in daemon thread. Posts result back to main thread via callback."""
-        if callback is None:
-            callback = self._set_channel_previews
         if not _PIL:
             return
         preview_input = self._find_first_image()
@@ -3598,52 +3631,39 @@ class CellMatchrLauncher:
 
     def _trigger_ch_preview_load(self) -> None:
         """Button handler for Step 3 — load channel preview in background."""
-        if hasattr(self, "_ch_load_btn") and self._ch_load_btn:
-            self._ch_load_btn.config(state="disabled", text="  Loading…")
-        self._ch_lbl.config(text="Loading…", fg=ACCENT)
-        if hasattr(self, "_ch_load_progress"):
-            self._ch_load_progress.pack(anchor="w", pady=(0, 6))
-            self._ch_load_progress.start(12)
-        threading.Thread(target=self._load_channel_previews, daemon=True).start()
+        self._start_preview_load(self._ch_preview, self._set_channel_previews)
+
+    def _start_preview_load(self, preview, on_loaded) -> None:
+        request = preview.start_load()
+
+        def receive(photos, message):
+            if preview.winfo_exists() and preview.request is request:
+                preview.finish_load()
+                on_loaded(photos, message)
+
+        threading.Thread(target=self._load_channel_previews, args=(receive,), daemon=True).start()
 
     def _set_channel_previews(self, photos: list, fname: str = "") -> None:
         self._ch_images = photos
-        self._ch_photo_refs = photos  # keep refs alive
         self._ch_index = 0
-        if hasattr(self, "_ch_load_btn") and self._ch_load_btn:
-            try:
-                self._ch_load_btn.config(state="normal", text="⟳  Load Preview")
-            except tk.TclError:
-                pass
-        if hasattr(self, "_ch_load_progress"):
-            try:
-                self._ch_load_progress.stop()
-                self._ch_load_progress.pack_forget()
-            except tk.TclError:
-                pass
         if not photos:
-            self._ch_lbl.config(text=fname or "No preview available", fg=MUTED)
+            self._ch_preview.show(fname or "No preview available", color=SECONDARY_FG)
             return
-        self._show_channel(0)
         # Restore any previously selected channels from the text field
         raw = self._vars["seg_channels"].get().strip()
         self._ch_selected = {int(x.strip()) for x in raw.split(",")
                              if x.strip().isdigit()}
+        self._show_channel(0)
 
     def _show_channel(self, idx: int) -> None:
         if not self._ch_images:
             return
         idx = max(0, min(idx, len(self._ch_images) - 1))
         self._ch_index = idx
-        n = len(self._ch_images)
-        selected = "  ✔ selected" if idx in self._ch_selected else "  (click to add)"
-        self._ch_lbl.config(
-            text=f"Channel {idx} of {n - 1}{selected}",
-            fg=GREEN if idx in self._ch_selected else FG,
-        )
-        self._ch_preview_img.config(image=self._ch_images[idx])
-        self._ch_prev_btn.config(state="normal" if idx > 0 else "disabled")
-        self._ch_next_btn.config(state="normal" if idx < n - 1 else "disabled")
+        selected = idx in self._ch_selected
+        self._ch_preview.show_channel(self._ch_images, idx,
+                                      indicator="  ✔ selected" if selected else "",
+                                      color=GREEN if selected else FG)
 
     def _ch_navigate(self, delta: int) -> None:
         self._show_channel(self._ch_index + delta)
@@ -3816,31 +3836,15 @@ class CellMatchrLauncher:
     # ------------------------------------------------------------------
 
     def _trigger_val_preview_load(self) -> None:
-        """Button handler — disable the button, show spinner, load in background."""
-        button = self._val_load_btn
-        button.config(state="disabled", text="Loading…")
-        self._val_lbl.config(text="Loading…", fg=ACCENT)
-
-        def receive(photos, message):
-            if button.winfo_exists():
-                self._set_val_channel_previews(photos, message)
-
-        threading.Thread(
-            target=self._load_channel_previews, args=(receive,),
-            daemon=True,
-        ).start()
+        self._start_preview_load(self._val_preview, self._set_val_channel_previews)
 
     def _set_val_channel_previews(self, photos: list, fname: str = "") -> None:
         """Called on the main thread after background channel loading."""
         self._val_ch_images = photos
-        self._val_load_btn.config(state="normal", text="Reload Preview" if photos else "Load Preview")
         if photos:
             self._show_val_channel(self._selected_validation_channel())
         else:
-            self._val_lbl.config(text=fname or "No preview available.", fg=MUTED)
-            self._val_preview_img.config(image="")
-            self._val_prev_btn.config(state="disabled")
-            self._val_next_btn.config(state="disabled")
+            self._val_preview.show(fname or "No preview available", color=SECONDARY_FG)
 
     def _selected_validation_channel(self) -> int | None:
         value = self._val_channel_var.get().removeprefix("Channel ")
@@ -3851,17 +3855,15 @@ class CellMatchrLauncher:
             return
         n = len(self._val_ch_images)
         if idx is not None and not 0 <= idx < n:
-            self._val_lbl.config(text=f"Channel {idx} is absent from the preview image.", fg=MUTED)
-            self._val_preview_img.config(image="")
             self._val_ch_index = n
-            self._val_prev_btn.config(state="normal")
-            self._val_next_btn.config(state="disabled")
+            self._val_preview.show(f"Channel {idx} unavailable in this image", color=SECONDARY_FG,
+                                   previous=True)
             return
         self._val_ch_index = idx = 0 if idx is None else idx
-        self._val_lbl.config(text=f"Previewing Channel {idx}", fg=FG)
-        self._val_preview_img.config(image=self._val_ch_images[idx])
-        self._val_prev_btn.config(state="normal" if idx > 0 else "disabled")
-        self._val_next_btn.config(state="normal" if idx < n - 1 else "disabled")
+        selected = idx == self._selected_validation_channel()
+        self._val_preview.show_channel(self._val_ch_images, idx,
+                                       indicator="  ✔ selected" if selected else "",
+                                       color=GREEN if selected else FG)
 
     def _val_ch_navigate(self, delta: int) -> None:
         self._show_val_channel(self._val_ch_index + delta)
@@ -4500,10 +4502,10 @@ class CellMatchrLauncher:
 
     def _build_validation_step(self, parent) -> None:
         self._section_header(
-            parent,
-            "Step 4 — Review Segmentation (optional)",
+            parent, 4,
             "Choose a channel, then review whole images, individual objects, or both. "
             "Analysis uses your saved corrections and review decisions automatically.",
+            optional=True,
         )
 
         channels_card = self._card(parent, "Channel to Validate")
@@ -4537,36 +4539,13 @@ class CellMatchrLauncher:
         self._val_ch_images = []
         self._val_ch_index = 0
         has_input = bool(self.config.get("input_root_folder", "").strip())
-        preview_row = tk.Frame(channels_card, bg=CARD)
-        preview_row.pack(anchor="w", pady=(12, 4))
-        self._val_load_btn = ttk.Button(
-            preview_row, text="Load Preview", command=self._trigger_val_preview_load,
-            state="normal" if has_input and _PIL else "disabled",
+        self._val_preview = _ChannelPreview(
+            channels_card, has_input=has_input, navigate=self._val_ch_navigate,
+            load=self._trigger_val_preview_load,
         )
-        self._val_load_btn.pack(side="left")
-        self._val_prev_btn = ttk.Button(
-            preview_row, text="◀", command=lambda: self._val_ch_navigate(-1),
-            width=3, state="disabled",
-        )
-        self._val_prev_btn.pack(side="left", padx=(10, 2))
-        self._val_next_btn = ttk.Button(
-            preview_row, text="▶", command=lambda: self._val_ch_navigate(1),
-            width=3, state="disabled",
-        )
-        self._val_next_btn.pack(side="left")
-        preview_hint = ("Preview the first input image." if has_input
-                        else "Set an input folder in Step 2 to preview channels.")
-        if not _PIL:
-            preview_hint = "Install Pillow to enable channel previews."
-        self._val_lbl = tk.Label(preview_row, text=preview_hint, bg=CARD, fg=MUTED,
-                                 font=FONT, justify="left", wraplength=420)
-        self._val_lbl.pack(side="left", padx=8)
-        self._val_preview_img = tk.Label(channels_card, bg=CARD)
-        self._val_preview_img.pack(anchor="w")
+        self._val_preview.pack(anchor="w", pady=(12, 0))
 
-        bulk_card = self._card(parent)
-        tk.Label(bulk_card, text="Bulk Review", bg=CARD, fg=ACCENT,
-                 font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
+        bulk_card = self._card(parent, "Bulk Review")
         tk.Label(
             bulk_card,
             text="Scan whole images quickly. Paint in missed cells and remove obvious false "
@@ -4591,9 +4570,7 @@ class CellMatchrLauncher:
             bg=CARD, fg=MUTED, selectcolor=CARD, activebackground=CARD, font=FONT,
         ).pack(anchor="w", pady=(6, 0))
 
-        individual_card = self._card(parent)
-        tk.Label(individual_card, text="Individual Object Review", bg=CARD, fg=ACCENT,
-                 font=FONT_TITLE).pack(anchor="w", pady=(0, 6))
+        individual_card = self._card(parent, "Individual Object Review")
         tk.Label(
             individual_card,
             text="Complete Bulk Review and save your corrections before starting Individual Object Review.",
@@ -4647,6 +4624,7 @@ class CellMatchrLauncher:
         def select_channel(*_):
             selected = self._selected_validation_channel()
             if selected is None:
+                self._show_val_channel(None)
                 return
             pattern = f"*_predict_original_ch{selected}*.tif"
             self.config["val_mask_pattern"] = pattern
@@ -4668,7 +4646,7 @@ class CellMatchrLauncher:
                 channel_help.pack_forget()
             else:
                 channel_help.config(text="No predictions in this run. Run segmentation in Step 3 first.")
-                channel_help.pack(anchor="w", pady=(5, 0), before=preview_row)
+                channel_help.pack(anchor="w", pady=(5, 0), before=self._val_preview)
             if self._val_ch_names_frame.winfo_manager():
                 self._build_val_ch_name_rows(self._detect_all_channel_labels())
             self._refresh_val_status()
@@ -4683,9 +4661,9 @@ class CellMatchrLauncher:
 
     def _build_analysis_step(self, parent) -> None:
         self._section_header(
-            parent,
-            "Step 5 — Analysis (optional)",
+            parent, 5,
             "Measure cells in one channel or compare detections across two channels.",
+            optional=True,
         )
 
         def details(card, title, on_open=None):
@@ -4712,7 +4690,7 @@ class CellMatchrLauncher:
         if not selected_run:
             self._sync_roi_mask_to_input()
 
-        input_card = self._card(parent, "Input", title_font=FONT_TITLE)
+        input_card = self._card(parent, "Input")
         source_row = tk.Frame(input_card, bg=CARD)
         source_row.pack(fill="x")
         tk.Label(source_row, text="Segmentation run", bg=CARD, fg=FG,
@@ -4760,7 +4738,7 @@ class CellMatchrLauncher:
         ttk.Button(roi_options, text="Review ROI mask matches",
                    command=review_roi_matches).pack(anchor="w", pady=(6, 0))
 
-        measurement_card = self._card(parent, "Measurements", title_font=FONT_TITLE)
+        measurement_card = self._card(parent, "Measurements")
         primary_row = tk.Frame(measurement_card, bg=CARD)
         primary_row.pack(fill="x")
         primary_row.columnconfigure(0, minsize=190)
@@ -4865,7 +4843,7 @@ class CellMatchrLauncher:
             show_colocalization()
             run_button.config(state="normal" if run else "disabled")
 
-        run_card = self._card(parent, "Run Analysis", title_font=FONT_TITLE)
+        run_card = self._card(parent, "Run Analysis")
         tk.Label(
             run_card, text="Saves an Excel summary and a CSV table for each image.",
             bg=CARD, fg=FG, font=FONT, wraplength=600, justify="left",
@@ -4894,9 +4872,10 @@ class CellMatchrLauncher:
             bg=CARD, fg=FG, selectcolor=CARD, activebackground=CARD, font=FONT,
         ).pack(anchor="w", pady=(4, 0))
 
-        log_details = details(run_card, "Analysis log")
+        tk.Label(run_card, text="Analysis log", bg=CARD, fg=FG, font=FONT_BOLD).pack(
+            anchor="w", pady=(10, 4))
         self._ana_log = scrolledtext.ScrolledText(
-            log_details, bg="#0d0d15", fg="#a6e3a1",
+            run_card, bg="#0d0d15", fg="#a6e3a1",
             font=FONT_MONO, height=10, relief="flat", wrap="word",
             state="disabled",
         )
@@ -5355,122 +5334,327 @@ class CellMatchrLauncher:
             ))
         return False
 
-    def _build_run_step(self, parent) -> None:
+    def _build_batch_step(self, parent) -> None:
         self._section_header(
-            parent,
-            "Step 6 — Run Pipeline",
-            "Review your configuration, then launch each stage individually or run all at once.",
+            parent, 6, "Apply this project's segmentation and analysis settings to several image folders.",
+            numbered=False,
         )
+        project = self.config.get("project_output_folder", "").strip()
+        if project != self._batch_project:
+            self._batch_project = project
+            self._batch_targets.clear()
+        targets = self._batch_targets
+        output_base = (Path(project) / BATCH_FOLDER).resolve() if project else None
+        settings_issue = batch_settings_issue(self.config)
 
-        cfg = self.config
-
-        # ── Configuration Summary ──────────────────────────────────────
-        summary_card = self._card(parent, "Configuration Summary")
-        proj  = cfg.get("project_output_folder") or "—"
-        sam2_brightfield = (cfg.get("input_type") == "vsi" and
-                            cfg.get("slide_signal_type") == "brightfield")
-        analysis_channels = f"Channel {cfg.get('ana_red_channel')}"
-        if cfg.get("ana_coloc_enabled") and not sam2_brightfield:
-            analysis_channels += (f" ↔ Channel {cfg.get('ana_pv_channel')}"
-                                  f"  IoU ≥ {cfg.get('ana_iou_threshold')}")
-        lines = [
-            f"Project:         {cfg.get('project_name') or '—'}",
-            f"Output folder:   {proj}",
-            f"Input root:      {cfg.get('input_root_folder') or '—'}",
-            f"Channels:        {cfg.get('seg_channels', '?')}",
-            (f"Backend:         {MICROSAM2_DISPLAY}  {cfg.get('seg_microsam2_model') or MICROSAM2_DEFAULT_MODEL}"
-             f"  /  {'Original RGB' if sam2_brightfield else 'Original channel'}"
-             if str(cfg.get('seg_backend')).lower() == 'microsam2'
-             else f"Backend:         StarDist 2D  /  {cfg.get('seg_preprocess_mode', '?')}"
-             if str(cfg.get('seg_backend', 'microsam')).lower() == 'stardist'
-             else f"Backend:         Cellpose {cfg.get('seg_cellpose_variant') or 'cpsam'}  (diameter "
-             f"{cfg.get('seg_cellpose_diameter') or 'auto'})  /  {cfg.get('seg_preprocess_mode', '?')}"
-             if str(cfg.get('seg_backend', 'microsam')).lower() == 'cellpose'
-             else f"Backend:         Micro-SAM  {cfg.get('seg_model_type', '?')}  /  {cfg.get('seg_preprocess_mode', '?')}"),
-            f"Object size:     {cfg.get('seg_min_object_size')} – {cfg.get('seg_max_object_size')} px",
-            "Review data:     Uses saved corrections and object decisions",
-            f"Measurements:    {analysis_channels}",
-        ]
-        txt = tk.Text(summary_card, bg=BG, fg=FG, font=FONT_MONO,
-                      height=len(lines) + 1, relief="flat", state="normal", wrap="none")
-        for ln in lines:
-            txt.insert("end", ln + "\n")
-        txt.config(state="disabled")
-        txt.pack(fill="x")
-
-        # ── Pipeline Steps ─────────────────────────────────────────────
-        steps_card = self._card(parent, "Pipeline Steps")
-
-        step_defs = [
-            ("seg", "1. Segmentation",
-             "Predict cell masks on all images using micro-sam.",
-             ACCENT, self._run_segmentation),
-            ("val", "2. Review Segmentation (optional)",
-             "Review whole images, individual objects, or both.",
-             YELLOW, lambda: self._show_step(3)),
-            ("ana", "3. Analysis",
-             "Measure cells and save output tables.",
-             GREEN, self._run_analysis),
-        ]
-
-        first = True
-        for key, label, desc, color, cmd in step_defs:
-            if not first:
-                ttk.Separator(steps_card, orient="horizontal").pack(fill="x", pady=6)
-            first = False
-
-            row_frame = tk.Frame(steps_card, bg=CARD)
-            row_frame.pack(fill="x", pady=2)
-
-            done = self._step_is_done(key)
-            sym = "✔" if done else "–" if key == "val" else "✗"
-            sym_color = GREEN if done else MUTED if key == "val" else RED
-
-            tk.Label(row_frame, text=sym, bg=CARD, fg=sym_color,
-                     font=("Segoe UI", 13, "bold"), width=3).pack(side="left", padx=(0, 6))
-
-            info_frame = tk.Frame(row_frame, bg=CARD)
-            info_frame.pack(side="left", fill="x", expand=True)
-            tk.Label(info_frame, text=label, bg=CARD, fg=FG,
-                     font=FONT_BOLD, anchor="w").pack(anchor="w")
-            tk.Label(info_frame, text=desc,  bg=CARD, fg=MUTED,
-                     font=FONT, anchor="w").pack(anchor="w")
-
-            btn_text = "Go to Step 4" if key == "val" else "▶  Run"
-            tk.Button(
-                row_frame, text=btn_text,
-                command=cmd, bg=color, fg="#1e1e2e",
-                font=FONT_BOLD, relief="flat", padx=12, pady=6,
-            ).pack(side="right", padx=4)
-
-        # ── Run All ────────────────────────────────────────────────────
-        run_all_card = self._card(parent, "Run All")
+        warning_card = self._card(parent)
         tk.Label(
-            run_all_card,
-            text="Runs segmentation if needed. You can include analysis for the run you choose.",
-            bg=CARD, fg=MUTED, font=FONT, wraplength=660,
-        ).pack(anchor="w", pady=(0, 8))
-        tk.Checkbutton(
-            run_all_card, text="Include analysis in Run All",
-            variable=self._vars["ana_enabled"], bg=CARD, fg=FG, selectcolor=CARD,
-            activebackground=CARD, font=FONT,
-        ).pack(anchor="w", pady=(0, 8))
-        tk.Button(
-            run_all_card, text="▶▶  Run All",
-            command=self._run_all,
-            bg=RED, fg="white", font=FONT_BOLD, relief="flat",
-            padx=18, pady=10,
+            warning_card, text="⚠  Check that your filters fit every folder", fg=YELLOW,
+            bg=CARD, font=FONT_CARD_TITLE,
+        ).pack(anchor="w", pady=(0, 6))
+        tk.Label(
+            warning_card,
+            text="Stain, tissue, microscope settings, and magnification can change cell size "
+                 "and intensity. Test the current model and filters on representative images "
+                 "from each group before running a large batch.",
+            bg=CARD, fg=FG, font=FONT, wraplength=600, justify="left",
         ).pack(anchor="w")
 
-        # ── Pipeline Log ───────────────────────────────────────────────
-        log_card = self._card(parent, "Pipeline Log")
-        self._log_box = scrolledtext.ScrolledText(
-            log_card, bg="#0d0d15", fg="#a6e3a1",
-            font=FONT_MONO, height=22, relief="flat", wrap="word",
+        settings_card = self._card(parent, "Settings from this project")
+        if settings_issue:
+            step, detail = settings_issue
+            tk.Label(settings_card, text=detail, fg=YELLOW, bg=CARD, font=FONT,
+                     wraplength=600, justify="left").pack(anchor="w")
+            ttk.Button(settings_card, text=f"Go to Step {step + 1}",
+                       command=lambda: self._show_step(step)).pack(anchor="w", pady=(6, 0))
+        else:
+            cfg = self.config
+            backend = cfg.get("seg_backend")
+            model = {
+                "microsam": cfg.get("seg_model_type"),
+                "microsam2": cfg.get("seg_microsam2_model"),
+                "cellpose": cfg.get("seg_cellpose_variant"),
+                "stardist": "2D versatile fluorescence",
+            }[backend]
+            model_path = cfg.get(SEGMENTATION_CHECKPOINT_KEYS.get(backend, ""), "")
+            if model_path:
+                model = os.path.basename(os.path.normpath(model_path))
+            analysis = f"Measure channel {0 if is_brightfield(cfg) else cfg.get('ana_red_channel')}"
+            if (not is_brightfield(cfg) and cfg.get("ana_coloc_enabled")
+                    and len({part.strip() for part in cfg["seg_channels"].split(",") if part.strip()}) > 1):
+                analysis += (f" · compare with channel {cfg.get('ana_pv_channel')}"
+                             f" · minimum IoU {cfg.get('ana_iou_threshold')}")
+            text = (
+                f"{cfg.get('project_name') or Path(project).name}\n"
+                f"{SEGMENTATION_BACKENDS[backend]} · {model} · predict channel(s) {cfg['seg_channels']}\n"
+                f"Size {cfg.get('seg_min_object_size')}–{cfg.get('seg_max_object_size')} px"
+                f" · Intensity {cfg.get('seg_raw_mean_min')}–{cfg.get('seg_raw_mean_max')}\n"
+                f"{analysis}"
+            )
+            if cfg.get("seg_per_channel_filters_enabled"):
+                text += "\nChannel-specific filters are enabled."
+            tk.Label(settings_card, text=text, bg=CARD, fg=FG, font=FONT,
+                     wraplength=600, justify="left").pack(anchor="w")
+
+        folders_card = self._card(parent, "Image folders")
+        tk.Label(
+            folders_card,
+            text=("Add folders of exported slide TIFFs. Set ROI masks for each folder as needed."
+                  if self.config.get("input_type") == "vsi" else
+                  "Add folders that use the template project's input format and channel order."),
+            bg=CARD, fg=FG, font=FONT, wraplength=600, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+        table = tk.Frame(folders_card, bg=CARD)
+        table.pack(fill="x", pady=(0, 6))
+        table.columnconfigure(0, weight=1)
+        tree = ttk.Treeview(table, show="headings", columns=("folder", "masks", "status"), height=6)
+        for key, label, width in (("folder", "Image folder", 330), ("masks", "ROI masks", 120),
+                                  ("status", "Status", 110)):
+            tree.heading(key, text=label)
+            tree.column(key, width=width, minwidth=85, stretch=key == "folder")
+        tree.grid(row=0, column=0, sticky="ew")
+        scroll_y = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x = ttk.Scrollbar(table, orient="horizontal", command=tree.xview)
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        tree.config(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+
+        def redraw():
+            tree.delete(*tree.get_children())
+            for folder, masks in targets.items():
+                tree.insert("", "end", iid=str(folder),
+                            values=(str(folder), masks.name if masks else "Whole image", "Ready"))
+            sync_buttons()
+
+        def add_folders(folders):
+            skipped = []
+            for value in folders:
+                try:
+                    folder = batch_input_folder(value, self.config)
+                    masks = automatic_batch_masks(folder)
+                    problem = batch_target_problem(folder, masks, self.config)
+                except OSError as exc:
+                    skipped.append((Path(value), f"Could not read input folders. {exc}"))
+                    continue
+                if output_base and (folder == output_base or folder in output_base.parents
+                                    or output_base in folder.parents):
+                    problem = "Choose an image folder outside the batch output directory."
+                if not problem and not self.config.get("seg_skip_subdirs"):
+                    if any(other != folder and (folder in other.parents or other in folder.parents)
+                           for other in targets):
+                        problem = "This folder overlaps an image folder already queued."
+                if problem:
+                    skipped.append((folder, problem))
+                else:
+                    targets.setdefault(folder, masks)
+            redraw()
+            if skipped:
+                detail = f"{skipped[0][0].name} · {skipped[0][1]}"
+                if len(skipped) > 1:
+                    detail = f"{len(skipped)} folders skipped. {detail}"
+                queue_status.config(text=detail, fg=YELLOW)
+            else:
+                queue_status.config(text=f"{len(targets)} folder(s) queued.", fg=FG)
+
+        def add_one():
+            folder = filedialog.askdirectory(parent=self.root, title="Choose an image folder")
+            if folder:
+                add_folders([folder])
+
+        def add_subfolders():
+            folder = filedialog.askdirectory(parent=self.root, title="Choose a parent of image folders")
+            if folder:
+                try:
+                    children = sorted(p for p in Path(folder).iterdir()
+                                      if p.is_dir() and not p.name.startswith("."))
+                    if children:
+                        add_folders(children)
+                    else:
+                        queue_status.config(text="This folder has no subfolders.", fg=YELLOW)
+                except OSError as exc:
+                    queue_status.config(text=str(exc), fg=YELLOW)
+
+        def remove_selected():
+            for key in tree.selection():
+                targets.pop(Path(key), None)
+            redraw()
+            queue_status.config(text=f"{len(targets)} folder(s) queued.", fg=FG)
+
+        def set_masks():
+            keys = tree.selection()
+            if len(keys) != 1:
+                return
+            mask_folder = filedialog.askdirectory(parent=self.root, title="Choose ROI masks for this folder")
+            if mask_folder:
+                folder = Path(keys[0])
+                masks = Path(mask_folder).resolve()
+                problem = batch_target_problem(folder, masks, self.config)
+                if problem:
+                    queue_status.config(text=problem, fg=YELLOW)
+                    return
+                targets[folder] = masks
+                redraw()
+                queue_status.config(text=f"Using ROI masks from {masks}.", fg=FG)
+
+        def whole_image():
+            for key in tree.selection():
+                targets[Path(key)] = None
+            redraw()
+            queue_status.config(text="Selected folders will use whole-image analysis.", fg=FG)
+
+        toolbar = tk.Frame(folders_card, bg=CARD)
+        toolbar.pack(anchor="w")
+        add_btn = ttk.Button(toolbar, text="Add Folder…", command=add_one)
+        sub_btn = ttk.Button(toolbar, text="Add Subfolders…", command=add_subfolders)
+        remove_btn = ttk.Button(toolbar, text="Remove", command=remove_selected)
+        for button in (add_btn, sub_btn, remove_btn):
+            button.pack(side="left", padx=(0, 6))
+        mask_row = tk.Frame(folders_card, bg=CARD)
+        mask_row.pack(anchor="w", pady=(4, 0))
+        mask_btn = ttk.Button(mask_row, text="Set ROI Masks…", command=set_masks)
+        whole_btn = ttk.Button(mask_row, text="Use Whole Image", command=whole_image)
+        for button in (mask_btn, whole_btn):
+            button.pack(side="left", padx=(0, 6))
+        queue_status = tk.Label(folders_card, bg=CARD, fg=FG, font=FONT,
+                                wraplength=600, justify="left")
+        queue_status.pack(anchor="w", pady=(4, 0))
+
+        run_card = self._card(parent, "Run batch")
+        if output_base:
+            tk.Label(run_card, text=f"Results folder · {output_base}", bg=CARD, fg=FG,
+                     font=FONT, wraplength=600, justify="left").pack(anchor="w", pady=(0, 6))
+        run_row = tk.Frame(run_card, bg=CARD)
+        run_row.pack(anchor="w")
+        run_button = tk.Button(
+            run_row, text="▶  Run Batch", command=lambda: start_batch(),
+            bg=GREEN, fg=BG, font=FONT_BOLD, relief="flat", padx=12, pady=7,
         )
-        self._log_box.pack(fill="both", expand=True)
-        self._run_status = tk.Label(log_card, text="Ready.", bg=CARD, fg=MUTED, font=FONT)
-        self._run_status.pack(anchor="w", pady=(4, 0))
+        run_button.pack(side="left")
+        cancel_button = ttk.Button(run_row, text="Cancel Batch", command=lambda: cancel_batch())
+        cancel_button.pack(side="left", padx=8)
+        progress = ttk.Progressbar(run_card, mode="determinate")
+        progress.pack(fill="x", pady=(8, 0))
+        run_status = tk.Label(run_card, bg=CARD, fg=FG, font=FONT, wraplength=600, justify="left")
+        run_status.pack(anchor="w", pady=(4, 0))
+        tk.Label(run_card, text="Batch log", bg=CARD, fg=FG, font=FONT_BOLD).pack(
+            anchor="w", pady=(6, 4))
+        log_box = scrolledtext.ScrolledText(
+            run_card, bg="#0d0d15", fg=GREEN, font=FONT_MONO, height=10, wrap="word", state="disabled",
+        )
+        log_box.pack(fill="x")
+
+        def sync_buttons(_event=None):
+            running = self._batch_stop is not None
+            selected = len(tree.selection())
+            add_btn.config(state="disabled" if running else "normal")
+            sub_btn.config(state="disabled" if running else "normal")
+            remove_btn.config(state="normal" if selected and not running else "disabled")
+            whole_btn.config(state="normal" if selected and not running else "disabled")
+            mask_btn.config(state="normal" if selected == 1 and not running else "disabled")
+            run_button.config(state="normal" if targets and not running and not settings_issue else "disabled")
+            cancel_button.config(state="normal" if running else "disabled")
+
+        def append_log(line):
+            if log_box.winfo_exists():
+                log_box.config(state="normal")
+                log_box.insert("end", line + "\n")
+                log_box.see("end")
+                log_box.config(state="disabled")
+
+        def cancel_batch():
+            if self._batch_stop is not None and messagebox.askyesno(
+                    "Cancel batch?", "Stop the current folder and keep the results already written?",
+                    parent=self.root, default=messagebox.NO):
+                self._terminate_running()
+                run_status.config(text="Cancelling…", fg=YELLOW)
+                cancel_button.config(state="disabled")
+
+        def start_batch():
+            if self._batch_stop is not None or self._running_procs() or not targets:
+                return
+            self._sync_vars_to_config()
+            issue = batch_settings_issue(self.config)
+            if issue:
+                run_status.config(text=f"Step {issue[0] + 1} · {issue[1]}", fg=YELLOW)
+                return
+            try:
+                batch_folder = create_batch_folder(output_base)
+            except OSError as exc:
+                run_status.config(text=f"Could not create batch results folder. {exc}", fg=RED)
+                return
+            config = dict(self.config)
+            queue = list(targets.items())
+            stop = threading.Event()
+            self._batch_stop = stop
+            progress.config(maximum=len(queue), value=0)
+            run_status.config(text="Starting batch…", fg=ACCENT)
+            log_box.config(state="normal")
+            log_box.delete("1.0", "end")
+            log_box.config(state="disabled")
+            for folder, _ in queue:
+                tree.set(str(folder), "status", "Queued")
+            sync_buttons()
+
+            def update(index, status, detail):
+                if not tree.winfo_exists():
+                    return
+                tree.set(str(queue[index][0]), "status", status.capitalize())
+                if status not in ("queued", "segmenting", "analyzing"):
+                    progress.config(value=float(progress.cget("value")) + 1)
+                run_status.config(text=f"{index + 1}/{len(queue)} · {status.capitalize()}"
+                                       + (f" · {detail}" if detail else ""), fg=FG)
+
+            def finished(text, color):
+                if self._batch_stop is stop:
+                    self._batch_stop = None
+                if run_status.winfo_exists():
+                    run_status.config(text=text, fg=color)
+                    sync_buttons()
+
+            def worker():
+                try:
+                    with (batch_folder / "batch.log").open("w", encoding="utf-8") as saved_log:
+                        def log(line):
+                            saved_log.write(line + "\n")
+                            saved_log.flush()
+                            self.root.after(0, append_log, line)
+
+                        def run_stage(command, env):
+                            environment = dict(env or os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+                            with self._batch_lock:
+                                if stop.is_set():
+                                    return 1
+                                proc = subprocess.Popen(
+                                    command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                )
+                                self._track_proc(proc, "Large Batch Processing")
+                            with proc.stdout:
+                                for line in proc.stdout:
+                                    log(line.rstrip())
+                            return proc.wait()
+
+                        log(f"Saving batch results in {batch_folder}")
+                        rows = run_batch(config, queue, batch_folder, run_stage=run_stage,
+                                         stopped=stop.is_set, log=log,
+                                         on_update=lambda *args: self.root.after(0, update, *args))
+                        complete = sum(row["status"] == "complete" for row in rows)
+                        warnings = sum(row["status"] == "warnings" for row in rows)
+                        failed = sum(row["status"] == "failed" for row in rows)
+                        skipped = len(rows) - complete - warnings - failed
+                        outcome = "Batch cancelled" if stop.is_set() else "Batch finished"
+                        text = f"{outcome} · {complete} complete, {warnings} with warnings, {failed} failed, {skipped} cancelled or not run."
+                        log(text)
+                        log(f"Report: {batch_folder / 'batch_report.json'}")
+                        self.root.after(0, finished, text, YELLOW if warnings or failed or skipped else GREEN)
+                except Exception as exc:
+                    self.root.after(0, append_log, f"Batch error · {exc}")
+                    self.root.after(0, finished, f"Batch could not finish. {exc}", RED)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        tree.bind("<<TreeviewSelect>>", sync_buttons)
+        redraw()
 
     # ==================================================================
     # Launch actions
@@ -5479,8 +5663,8 @@ class CellMatchrLauncher:
     def _build_retraining_step(self, parent) -> None:
         button_fg = "#1e1e2e" if sys.platform == "darwin" else FG
         self._section_header(
-            parent, "Step 7 — Retrain Models",
-            "Use completed human validation to fine-tune a model for future runs.")
+            parent, 7,
+            "Fine-tune a model with saved mask corrections or completed object reviews.")
         card = self._card(parent, "Training data and model")
         tk.Label(card, text=(
             "Use saved mask corrections or completed cell reviews from Step 4. "

@@ -32,19 +32,27 @@ import csv
 import hashlib
 import os
 import shutil
+import stat
 import sys
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import tifffile
 from skimage.measure import label as connected_components
 
 if __package__:
+    from .config import load_project_config
     from .file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
+    from .slide_signal import read_run_progress, run_is_brightfield
+    from .slide_tiff import TiffSlide
     from .validation_state import finalize_if_ready, save_edited_mask
     from .sidecar_input import install_sidecar_controls
 else:
+    from config import load_project_config
     from file_paths import filesystem_path, matching_paths, prediction_channel, read_tiff
+    from slide_signal import read_run_progress, run_is_brightfield
+    from slide_tiff import TiffSlide
     from validation_state import finalize_if_ready, save_edited_mask
     from sidecar_input import install_sidecar_controls
 
@@ -130,6 +138,73 @@ def _find_samples(seg_folder: str, channel: int) -> list[dict]:
             out.append({"name": os.path.basename(d), "path": d,
                         "raw": raw, "mask": mask})
     return out
+
+
+def _brightfield_source(sample, project, input_folder, sources):
+    """Find the recorded color TIFF, or a unique exact filename for older runs."""
+    converter = sources.get("converter_run")
+    if converter == "":
+        return None
+    if isinstance(converter, str) and converter:
+        if Path(converter).name != converter or not (
+                converter == "VSI_Converted_TIFF" or converter.startswith("VSI_Converted_TIFF_")):
+            return None
+        folder = project / converter
+        roots = [folder / "exports", folder]
+    else:
+        roots = [Path(input_folder).expanduser()] if input_folder else []
+        if "samples" not in sources:
+            for folder in project.glob("VSI_Converted_TIFF*"):
+                roots.extend((folder / "exports", folder))
+
+    size = None
+    if "samples" in sources:
+        samples = sources.get("samples")
+        if not isinstance(samples, list):
+            return None
+        records = [item for item in samples
+                   if isinstance(item, dict) and item.get("sample_name") == sample]
+        if len(records) != 1 or records[0].get("scene_index") is not None:
+            return None
+        relative = records[0].get("path")
+        if not isinstance(relative, str) or not relative:
+            return None
+        path = Path(relative)
+        if path.anchor or ".." in path.parts or path.suffix.lower() not in (".tif", ".tiff"):
+            return None
+        names = [path]
+        files = sources.get("files")
+        if isinstance(files, list):
+            size = next((item.get("size_bytes") for item in files
+                         if isinstance(item, dict) and item.get("path") == relative), None)
+    else:
+        names = [Path(f"{sample}{ext}") for ext in (".tif", ".tiff", ".TIF", ".TIFF")]
+
+    matches = {}
+    for root in roots:
+        for name in names:
+            try:
+                candidate = Path(filesystem_path(root / name))
+                info = candidate.stat()
+                if stat.S_ISREG(info.st_mode) and (size is None or info.st_size == size):
+                    path = candidate.resolve()
+                    identity = (info.st_dev, info.st_ino) if info.st_ino else path
+                    matches.setdefault(identity, path)
+            except OSError:
+                continue
+    return next(iter(matches.values())) if len(matches) == 1 else None
+
+
+def _read_color_background(path, shape, stride):
+    """Keep original color and sample the same pixels as the display mask."""
+    slide = TiffSlide(path)
+    try:
+        scene = slide.get_scene(0)
+        if scene.size != (shape[1], shape[0]) or scene.num_channels not in (3, 4):
+            return None
+        return scene.read_strided(stride)[..., :3]
+    finally:
+        slide.close()
 
 
 # ── Core merge logic ─────────────────────────────────────────────────────────
@@ -341,7 +416,7 @@ class RoiEditorApp:
 
     Layers
     ------
-    Raw Image      — grayscale background (read-only)
+    Raw Image      — original brightfield color or the split channel (read-only)
     Existing ROIs  — current prediction mask (read-only, for reference)
     Add ROIs here  — empty labels layer the user paints on
     """
@@ -353,6 +428,16 @@ class RoiEditorApp:
         self.channel    = channel
         self.test_mode  = test_mode
         self.samples    = _find_samples(seg_folder, channel)
+        self._project_folder = Path(seg_folder).parent
+        settings = load_project_config(str(self._project_folder)) or {}
+        record = read_run_progress(seg_folder)
+        identity = record.get("run_identity") or {}
+        self._brightfield = run_is_brightfield(seg_folder, settings) or (
+            isinstance(identity, dict) and identity.get("slide_signal_type") is None
+            and identity.get("preprocess") == "brightfield_invert")
+        sources = record.get("input_sources")
+        self._input_sources = sources if isinstance(sources, dict) else {}
+        self._input_folder = settings.get("input_root_folder") or ""
         self.idx        = 0
         self._test_done    = False     # flips True after first test-mode save
 
@@ -394,6 +479,7 @@ class RoiEditorApp:
                 else "CellMatchR — ROI Editor"
         print("[roi_editor] Creating napari viewer...")
         self.viewer = napari.Viewer(title=title)
+        self.viewer.bind_key("H", self._toggle_prediction_visibility)
         print("[roi_editor] Loading first sample...")
         self._load_sample(self.idx)
         print("[roi_editor] Building dock panel...")
@@ -642,6 +728,7 @@ class RoiEditorApp:
             "and paint any part of it<br>"
             "6. Press <b>Ctrl+Z</b> to undo a brush stroke before saving<br>"
             "7. Press Save when done<br><br>"
+            "Press <b>H</b> to hide or show the predicted ROIs.<br>"
             f"<i>[ and ] keys adjust brush size.{sidecar_hint}</i>"
         )
         instr.setWordWrap(True)
@@ -750,24 +837,62 @@ class RoiEditorApp:
 
     # ── Sample loading ───────────────────────────────────────────────────────
 
+    def _load_background(self, sample, shape):
+        if self._brightfield:
+            source = _brightfield_source(sample["name"], self._project_folder,
+                                         self._input_folder, self._input_sources)
+            if source:
+                try:
+                    color = _read_color_background(source, shape, self._scale)
+                    if color is not None:
+                        return color, True
+                except (OSError, ValueError, TypeError, ImportError, RuntimeError) as exc:
+                    print(f"[roi_editor] Could not read original brightfield color: {exc}")
+            print("[roi_editor] Using the grayscale channel for display.")
+        gray = _downsample(read_tiff(sample["raw"]), self._scale)
+        return np.ascontiguousarray(gray, dtype=np.float32), False
+
+    def _show_background(self, image, rgb):
+        if rgb:
+            name = "Original brightfield (RGB)"
+            maximum = np.iinfo(image.dtype).max if image.dtype.kind in "iu" else 1.0
+            limits = (0, maximum)
+            gamma = 1.0
+        else:
+            name = "Raw Image"
+            low, high = np.percentile(image, (1, 99))
+            limits = (low, high if high > low else low + 1)
+            gamma = 2.0
+
+        layer = self._raw_lyr
+        if layer is not None and layer.rgb == rgb:
+            layer.data = image
+            layer.contrast_limits = limits
+            return
+        if layer is not None:
+            self.viewer.layers.remove(layer)
+        self._raw_lyr = self.viewer.add_image(
+            image, name=name, rgb=rgb, contrast_limits=limits, gamma=gamma,
+        )
+        if layer is not None:
+            self.viewer.layers.move(len(self.viewer.layers) - 1, 0)
+
     def _load_sample(self, idx: int) -> None:
         s   = self.samples[idx]
         print(f"[roi_editor] Loading sample {idx + 1}/{len(self.samples)}: {s['name']}")
 
-        print(f"[roi_editor]   Reading raw image...")
-        raw = read_tiff(s["raw"]).astype(np.float32)
         print(f"[roi_editor]   Reading mask...")
-        msk = read_tiff(s["mask"]).astype(np.int32)
+        msk = read_tiff(s["mask"]).astype(np.int32, copy=False)
         n_rois = len(np.unique(msk)) - 1
         print(f"[roi_editor]   Mask has {n_rois} existing ROIs")
 
         # ── Compute display scale for this sample ────────────────────
-        h, w = raw.shape[:2]
+        h, w = msk.shape[:2]
         self._orig_h = h
         self._orig_w = w
         self._scale  = _display_scale(h, w)
 
-        raw_d = _downsample(raw, self._scale)
+        raw_d, is_rgb = self._load_background(s, (h, w))
         msk_d = _downsample(msk, self._scale)
         if __package__:
             from .slide_roi_preview import slide_outline, slide_roi_for_sample
@@ -777,7 +902,7 @@ class RoiEditorApp:
         region = None
         if region_path:
             try:
-                region = slide_outline(region_path, raw_d.shape[::-1])
+                region = slide_outline(region_path, (msk_d.shape[1], msk_d.shape[0]))
             except (OSError, ValueError) as exc:
                 print(f"[roi_editor] Could not show the slide ROI: {exc}")
         region_layer = getattr(self, "_region_lyr", None)
@@ -798,13 +923,9 @@ class RoiEditorApp:
         else:
             print(f"[roi_editor]   Full resolution ({w}×{h}), no downsampling needed")
 
-        lo, hi = np.percentile(raw_d, (1, 99))
+        self._show_background(raw_d, is_rgb)
 
-        if self._raw_lyr is None:
-            self._raw_lyr = self.viewer.add_image(
-                raw_d, name="Raw Image", colormap="gray",
-                contrast_limits=[lo, hi], gamma=2.0,
-            )
+        if self._mask_lyr is None:
             self._mask_lyr = self.viewer.add_labels(
                 msk_d, name="Existing ROIs", opacity=0.45,
             )
@@ -844,8 +965,6 @@ class RoiEditorApp:
             )
             print("[roi_editor] Layers created — waiting for renderer pre-warm...")
         else:
-            self._raw_lyr.data            = raw_d
-            self._raw_lyr.contrast_limits = [lo, hi]
             self._mask_lyr.data           = msk_d
             self._add_lyr.data            = np.zeros_like(msk_d, dtype=np.int32)
             self._erase_lyr.data          = np.zeros_like(msk_d, dtype=np.uint8)
@@ -860,6 +979,10 @@ class RoiEditorApp:
         self.viewer.reset_view()
 
     # ── Button callbacks ─────────────────────────────────────────────────────
+
+    def _toggle_prediction_visibility(self, _viewer=None) -> None:
+        if self._mask_lyr is not None:
+            self._mask_lyr.visible = not self._mask_lyr.visible
 
     def _sync_tool_buttons(self) -> None:
         """Reflect the actual selected napari layer in the correction controls."""

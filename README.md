@@ -171,12 +171,27 @@ available across upgrades. [Troubleshooting](docs/usage.md#troubleshooting-by-sy
    `hvit_b_cells`. The first run downloads the selected model and sets up
    its separate environment. On an Intel Mac, choose Micro-SAM or Cellpose-SAM.
    [Model guide](docs/usage.md#step-3-segment-cells)
-4. **Review** the predictions and run **Analysis** to generate object tables
-   and a colocalization workbook.
-5. **Retrain** in Step 7 if you want to fine-tune a model on corrected masks.
+4. In **Review Segmentation**, use **Bulk Review** to correct whole images,
+   then **Individual Object Review** for per-cell decisions. Press **H** in
+   the bulk editor to toggle predictions, or hold **Z** in the ROI Verifier
+   to hide outlines until you release it. [Review guide](docs/usage.md#step-4-correct-and-validate-predictions)
+5. Run **Analysis** to create object tables and an Excel workbook. Follow
+   progress in the log below the run controls.
 
-For detailed, step-by-step instructions, file formats, model choices, updating,
-and troubleshooting, see the [user guide](docs/usage.md).
+For detailed instructions on file formats, model choices, retraining, and
+troubleshooting, see the [user guide](docs/usage.md).
+
+## Process several image folders
+
+Set up segmentation and analysis on a representative project. Open **Large
+Batch Processing** near the bottom of the sidebar, add image folders, and
+select any folder-specific ROI masks. For slide scans, use TIFFs exported in
+Step 2. Check your filters on representative images from each group when
+staining or imaging settings differ.
+
+Click **Run Batch** to segment and analyze each folder using the current
+project’s settings. Each run saves separate results and a log under
+`Large_Batch_Processing/` in that project. [Batch processing guide](docs/usage.md#large-batch-processing)
 
 ## Retrain a model
 

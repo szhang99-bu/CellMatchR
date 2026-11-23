@@ -120,6 +120,17 @@ class _TiffScene:
         xs = slice(left, right, max(1, (right - left) // out_width))
         ys = slice(top, bottom, max(1, (bottom - top) // out_height))
 
+        cropped = self._read_sampled(level_index, xs, ys)
+        if cropped.shape[:2] != (out_height, out_width):
+            return resize_overview(cropped, out_height, out_width)
+        return cropped
+
+    def read_strided(self, stride):
+        """Read level-zero pixels on the same grid as a strided label mask."""
+        return self._read_sampled(0, slice(None, None, stride), slice(None, None, stride))
+
+    def _read_sampled(self, level_index, xs, ys):
+        level = self._series.levels[level_index]
         try:
             mapped = tifffile.memmap(self._path, series=self._series_index, level=level_index, mode="r")
         except ValueError:
@@ -134,12 +145,7 @@ class _TiffScene:
                 raise RuntimeError("Reading tiled or compressed TIFF slides requires Zarr 3. "
                                    "Update the CellMatchR environment from its environment file.") from exc
             try:
-                cropped = self._sample(zarr.open_array(store, mode="r"), level.axes, xs, ys)
+                return self._sample(zarr.open_array(store, mode="r"), level.axes, xs, ys)
             finally:
                 store.close()
-        else:
-            cropped = self._sample(mapped, level.axes, xs, ys)
-
-        if cropped.shape[:2] != (out_height, out_width):
-            return resize_overview(cropped, out_height, out_width)
-        return cropped
+        return self._sample(mapped, level.axes, xs, ys)

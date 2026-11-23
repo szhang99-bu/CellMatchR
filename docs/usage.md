@@ -16,7 +16,7 @@ the full workflow and answers common questions.
 - [Step 3: Segment cells](#step-3-segment-cells)
 - [Step 4: Correct and validate predictions](#step-4-correct-and-validate-predictions)
 - [Step 5: Analyze results](#step-5-analyze-results)
-- [Step 6: Run the pipeline](#step-6-run-the-pipeline)
+- [Large Batch Processing](#large-batch-processing)
 - [Step 7: Retrain a model](#step-7-retrain-a-model)
 - [Understand files and outputs](#understand-files-and-outputs)
 - [Frequently asked questions](#frequently-asked-questions)
@@ -473,10 +473,11 @@ models. Each run's settings are shown beside its selector.
 ## Step 4: Correct and validate predictions
 
 Step 4 is optional for basic analysis. Choose the **Channel to Validate** at
-the top, and use **Load Preview** to look at the selected channel in the first
-input image. If you have multiple segmentation runs, choose the run you want
-to review in the same panel. You can do Bulk Review, Individual Object Review,
-or both. Analysis automatically uses saved corrections and review decisions
+the top. **Load Preview** shows that channel in the first input image. Use
+the arrows to browse other channels for reference. If you have multiple
+segmentation runs, choose the one you want to review in the same panel. The
+preview uses the same controls as Step 3. You can do Bulk Review, Individual
+Object Review, or both. Analysis uses saved corrections and review decisions
 from the run you analyze.
 
 ### Bulk Review
@@ -485,10 +486,16 @@ Click **Review Segmented Images** to open whole images in Napari. This is a
 quick way to paint in missed cells and remove obvious false detections. Small
 errors can remain after a whole-image pass.
 
+For brightfield slides, the editor shows the original stain colors from the
+matching TIFF. The prediction masks and drawn ROI stay aligned with that
+image. If the color TIFF is unavailable or the source is grayscale, the
+editor uses the saved grayscale channel.
+
 | Task | Action |
 |---|---|
 | Add a missed cell | Click the large **ADD MISSED CELLS** button on the right and paint it. Each disconnected painted area becomes a separate object. For touching cells, use different label colors. |
 | Remove a false prediction | Click the large red **REMOVE PREDICTED OBJECTS** button on the right, then brush over any part of the prediction. The whole object disappears from the preview and is removed from the active mask when saved. |
+| Hide or show predicted ROIs | Press **H** to toggle the **Existing ROIs** layer. Your current brush marks stay visible. |
 | Undo a stroke | Press **Ctrl+Z** before saving. |
 | Paint or navigate | Press **P** for paint mode; right-drag to pan; use `[` and `]` to change brush size. |
 | Save changes | Click **Save & Next** to move forward, **Skip** to leave the current image untouched, or **Previous** to go back. **Finish** becomes available on the last image. |
@@ -520,12 +527,16 @@ decision. This takes longer and gives you finer control over which objects to
 keep and how to label them. Open **Channel names and colors…** to customize the
 display, including reference channels you did not segment. Use **Refresh** to
 update the progress list after closing the review window.
+Hold **Z** to hide the ROI outlines in every view. Release **Z** to restore
+the previous visibility. In the Notes box, **Z** types normally.
+
 The default keys are **Left = YES**, **Right = NO**, **Up = MAYBE**,
 **Shift = ARTIFACT**, and **Down = Save & Next**. Use **Edit decision buttons**
 on the right to customize up to six options. Enter the decision word, click
-its key button, then press the shortcut. Shift and Down stay reserved. Use notes
-and **Go Back** if you need to revise an earlier object. Decisions save as TSV
-files alongside the prediction files.
+its key button, then press the shortcut. Shift, Down, and Z are reserved. If
+an existing decision used Z, you can click the decision button or assign a new
+shortcut. Use notes and **Go Back** if you need to revise an earlier object.
+Decisions save as TSV files alongside the prediction files.
 
 For training, **YES** and **NO** are both cell labels and are targets by
 default. **ARTIFACT** alone marks an incorrect prediction; **MAYBE** must be
@@ -579,11 +590,12 @@ channels.
 
 Open **Output options** to change the per-image analysis subfolder name or
 turn QC overlay images on or off. Click **Run Analysis** to write per-image
-object CSV tables and `combined_analysis_summary.xlsx`. The workbook includes counts, object size,
-intensity, and configured colocalization summaries. An image missing a selected
-channel is skipped and its summary row identifies the missing channel. The
-completion line reports how many images were analyzed, skipped for missing
-channels, and failed. Open **Analysis log** to see progress and messages.
+object CSV tables and `combined_analysis_summary.xlsx`. The workbook includes
+counts, object size, intensity, and configured colocalization summaries. An
+image missing a selected channel is skipped and its summary row identifies the
+missing channel. The completion line reports how many images were analyzed,
+skipped for missing channels, and failed. The **Analysis log** stays visible
+below the run controls and shows progress and messages.
 `analysis_errors.log` in the analysis output folder has file-specific details.
 
 If results already exist for that run, CellMatchR asks **Replace analysis
@@ -593,14 +605,40 @@ runs the analysis. Other segmentation runs are not replaced. When reopening
 a project after an interrupted replacement, the app checks unfinished backups
 and attempts recovery.
 
-## Step 6: Run the pipeline
+## Large Batch Processing
 
-Step 6 summarizes the current configuration and offers buttons for segmentation
-and analysis, plus a shortcut to Step 4. **Run All** segments if needed. With
-**Include analysis in Run All** selected, it also analyzes the chosen run
-using any reviews saved there. If an analysis output exists, the same
-replace-or-cancel question appears. Check the selected backend, channels, and
-input folder in the summary before starting a long run.
+Open **Large Batch Processing** near the bottom of the sidebar to apply the
+current project's segmentation and analysis settings to several image folders.
+Set up the project and its source images in Steps 1 and 2, configure the model,
+channels, and filters in Step 3, and select measurement channels and output
+options in Step 5. If a setting is missing, the page links to the step that
+needs attention.
+
+Check the filters on representative images from each group before starting.
+Changing the stain, tissue, magnification, or imaging settings can affect cell
+size and intensity. The folders should use the template project's input format
+and channel order.
+
+1. Click **Add Folder…** for an image folder, or **Add Subfolders…** to queue
+   folders inside a common parent. For slide scans, use TIFFs already exported
+   from the converter in Step 2. You can select a converter's output folder or
+   its `exports` folder.
+2. Select a row and click **Set ROI Masks…** if that folder has its own masks.
+   The app picks up matching converter mask folders automatically when they
+   are present. **Use Whole Image** clears the selected folders' ROI choice.
+3. Click **Run Batch**. CellMatchR segments and analyzes each full folder in
+   queue order. Check the status column and batch log for progress. An error
+   in one folder appears in the log and the batch continues with the next
+   folder. Use **Cancel Batch** to stop the queue and keep results already
+   written.
+
+Each run creates a new folder under the template project’s
+`Large_Batch_Processing/`. It contains separate CellMatchR projects with their
+own `Segmentation/` and `Analysis/` results, plus `batch.log` and
+`batch_report.json` for the entire run. The report records each input folder,
+its output location, and the outcome. A row set to **Whole image** leaves the
+ROI-specific measurements blank. Batch projects start with fresh predictions
+and can be opened individually for review and reanalysis in Steps 4 and 5.
 
 ## Step 7: Retrain a model
 
@@ -1054,7 +1092,9 @@ examples alone cannot establish generalization.
 | Channel preview is empty | Confirm the Step 2 input folder, inspect the file list, and check whether a LIF belongs to the other mode. |
 | A converted slide run is not the one being segmented | In Step 3 expand **Use a different converted output** and select the intended folder. |
 | Masks look sparse or contain many false detections | Test a representative image. Adjust model/Cellpose sensitivity, then inspect object filtering and preprocessing. Compare against human annotations. |
-| Run stopped partway through a batch | Reopen Step 3 and use **Continue a previous run** if shown. Inspect the run log for the sample that stopped it. |
+| Segmentation stopped partway through an image folder | Reopen Step 3 and use **Continue a previous run** if shown. Inspect the run log for the sample that stopped it. |
+| **Run Batch** is disabled | Complete the setup step shown under **Settings from this project** and add at least one image folder. For slide scans, choose the converter's TIFF exports. |
+| A folder failed during Large Batch Processing | Open `batch_report.json` to find the folder and check `batch.log` for the error. After correcting it, queue the affected folder for another batch. |
 | Analysis has blank or missing-channel rows | Verify both selected channels exist for each sample; see `analysis_errors.log`. |
 | Training cannot start | Include eligible corrected or verified masks, resolve outstanding decisions for any selected cell labels, choose a validation approach, and check that the starting model and backend dependencies are installed. A whole-image holdout needs two distinct image fields. The patch or in-sample choice can use one. |
 | Training runs out of memory | Reduce batch or patch size where supported, select a smaller model, or move training to a machine with more GPU/unified memory. |

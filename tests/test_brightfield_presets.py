@@ -200,6 +200,28 @@ class BrightfieldCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings["1"], existing["1"])
         self.assertEqual(settings["2"], existing["2"])
 
+    def test_wizard_keeps_local_filters_when_project_save_is_interrupted(self):
+        from cellmatchr import config
+
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            local_config = Path(directory) / "local" / "config.json"
+            existing = {"project_output_folder": str(project),
+                        "seg_per_channel_filters": '{"0": {"min_size": 25}}'}
+            config.save_project_config(existing)
+            wizard = ParameterWizardApp(dict(existing), {"channels": [{"channel": 0}]})
+            wizard.results[0] = {"min_size": 100}
+
+            with (patch.object(config, "CONFIG_PATH", str(local_config)),
+                  patch("cellmatchr.file_paths.os.replace", side_effect=PermissionError("Share unavailable"))):
+                wizard._finish()
+                saved = config.load_config()
+
+            self.assertTrue(saved["seg_per_channel_filters_enabled"])
+            self.assertEqual(saved["seg_per_channel_filters"], wizard.cfg["seg_per_channel_filters"])
+            self.assertEqual(config.load_project_config(str(project))["seg_per_channel_filters"],
+                             existing["seg_per_channel_filters"])
+
 
 class TrainingPresetTests(unittest.TestCase):
     def test_presets_have_real_training_settings_and_short_run(self):

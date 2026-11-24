@@ -2608,9 +2608,6 @@ class CellMatchrLauncher:
                 self._seg_run_btn.config(state="normal" if has else "disabled")
                 self._wizard_btn.config(state="normal" if has else "disabled")
                 self._model_wizard_btn.config(state="normal" if (has and _PIL) else "disabled")
-                resume_btn = getattr(self, "_seg_resume_btn", None)
-                if resume_btn is not None and resume_btn.winfo_exists():
-                    resume_btn.config(state="normal" if has else "disabled")
                 # reset the channel preview for the newly chosen source
                 self._ch_images = []
                 self._ch_index = 0
@@ -3081,32 +3078,34 @@ class CellMatchrLauncher:
         )
         self._seg_run_btn.pack(side="left")
 
-        # "Continue a previous run" appears ONLY when an unfinished run is
-        # detected for this project (progress recorded but not finished).
-        _prog = self._seg_run_progress()
-        if _prog and not _prog.get("finished", True):
-            self._seg_resume_btn = tk.Button(
-                btn_row, text="⟲  Continue a previous run",
-                command=lambda: self._run_segmentation_step(resume=True),
-                bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
-                padx=14, pady=10,
-                state="normal" if input_ok else "disabled",
-            )
-            self._seg_resume_btn.pack(side="left", padx=(8, 0))
+        # Check the saved run on click so a disconnected share can be reconnected
+        # while this page is open.
+        self._seg_resume_btn = tk.Button(
+            btn_row, text="⟲  Continue a previous run",
+            command=lambda: self._run_segmentation_step(resume=True),
+            bg=ACTIVE, fg=FG, font=FONT_BOLD, relief="flat",
+            padx=14, pady=10,
+            state="normal" if self.config.get("project_output_folder", "").strip() else "disabled",
+        )
+        self._seg_resume_btn.pack(side="left", padx=(8, 0))
 
-        self._seg_status = tk.Label(btn_row, text="", bg=CARD, fg=MUTED, font=FONT)
+        self._seg_status = tk.Label(btn_row, text="", bg=CARD, fg=MUTED, font=FONT,
+                                    wraplength=420, justify="left")
         self._seg_status.pack(side="left", padx=12)
 
-        if _prog and not _prog.get("finished", True):
-            _n = int(_prog.get("n_completed", 0))
-            _tot = int(_prog.get("total", 0))
-            tk.Label(
+        self._seg_resume_note = None
+        progress = self._seg_run_progress()
+        if progress:
+            completed = progress.get("n_completed", 0)
+            total = progress.get("total", 0)
+            self._seg_resume_note = tk.Label(
                 run_card,
-                text=f"⚠  Previous run did not finish — {_n} of {_tot} file(s) segmented in "
-                     f"“{os.path.basename(_prog.get('folder',''))}”.  "
+                text=f"⚠  Previous run did not finish — {completed} of {total} file(s) segmented in "
+                     f"“{os.path.basename(progress['folder'])}”.  "
                      "Click “Continue a previous run” to segment the rest (finished files are skipped).",
                 bg=CARD, fg=YELLOW, font=FONT, wraplength=700, justify="left",
-            ).pack(anchor="w", pady=(2, 0))
+            )
+            self._seg_resume_note.pack(anchor="w", pady=(2, 0))
 
         self._seg_progress = ttk.Progressbar(run_card, mode="indeterminate", length=500)
         self._seg_progress.pack(anchor="w", pady=(8, 4))
@@ -3250,8 +3249,9 @@ class CellMatchrLauncher:
         proj = self.config.get("project_output_folder", "").strip()
         if not proj or not os.path.isdir(proj):
             return None
-        variants = self._find_variants(SUBFOLDER["seg"])
-        if not variants:
+        try:
+            variants = self._find_variants(SUBFOLDER["seg"])
+        except OSError:
             return None
         unfinished = []
         for variant in variants:
@@ -3262,7 +3262,7 @@ class CellMatchrLauncher:
             try:
                 with open(ppath) as f:
                     data = json.load(f)
-                if not data.get("finished", True):
+                if isinstance(data, dict) and data.get("finished") is False:
                     data["folder"] = folder
                     unfinished.append((os.path.getmtime(ppath), data))
             except (OSError, ValueError, TypeError):
@@ -3947,11 +3947,16 @@ class CellMatchrLauncher:
                 break
 
         if resume:
-            # Resume precisely the unfinished run shown on this card.
-            progress = self._seg_run_progress()
-            if not progress or progress.get("finished", True):
+            project = self.config.get("project_output_folder", "").strip()
+            if not os.path.isdir(project):
                 self._seg_status.config(
-                    text="⚠  No previous Segmentation output found to continue.", fg=RED)
+                    text="⚠  The project folder is unavailable. Reconnect the drive and try again.", fg=RED)
+                return
+            progress = self._seg_run_progress()
+            if not progress:
+                self._seg_status.config(
+                    text="⚠  No unfinished run found. Check that the original project is open and its drive is connected.",
+                    fg=RED)
                 return
             out = progress["folder"]
             saved_identity = progress.get("run_identity")
@@ -3991,6 +3996,8 @@ class CellMatchrLauncher:
         save_config(self.config)
         save_project_config(self.config)
 
+        if getattr(self, "_seg_resume_note", None) is not None:
+            self._seg_resume_note.pack_forget()
         if hasattr(self, "_seg_resume_btn"):
             self._seg_resume_btn.config(state="disabled")
         self._seg_run_btn.config(state="disabled", text="Running…")

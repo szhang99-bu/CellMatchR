@@ -7,6 +7,11 @@ import json
 import os
 from pathlib import PurePosixPath, PureWindowsPath
 
+if __package__:
+    from .file_paths import filesystem_path, write_json_atomically
+else:
+    from file_paths import filesystem_path, write_json_atomically
+
 CONFIG_PATH = os.path.expanduser("~/.cellmatchr/config.json")
 
 DEFAULT_CONFIG: dict = {
@@ -104,9 +109,8 @@ def save_project_config(cfg: dict) -> None:
     if not folder:
         return
     try:
-        os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, PROJECT_CONFIG_FILE), "w") as f:
-            json.dump(cfg, f, indent=2)
+        os.makedirs(filesystem_path(folder), exist_ok=True)
+        write_json_atomically(os.path.join(folder, PROJECT_CONFIG_FILE), cfg)
     except Exception as e:
         print(f"[config] Warning: could not save project config: {e}")
 

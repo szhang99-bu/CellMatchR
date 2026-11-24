@@ -24,9 +24,9 @@ from skimage.measure import regionprops_table
 from skimage.segmentation import find_boundaries
 
 if __package__:
-    from .file_paths import filesystem_path, read_tiff
+    from .file_paths import filesystem_path, read_tiff, write_json_atomically
 else:
-    from file_paths import filesystem_path, read_tiff
+    from file_paths import filesystem_path, read_tiff, write_json_atomically
     # The launcher starts this file directly, so make its sibling package
     # available for the training-model registry used during prediction.
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -2029,7 +2029,6 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None,
                         input_sources=None):
     """Record how far this segmentation run has got, so the GUI can detect an
     unfinished run and offer to continue it. Written/updated after every image."""
-    import json as _json
     import datetime as _dt
     try:
         os.makedirs(filesystem_path(out_dir), exist_ok=True)
@@ -2043,8 +2042,7 @@ def _write_run_progress(out_dir, total, completed, finished, channels=None,
             "input_sources": input_sources,
             "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
         }
-        with open(_run_progress_path(out_dir), "w") as f:
-            _json.dump(data, f, indent=2)
+        write_json_atomically(_run_progress_path(out_dir), data)
     except Exception as exc:
         print(f"  [WARNING] Could not write run progress: {exc}")
 
@@ -2192,9 +2190,10 @@ def _run(resources):
     failures = 0
     brightfield = INPUT_TYPE == "vsi" and SLIDE_SIGNAL_TYPE == "brightfield"
     preprocess = preprocessing_name(brightfield) if microsam2_model is not None else PREPROCESS_MODE
-    _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
-                        finished=False, channels=CHANNELS_TO_PREDICT,
-                        input_sources=input_sources)
+    if not RESUME or not os.path.isfile(_run_progress_path(MAIN_OUTPUT_FOLDER)):
+        _write_run_progress(MAIN_OUTPUT_FOLDER, _total_samples, _completed,
+                            finished=False, channels=CHANNELS_TO_PREDICT,
+                            input_sources=input_sources)
 
     for file_path, lif_scene, base_name in work_items:
         print(f"\n--- Planning for: {base_name} ---")

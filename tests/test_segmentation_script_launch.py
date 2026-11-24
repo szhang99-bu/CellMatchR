@@ -3,6 +3,7 @@
 import importlib.util
 import contextlib
 import io
+import json
 import os
 import subprocess
 import sys
@@ -19,6 +20,32 @@ import tifffile
 @unittest.skipUnless(importlib.util.find_spec("micro_sam"),
                      "Micro-SAM is required for the segmentation launch check")
 class SegmentationScriptLaunchTests(unittest.TestCase):
+    def test_resume_checkpoint_survives_interrupted_write_and_reconnect(self):
+        from cellmatchr import segmentation
+        from cellmatchr.launcher import CellMatchrLauncher
+
+        def interrupt_write(_data, stream, **_kwargs):
+            stream.write('{"completed": ')
+            raise PermissionError("Shared drive disconnected during write")
+
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            run = Path(directory) / "Segmentation_microsam"
+            segmentation._write_run_progress(run, 8, {"sample1"}, False)
+            with patch("cellmatchr.file_paths.json.dump", side_effect=interrupt_write):
+                segmentation._write_run_progress(run, 8, {"sample1", "sample2"}, False)
+
+            launcher = CellMatchrLauncher.__new__(CellMatchrLauncher)
+            launcher.config = {"project_output_folder": directory}
+            with patch.object(launcher, "_find_variants", side_effect=PermissionError):
+                self.assertIsNone(launcher._seg_run_progress())
+
+            restored = launcher._seg_run_progress()
+            self.assertEqual(restored["folder"], str(run))
+            self.assertEqual(restored["completed"], ["sample1"])
+            checkpoint = run / "_run_progress.json"
+            self.assertEqual(json.loads(checkpoint.read_text())["n_completed"], 1)
+            self.assertEqual(list(run.iterdir()), [checkpoint])
+
     def test_tiff_time_channel_and_depth_axes_produce_legacy_split_files(self):
         from cellmatchr.segmentation import save_raw_split_tiffs
 

@@ -678,11 +678,11 @@ def finalize_if_ready(project_folder: str, channel: int | None,
 
 def get_review_decision(project_folder: str, channel: int | None,
                         roi_id: int) -> dict | None:
-    """Return a decision saved during the current focused review, if any."""
+    """Return a saved decision that still applies to the current mask."""
     try:
         record = _read_record(project_folder, channel)
         path = os.path.join(project_folder, VALIDATION_FOLDER,
-                            record["interim_tsv_name"])
+                            record["effective_tsv_name"])
         return _read_rows(path).get(int(roi_id))
     except (OSError, ValueError, TypeError, KeyError):
         return None

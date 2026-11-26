@@ -530,6 +530,13 @@ update the progress list after closing the review window.
 Hold **Z** to hide the ROI outlines in every view. Release **Z** to restore
 the previous visibility. In the Notes box, **Z** types normally.
 
+If a prediction covers only part of a cell or extends too far, click **Edit
+Mask…**. The small napari window opens the same close-up from the reviewer.
+Use **Paint** or **Erase** to reshape the selected mask, then click **Save
+Mask** to return to the same cell and continue reviewing it. The cell keeps
+its ID and neighboring masks are protected. Click **Cancel** to discard
+the edit, or use **Artifact** in the reviewer to reject the whole prediction.
+
 The default keys are **Left = YES**, **Right = NO**, **Up = MAYBE**,
 **Shift = ARTIFACT**, and **Down = Save & Next**. Use **Edit decision buttons**
 on the right to customize up to six options. Enter the decision word, click

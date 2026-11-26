@@ -1,6 +1,10 @@
 import os
 import re
 import json
+from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
 import tkinter as tk
 from tkinter import ttk, simpledialog, messagebox, font, filedialog
 import numpy as np
@@ -14,16 +18,18 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.colors import LinearSegmentedColormap
 
 if __package__:
+    from .cell_mask_editor import merge_cell_crop
     from .file_paths import matching_paths, prediction_channel, read_tiff
     from .validation_state import (
         begin_review, finalize_if_ready, get_change_state,
-        get_review_decision, save_review_decision,
+        get_review_decision, save_edited_mask, save_review_decision,
     )
 else:
+    from cell_mask_editor import merge_cell_crop
     from file_paths import matching_paths, prediction_channel, read_tiff
     from validation_state import (
         begin_review, finalize_if_ready, get_change_state,
-        get_review_decision, save_review_decision,
+        get_review_decision, save_edited_mask, save_review_decision,
     )
 
 # Set Matplotlib to use the TkAgg backend
@@ -377,6 +383,7 @@ class RoiVerifierApp:
         self.filtered_mask = None
         self.current_roi_index = 0
         self.focused_review = False
+        self._mask_editor = None
         
         # Paths
         self.project_path = project_path
@@ -540,6 +547,12 @@ class RoiVerifierApp:
         self.notes_text = tk.Text(self.control_frame, height=8, width=20, wrap="word")
         self.notes_text.grid(row=row, column=0, sticky="ew"); row+=1
 
+        self.edit_mask_btn = ttk.Button(self.control_frame, text="Edit Mask…",
+                                        style="CtrlNav.TButton", command=self._open_mask_editor)
+        self.edit_mask_btn.grid(row=row, column=0, sticky="ew", pady=(10, 0)); row+=1
+        self.mask_edit_status = ttk.Label(self.control_frame, anchor="center", wraplength=205)
+        self.mask_edit_status.grid(row=row, column=0, sticky="ew", pady=(4, 0)); row+=1
+
         self.nav_frame = ttk.Frame(self.control_frame)
         self.nav_frame.grid(row=row, column=0, sticky="ew", pady=(16, 0))
         self.nav_frame.grid_columnconfigure(0, weight=1)
@@ -562,6 +575,7 @@ class RoiVerifierApp:
             self.root.bind(f"<KeyPress-{key}>", self._hold_hide_rois)
             self.root.bind(f"<KeyRelease-{key}>", self._release_hide_rois)
         self.root.bind("<FocusOut>", self._check_hide_roi_focus, add="+")
+        self.root.protocol("WM_DELETE_WINDOW", self._close_review)
 
         self.load_data()
 
@@ -871,6 +885,137 @@ class RoiVerifierApp:
                 contour.set_visible(show_all)
         self.canvas.draw_idle()
 
+    def _prediction_identity(self):
+        info = os.stat(self.filtered_mask_path)
+        return info.st_ino, info.st_size, info.st_mtime_ns
+
+    def _read_prediction(self):
+        identity = self._prediction_identity()
+        mask = read_tiff(self.filtered_mask_path)
+        if self._prediction_identity() != identity:
+            raise RuntimeError("The mask changed while opening it. Reopen this sample and try again.")
+        self._mask_identity = identity
+        return mask
+
+    def _open_mask_editor(self):
+        if self._mask_editor is not None or self.current_roi_index >= self.total_rois:
+            return
+        roi_id = self.props[self.current_roi_index]["label"]
+        crop = self.filtered_mask[self._zoom_slice]
+        folder = TemporaryDirectory(prefix="cellmatchr-cell-mask-")
+        work = Path(folder.name)
+        try:
+            # Snapshot the same tight views and display levels already plotted in Tk.
+            views = []
+            names = []
+            if self.n_channels > 1:
+                views.append(np.asarray(self.ax_merge.images[0].get_array()))
+                names.append("Merged view")
+            for cfg, axis in zip(self.channel_config, self.gray_axes):
+                plotted = axis.images[0]
+                gray = np.asarray(plotted.norm(plotted.get_array()))
+                views.append(np.repeat(gray[..., None], 3, axis=-1))
+                names.append(cfg["name"])
+            if not views:
+                raise ValueError("There is no image available for this cell.")
+            np.savez(work / "crop.npz", images=np.rint(np.clip(views, 0, 1) * 255).astype(np.uint8),
+                     names=names, mask=(crop == roi_id), blocked=(crop != 0) & (crop != roi_id))
+            with (work / "editor.log").open("wb") as log:
+                process = subprocess.Popen(
+                    [sys.executable, str(Path(__file__).with_name("cell_mask_editor.py")),
+                     str(work / "crop.npz"), str(work / "edited.npy"), str(roi_id)],
+                    stdout=log, stderr=subprocess.STDOUT,
+                    env=dict(os.environ, NAPARI_CONFIG=str(work / "napari.yaml")),
+                )
+        except (OSError, ValueError) as error:
+            folder.cleanup()
+            messagebox.showerror("Could not open mask editor", str(error), parent=self.root)
+            return
+        self._mask_editor = (process, folder, self.current_roi_index, self._zoom_slice)
+        for button in (self.edit_mask_btn, self.btn_back, self.save_btn):
+            button.state(["disabled"])
+        self.mask_edit_status.config(text="Editing current mask…")
+        self.root.after(100, self._poll_mask_editor)
+
+    def _poll_mask_editor(self):
+        if self._mask_editor is None:
+            return
+        process, folder, index, region = self._mask_editor
+        result = process.poll()
+        if result is None:
+            self.root.after(100, self._poll_mask_editor)
+            return
+        try:
+            work = Path(folder.name)
+            if result:
+                with (work / "editor.log").open("rb") as log:
+                    log.seek(max(0, (work / "editor.log").stat().st_size - 8192))
+                    details = log.read().decode("utf-8", errors="replace").strip()
+                raise RuntimeError(details.splitlines()[-1] if details else f"Editor exited with code {result}.")
+            edited = work / "edited.npy"
+            if edited.is_file():
+                changed = self._apply_mask_edit(index, region, np.load(edited, allow_pickle=False))
+                self.mask_edit_status.config(text="Mask saved." if changed else "No mask changes.")
+            else:
+                self.mask_edit_status.config(text="")
+        except Exception as error:
+            self.mask_edit_status.config(text="Mask edit could not be applied.")
+            messagebox.showerror("Could not apply mask edit", str(error), parent=self.root)
+        finally:
+            self._mask_editor = None
+            folder.cleanup()
+            for button in (self.edit_mask_btn, self.btn_back, self.save_btn):
+                button.state(["!disabled"])
+
+    def _apply_mask_edit(self, index, region, edited):
+        roi = self.props[index]
+        roi_id = roi["label"]
+        if self._prediction_identity() != self._mask_identity:
+            raise RuntimeError("The mask changed in another window. Reopen this sample before editing it.")
+        previous_crop = self.filtered_mask[region]
+        crop = merge_cell_crop(previous_crop, roi_id, edited)
+        if np.array_equal(crop, previous_crop):
+            return False
+        rows, cols = np.nonzero(crop == roi_id)
+        y, x = (axis.start for axis in region)
+        new_mask = self.filtered_mask.copy()
+        new_mask[region] = crop
+        # Bulk and Individual Review retain the same first prediction for retraining.
+        if __package__:
+            from .roi_editor import _preserve_prediction_baseline
+        else:
+            from roi_editor import _preserve_prediction_baseline
+        baseline_channel = self.val_channel
+        if baseline_channel is None:
+            baseline_channel = prediction_channel(self.filtered_mask_path)
+        if baseline_channel is not None:
+            _preserve_prediction_baseline(self.filtered_mask_path, baseline_channel)
+        state = save_edited_mask(self.filtered_mask_path, self.val_channel, self.filtered_mask, new_mask)
+        self.filtered_mask = new_mask
+        self._mask_identity = self._prediction_identity()
+        self.focused_review = state["status"] == "pending"
+        roi.update({"bbox-0": y + int(rows.min()), "bbox-1": x + int(cols.min()),
+                    "bbox-2": y + int(rows.max()) + 1, "bbox-3": x + int(cols.max()) + 1})
+        self.update_roi_display(recalc_roi=False)
+        return True
+
+    def _close_review(self):
+        if self._mask_editor is not None:
+            process, folder, _, _ = self._mask_editor
+            self._mask_editor = None
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=0.3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            folder.cleanup()
+        if self.on_close_callback:
+            self.on_close_callback()
+        else:
+            self.root.destroy()
+
     def finish_session(self):
         """Called when all ROIs are done."""
         if self.focused_review:
@@ -911,7 +1056,7 @@ class RoiVerifierApp:
     def load_data(self):
         try:
             print(f"Loading mask: {self.filtered_mask_path}")
-            self.filtered_mask = read_tiff(self.filtered_mask_path)
+            self.filtered_mask = self._read_prediction()
             
             print("Calculating ROI properties...")
             props_df = pd.DataFrame(regionprops_table(self.filtered_mask, properties=('label', 'bbox')))
@@ -925,7 +1070,7 @@ class RoiVerifierApp:
                 )
                 # begin_review may replace the TIFF atomically to protect old
                 # readers, so use its current on-disk representation.
-                self.filtered_mask = read_tiff(self.filtered_mask_path)
+                self.filtered_mask = self._read_prediction()
                 props_df = pd.DataFrame(regionprops_table(
                     self.filtered_mask, properties=('label', 'bbox')))
             if change_state["status"] == "pending" and not change_state["pending_ids"]:
@@ -1001,6 +1146,7 @@ class RoiVerifierApp:
         r1_z, r2_z = max(0, min_r - ROI_PADDING), min(h, max_r + ROI_PADDING)
         c1_z, c2_z = max(0, min_c - ROI_PADDING), min(w, max_c + ROI_PADDING)
         slice_zoom = np.s_[r1_z:r2_z, c1_z:c2_z]
+        self._zoom_slice = slice_zoom
         extent_zoom = [c1_z, c2_z, r2_z, r1_z]
         
         r1_m, r2_m = max(0, min_r - MID_CONTEXT_PADDING), min(h, max_r + MID_CONTEXT_PADDING)
@@ -1014,10 +1160,11 @@ class RoiVerifierApp:
         extent_ctx = [c1_c, c2_c, r2_c, r1_c]
 
         # Contour
-        roi_mask = (self.filtered_mask == roi_label)
-        mask_z = roi_mask[slice_zoom]
-        ct_z = find_contours(mask_z, 0.5)
-        contour_z = ct_z[0] if ct_z else np.array([[0,0]])
+        mask_z = self.filtered_mask[slice_zoom] == roi_label
+        contours = find_contours(np.pad(mask_z, 1), 0.5)
+        # NaNs separate disjoint outlines so every part of an edited mask is visible.
+        contour_z = np.concatenate([np.vstack((contour - 1, [np.nan, np.nan]))
+                                    for contour in contours]) if contours else np.empty((0, 2))
         
         # Additive Buffers
         h_z, w_z = (r2_z - r1_z), (c2_z - c1_z)
@@ -1105,11 +1252,14 @@ class RoiVerifierApp:
         self.is_updating = False
         
         if recalc_roi:
+            self.mask_edit_status.config(text="")
             self.decision_var.set("")
             self.decision_status_label.config(text="No decision made", foreground=FG_COLOR)
             self.notes_text.delete("1.0", tk.END)
 
     def save_and_next(self, event=None):
+        if self._mask_editor is not None:
+            return
         decision = self.decision_var.get()
         if not decision:
             messagebox.showwarning("No Decision", "Make a decision first.")
@@ -1135,6 +1285,8 @@ class RoiVerifierApp:
         self.update_roi_display(recalc_roi=True)
 
     def go_back(self, event=None):
+        if self._mask_editor is not None:
+            return
         if self.current_roi_index > 0:
             self.current_roi_index -= 1
             if self.focused_review:
@@ -1142,11 +1294,10 @@ class RoiVerifierApp:
                 row = get_review_decision(
                     self.project_path, self.val_channel, target_label
                 )
+                self.update_roi_display(recalc_roi=True)
                 if row:
                     self.make_decision(row["Decision"])
-                    self.notes_text.delete("1.0", tk.END)
                     self.notes_text.insert("1.0", row["Note"])
-                self.update_roi_display(recalc_roi=False)
                 return
             
             try:

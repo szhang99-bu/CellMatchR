@@ -118,10 +118,18 @@ environment.
 3. In the app folder, double-click **Launch CellMatchR (Windows)**. You can
    also double-click `run-windows.cmd`.
 
-Setup records the runtime, environment, and package cache paths in
-`setup-paths.txt` inside the runtime folder. For a custom runtime in a
-deeply nested folder, setup tries a shorter private cache to prevent
-package extraction errors.
+Setup creates and checks the package cache before downloading anything.
+For the default runtime, the cache is `C:\CellMatchR\pkgs` on a typical
+Windows installation. For a deeply nested custom runtime, setup tries a
+shorter private cache. The selected locations are listed in `setup-paths.txt`
+inside the runtime folder. The installer also prints the path to its full log
+in `%TEMP%`.
+
+Setup checks whether Windows long paths are enabled. If they are off,
+approve the Windows administrator prompt so setup can enable them. If you
+decline the prompt or a managed PC blocks the change, setup continues with
+the short package cache. If a path-length error persists after enabling
+long paths, restart Windows and rerun setup.
 
 If you chose a custom runtime, set the same absolute folder path in PowerShell
 before running `.\setup-windows.cmd` or `.\run-windows.cmd`:
@@ -1120,10 +1128,10 @@ custom environment prefix.
 
 When reporting a reproducible issue, include your platform, file format,
 chosen backend/model, the relevant step's log, and a small example image if
-it can be shared. For a Windows setup failure, include the error text from
-the setup window and `setup-paths.txt` from the runtime folder (usually
-`C:\CellMatchR`). Remove identifying or sensitive data before sharing a
-project configuration or raw image.
+it can be shared. For a Windows setup failure, share the `CellMatchR-setup-*.log`
+file printed at the start of the install, along with `setup-paths.txt` if it
+was created. Remove identifying or sensitive data before sharing a log,
+project configuration, or raw image.
 
 ## Command-line reference
 
